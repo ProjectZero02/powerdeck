@@ -1,7 +1,8 @@
 name: Build
 
-# Every push and pull request builds and tests both apps. A tag like v1.2.3 also signs them and
-# publishes a GitHub release with PowerDeck-Setup.exe, its update signature, PowerDeck.apk and checksums.
+# Every push and pull request builds and tests the helper (Windows + Linux) and the Android app,
+# including real install/upgrade/uninstall runs. A tag like v1.2.3 also signs everything and
+# publishes a GitHub release.
 on:
   push:
     branches: [main]
@@ -19,6 +20,7 @@ concurrency:
 env:
   # SHA-256 of the Android release signing certificate; release APKs must match it.
   APK_CERT_SHA256: 1f1e38e8d301a80d1c4e8451c1025e5be68d8ccd2d7c485c99b6b43c540e00fc
+  VERSION_PKG: github.com/projectzero02/powerdeck/helper/internal/version.Version
 
 jobs:
   version:
@@ -37,14 +39,15 @@ jobs:
             echo "version=0.0.0-ci" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-  pc-test:
-    name: PC app · tests
+  helper-test:
+    name: Helper · tests
     runs-on: ubuntu-latest
-    defaults: { run: { working-directory: windows } }
+    defaults: { run: { working-directory: helper } }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version-file: windows/go.mod, cache-dependency-path: windows/go.sum }
+        with: { go-version-file: helper/go.mod, cache-dependency-path: helper/go.sum }
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::run gofmt"; exit 1; }
       - run: go vet ./...
       - run: GOOS=windows go vet ./...
       - run: go test -race -count=1 ./...
@@ -53,28 +56,101 @@ jobs:
           go build -o demo ./tools/demo && (./demo > demo.log 2>&1 &)
           for i in $(seq 50); do curl -sf -o /dev/null http://127.0.0.1:47322/ && break; sleep 0.2; done
           google-chrome --headless=new --no-sandbox --hide-scrollbars --force-device-scale-factor=1 \
-            --window-size=1060,1640 --virtual-time-budget=4000 --screenshot="$PWD/pc-window.png" http://127.0.0.1:47322/
+            --window-size=1060,1900 --virtual-time-budget=4000 --screenshot="$PWD/pc-window.png" http://127.0.0.1:47322/
       - uses: actions/upload-artifact@v7
-        with: { name: pc-window-screenshot, path: windows/pc-window.png }
+        with: { name: pc-window-screenshot, path: helper/pc-window.png }
 
-  pc-windows:
-    name: PC app · build, install, uninstall on Windows
+  helper-linux:
+    name: Helper · Linux builds, install, uninstall
     needs: version
-    runs-on: windows-latest
-    defaults: { run: { working-directory: windows, shell: pwsh } }
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: helper } }
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version-file: windows/go.mod, cache-dependency-path: windows/go.sum }
+        with: { go-version-file: helper/go.mod, cache-dependency-path: helper/go.sum }
+      - name: Build (amd64, arm64, armv7, riscv64)
+        run: |
+          mkdir -p dist
+          for t in amd64 arm64 arm riscv64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$t GOARM=7 go build -trimpath -ldflags "-s -w -X $VERSION_PKG=$VERSION" -o dist/powerdeck-helper-linux-$t ./cmd/powerdeck
+            gzip -9n -c dist/powerdeck-helper-linux-$t > dist/powerdeck-helper-linux-$t.gz
+          done
+          ls -l dist
+      - name: "End-to-end: install as a systemd service"
+        run: |
+          sudo ./dist/powerdeck-helper-linux-amd64 install --quiet
+          systemctl is-active powerdeck
+          systemctl is-enabled powerdeck
+          test -x /usr/local/bin/powerdeck-helper
+          sudo test -f /var/lib/powerdeck/local.token
+          [ "$(sudo stat -c %a /var/lib/powerdeck)" = 700 ] || { echo "::error::data folder isn't private"; exit 1; }
+          sudo powerdeck-helper status
+      - name: "End-to-end: API, trust and power"
+        run: |
+          set -x
+          hello=$(curl -sfk https://127.0.0.1:47321/v2/hello)
+          echo "$hello" | jq -e --arg v "$VERSION" '.app=="PowerDeck" and .apiVersion==2 and .version==$v and .os=="linux"'
+          # No Tailscale identity and no token: nobody.
+          [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:47321/v2/status)" = 401 ]
+          [ "$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:47321/v2/power/shutdown)" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:47323/mcp -d '{}')" = 401 ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:47323/v2/status)" = 404 ]
+          [ "$(curl -sk -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example' https://127.0.0.1:47321/v2/hello)" = 403 ]
+          TOKEN=$(sudo cat /var/lib/powerdeck/local.token)
+          api() { curl -sfk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api https://127.0.0.1:47321/v2/status | jq -e '.you.kind=="owner" and (.checks|length) > 5'
+          # Schedule a real poweroff 10 minutes out, then cancel it.
+          api -X POST https://127.0.0.1:47321/v2/power/shutdown -d '{"delaySeconds":600,"force":true}' | jq -e '.pending.action=="shutdown"'
+          api -X POST https://127.0.0.1:47321/v2/power/cancel | jq -e '.pending==null'
+          # An agent key, then MCP from loopback (not bound to a tailnet node, so it must be refused).
+          sudo powerdeck-helper key add ci-agent --scopes status,wake | tee key.txt
+          KEY=$(grep -o 'pdk_[A-Za-z0-9_-]*' key.txt)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:47323/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')" = 401 ]
+          sudo powerdeck-helper key list | grep -q ci-agent
+      - name: "End-to-end: upgrade in place, then uninstall"
+        run: |
+          sudo ./dist/powerdeck-helper-linux-amd64 install --quiet
+          systemctl is-active powerdeck
+          sudo powerdeck-helper key list | grep -q ci-agent   # settings survive upgrades
+          sudo powerdeck-helper uninstall --purge
+          ! systemctl is-active powerdeck
+          test ! -e /usr/local/bin/powerdeck-helper
+          test ! -e /etc/systemd/system/powerdeck.service
+          test ! -e /var/lib/powerdeck
+      - name: Sign for the installer and in-app updates
+        if: needs.version.outputs.release == 'true'
+        env:
+          POWERDECK_UPDATE_SIGNING_KEY: ${{ secrets.POWERDECK_UPDATE_SIGNING_KEY }}
+        run: go run ./tools/sign dist/*.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: |
+            helper/dist/*.gz
+            helper/dist/*.gz.sig
+          if-no-files-found: error
+
+  helper-windows:
+    name: Helper · Windows build, install, uninstall
+    needs: version
+    runs-on: windows-latest
+    defaults: { run: { working-directory: helper, shell: pwsh } }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: helper/go.mod, cache-dependency-path: helper/go.sum }
       - name: Build PowerDeck.exe
         run: |
           go install github.com/tc-hib/go-winres@latest
           $fv = ($env:VERSION -split '-')[0]
           go-winres make --in winres/winres.json --out cmd/powerdeck/rsrc --arch amd64 --product-version $env:VERSION --file-version "$fv.0"
           New-Item -ItemType Directory -Force dist | Out-Null
-          go build -trimpath -ldflags "-s -w -H=windowsgui -X github.com/projectzero02/powerdeck/windows/internal/version.Version=$env:VERSION" -o dist/PowerDeck.exe ./cmd/powerdeck
+          go build -trimpath -ldflags "-s -w -H=windowsgui -X $env:VERSION_PKG=$env:VERSION" -o dist/PowerDeck.exe ./cmd/powerdeck
       - name: Build installer
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -91,33 +167,45 @@ jobs:
           $svc = Get-Service PowerDeck
           if ($svc.Status -ne 'Running') { throw "service is $($svc.Status)" }
           if ((Get-CimInstance Win32_Service -Filter "Name='PowerDeck'").StartMode -ne 'Auto') { throw "service is not automatic" }
-          $rule = Get-NetFirewallRule -DisplayName 'PowerDeck (phone, tailnet only)'
+          $rule = Get-NetFirewallRule -DisplayName 'PowerDeck (tailnet only)'
           $addr = ($rule | Get-NetFirewallAddressFilter).RemoteAddress
           if ($addr -notcontains '100.64.0.0/255.192.0.0' -and $addr -notcontains '100.64.0.0/10') { throw "firewall remote addresses: $addr" }
+          $ports = ($rule | Get-NetFirewallPortFilter).LocalPort
+          if ($ports -notcontains '47321' -or $ports -notcontains '47323') { throw "firewall ports: $ports" }
           $fs = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power').HiberbootEnabled
           if ($fs -ne 0) { throw "Fast Startup still on" }
-          foreach ($f in 'state.json','cert.pem','key.pem','setup.json') {
+          for ($i = 0; $i -lt 30 -and -not (Test-Path "$env:ProgramData\PowerDeck\local.token"); $i++) { Start-Sleep 1 }
+          foreach ($f in 'state.json','cert.pem','key.pem','setup.json','local.token') {
             if (-not (Test-Path "$env:ProgramData\PowerDeck\$f")) { throw "missing $f" }
           }
           $acl = (Get-Acl "$env:ProgramData\PowerDeck").Access | ForEach-Object { $_.IdentityReference.Value }
           if ($acl | Where-Object { $_ -match 'Users|Everyone' }) { throw "data folder readable by ordinary users: $acl" }
           Get-Content "$env:ProgramData\PowerDeck\setup.json"
 
-      - name: "End-to-end: phone API and PC window"
+      - name: "End-to-end: API, trust, real shutdown scheduling, PC window"
         run: |
-          for ($i = 0; $i -lt 30; $i++) { try { $info = Invoke-RestMethod https://127.0.0.1:47321/v1/info -SkipCertificateCheck; break } catch { Start-Sleep 1 } }
-          if ($info.app -ne 'PowerDeck' -or $info.version -ne $env:VERSION) { throw "info: $($info | ConvertTo-Json)" }
-          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/status -SkipCertificateCheck -SkipHttpErrorCheck
-          if ($r.StatusCode -ne 401) { throw "status without token: $($r.StatusCode)" }
-          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/pair -Method Post -Body '{"code":"wrong"}' -ContentType 'application/json' -SkipCertificateCheck -SkipHttpErrorCheck
+          for ($i = 0; $i -lt 30; $i++) { try { $info = Invoke-RestMethod https://127.0.0.1:47321/v2/hello -SkipCertificateCheck; break } catch { Start-Sleep 1 } }
+          if ($info.app -ne 'PowerDeck' -or $info.version -ne $env:VERSION -or $info.apiVersion -ne 2 -or $info.os -ne 'windows') { throw "hello: $($info | ConvertTo-Json)" }
+          $r = Invoke-WebRequest https://127.0.0.1:47321/v2/status -SkipCertificateCheck -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 401) { throw "status without identity: $($r.StatusCode)" }
+          $r = Invoke-WebRequest https://127.0.0.1:47321/v2/pair -Method Post -Body '{"code":"AAAA-AAAA"}' -ContentType 'application/json' -SkipCertificateCheck -SkipHttpErrorCheck
           if ($r.StatusCode -ne 403) { throw "pair with a wrong code: $($r.StatusCode)" }
-          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/power/shutdown -Method Post -SkipCertificateCheck -SkipHttpErrorCheck
-          if ($r.StatusCode -ne 401) { throw "unauthenticated shutdown: $($r.StatusCode)" }
+          $tok = (Get-Content "$env:ProgramData\PowerDeck\local.token" -Raw).Trim()
+          $h = @{ Authorization = "Bearer $tok" }
+          $st = Invoke-RestMethod https://127.0.0.1:47321/v2/status -Headers $h -SkipCertificateCheck
+          if ($st.you.kind -ne 'owner' -or $st.checks.Count -lt 6) { throw "status: $($st | ConvertTo-Json -Depth 4)" }
+          $st.checks | Format-Table level, title
+          # A real InitiateShutdown 10 minutes out, then AbortSystemShutdown.
+          $p = Invoke-RestMethod https://127.0.0.1:47321/v2/power/shutdown -Method Post -Headers $h -Body '{"delaySeconds":600,"force":true}' -ContentType 'application/json' -SkipCertificateCheck
+          if ($p.pending.action -ne 'shutdown') { throw "shutdown: $($p | ConvertTo-Json)" }
+          $c = Invoke-RestMethod https://127.0.0.1:47321/v2/power/cancel -Method Post -Headers $h -SkipCertificateCheck
+          if ($null -ne $c.pending) { throw "cancel: $($c | ConvertTo-Json)" }
+          & "$env:ProgramFiles\PowerDeck\PowerDeck.exe" status
           $page = Invoke-WebRequest http://127.0.0.1:47322/
           $key = [regex]::Match($page.Content, 'name="pd-key" content="([^"]+)"').Groups[1].Value
           if (-not $key) { throw "no key in PC window" }
           $state = Invoke-RestMethod http://127.0.0.1:47322/api/state -Headers @{ 'X-PowerDeck-Key' = $key }
-          $state | ConvertTo-Json -Depth 5
+          if ($state.pairCode -notmatch '^[0-9A-Z]{4}-[0-9A-Z]{4}$') { throw "pair code: $($state.pairCode)" }
           $r = Invoke-WebRequest http://127.0.0.1:47322/api/state -SkipHttpErrorCheck
           if ($r.StatusCode -ne 403) { throw "PC window API without key: $($r.StatusCode)" }
 
@@ -133,7 +221,7 @@ jobs:
           Start-Process "$env:ProgramFiles\PowerDeck\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
           for ($i = 0; $i -lt 60 -and (Test-Path "$env:ProgramFiles\PowerDeck\unins000.exe"); $i++) { Start-Sleep 1 }
           if (Get-Service PowerDeck -ErrorAction SilentlyContinue) { throw "service still registered" }
-          if (Get-NetFirewallRule -DisplayName 'PowerDeck (phone, tailnet only)' -ErrorAction SilentlyContinue) { throw "firewall rule left behind" }
+          if (Get-NetFirewallRule -DisplayName 'PowerDeck (tailnet only)' -ErrorAction SilentlyContinue) { throw "firewall rule left behind" }
           if (Test-Path "$env:ProgramData\PowerDeck") { throw "data folder left behind" }
           if (Test-Path "$env:ProgramFiles\PowerDeck\PowerDeck.exe") { throw "program files left behind" }
 
@@ -146,8 +234,8 @@ jobs:
         with:
           name: windows
           path: |
-            windows/dist/PowerDeck-Setup.exe
-            windows/dist/PowerDeck-Setup.exe.sig
+            helper/dist/PowerDeck-Setup.exe
+            helper/dist/PowerDeck-Setup.exe.sig
           if-no-files-found: error
 
   android:
@@ -184,6 +272,7 @@ jobs:
           if [ "${{ needs.version.outputs.release }}" = "true" ]; then
             grep -qi "SHA-256 digest: $APK_CERT_SHA256" signer.txt || { echo "::error::APK not signed with the release key"; exit 1; }
           fi
+          ls -l PowerDeck.apk
       - uses: actions/upload-artifact@v7
         with: { name: android, path: android/PowerDeck.apk, if-no-files-found: error }
       - uses: actions/upload-artifact@v7
@@ -193,7 +282,7 @@ jobs:
   release:
     name: Publish release
     if: needs.version.outputs.release == 'true'
-    needs: [version, pc-test, pc-windows, android]
+    needs: [version, helper-test, helper-linux, helper-windows, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -203,12 +292,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with: { path: out, merge-multiple: true }
+      - name: Add the install scripts
+        run: cp install/install.sh install/install.ps1 out/
       - name: Build provenance attestation
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             out/PowerDeck-Setup.exe
             out/PowerDeck.apk
+            out/powerdeck-helper-linux-*.gz
+            out/install.sh
+            out/install.ps1
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -216,9 +310,19 @@ jobs:
         run: |
           cd out
           ls -la
-          test -s PowerDeck-Setup.exe.sig
-          sha256sum PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk > SHA256SUMS.txt
+          for f in PowerDeck-Setup.exe powerdeck-helper-linux-*.gz; do test -s "$f.sig" || { echo "::error::$f isn't signed"; exit 1; }; done
+          sha256sum PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk powerdeck-helper-linux-*.gz powerdeck-helper-linux-*.gz.sig install.sh install.ps1 > SHA256SUMS.txt
           notes=$(awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' ../CHANGELOG.md)
-          printf '%s\n\n**Install:** Windows → download `PowerDeck-Setup.exe` and run it. Android → download `PowerDeck.apk` on your phone and open it.\n' "$notes" > notes.md
-          gh release create "v$VERSION" PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk SHA256SUMS.txt \
+          cat > notes.md <<EOF
+          $notes
+
+          ### Install
+          - **Phone (Android):** download \`PowerDeck.apk\` on your phone and open it.
+          - **Windows:** run \`PowerDeck-Setup.exe\`, or in PowerShell: \`irm https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.ps1 | iex\`
+          - **Linux (systemd):** \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sudo sh\`
+
+          Verify a download: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`
+          EOF
+          gh release create "v$VERSION" PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk \
+            powerdeck-helper-linux-*.gz powerdeck-helper-linux-*.gz.sig install.sh install.ps1 SHA256SUMS.txt \
             --title "PowerDeck $VERSION" --notes-file notes.md --latest

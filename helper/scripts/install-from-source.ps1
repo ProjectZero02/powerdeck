@@ -1,13 +1,13 @@
 #Requires -RunAsAdministrator
 <#
   Builds PowerDeck from this checkout and installs it, for use until GitHub releases exist.
-  Run from an elevated PowerShell in the repo's windows\ folder:
+  Run from an elevated PowerShell in the repo's helper\ folder:
       powershell -ExecutionPolicy Bypass -File .\scripts\install-from-source.ps1
   Re-running upgrades in place. Remove with: & "$env:ProgramFiles\PowerDeck\PowerDeck.exe" uninstall
 #>
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-$version = '1.0.0'
+$version = '2.0.0'
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host '== Installing Go (winget)'
@@ -20,7 +20,7 @@ Write-Host '== Building PowerDeck.exe'
 go install github.com/tc-hib/go-winres@latest
 & "$(go env GOPATH)\bin\go-winres.exe" make --in winres/winres.json --out cmd/powerdeck/rsrc --arch amd64 --product-version $version --file-version "$version.0"
 New-Item -ItemType Directory -Force dist | Out-Null
-go build -trimpath -ldflags "-s -w -H=windowsgui -X github.com/projectzero02/powerdeck/windows/internal/version.Version=$version" -o dist\PowerDeck.exe .\cmd\powerdeck
+go build -trimpath -ldflags "-s -w -H=windowsgui -X github.com/projectzero02/powerdeck/helper/internal/version.Version=$version" -o dist\PowerDeck.exe .\cmd\powerdeck
 if ($LASTEXITCODE) { throw 'build failed' }
 
 Write-Host '== Installing'

@@ -83,7 +83,6 @@ func Install(exePath string) ([]Step, error) {
 
 	add("Fast Startup off (full shutdowns)", disableFastStartup(), "")
 	add("Tailscale stays on at the sign-in screen", tailscaleUnattended(), "")
-	add("Presence check in your session", registerCompanion(exePath), "tells PowerDeck when someone is using the PC")
 
 	if err := startService(); err != nil {
 		return steps, fmt.Errorf("start service: %w", err)
@@ -91,16 +90,6 @@ func Install(exePath string) ([]Step, error) {
 	b, _ := json.MarshalIndent(steps, "", "  ")
 	_ = os.WriteFile(filepath.Join(DataDir(), "setup.json"), b, 0o600)
 	return steps, nil
-}
-
-// registerCompanion starts `PowerDeck.exe presence` in every user's session at sign-in.
-func registerCompanion(exePath string) error {
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, runKey, registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	return k.SetStringValue("PowerDeck", `"`+exePath+`" presence`)
 }
 
 // Uninstall stops and removes the service, firewall rule and sign-in entry. The installer deletes
@@ -113,6 +102,7 @@ func Uninstall(purge bool) error {
 	for _, r := range []string{FirewallRule, oldRule} {
 		_ = hidden("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r).Run()
 	}
+	// Older builds started the presence companion from the Run key; the service starts it now.
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, runKey, registry.SET_VALUE); err == nil {
 		_ = k.DeleteValue("PowerDeck")
 		k.Close()

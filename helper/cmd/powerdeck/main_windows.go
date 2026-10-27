@@ -48,6 +48,7 @@ func runService() error {
 			return err
 		}
 		defer closer.Close()
+		go companionLoop(ctx, log)
 		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log})
 		if err != nil {
 			log.Error("PowerDeck exited", "err", err)
@@ -98,4 +99,17 @@ func openWindow() error {
 	cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd.Start()
+}
+
+// The exe is a GUI-subsystem program (no console window flashes when the service or companion
+// starts), so attach to the terminal it was started from, if any, for CLI output.
+func init() {
+	const attachParentProcess = ^uint32(0) // ATTACH_PARENT_PROCESS
+	r, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("AttachConsole").Call(uintptr(attachParentProcess))
+	if r == 0 {
+		return
+	}
+	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+		os.Stdout, os.Stderr = f, f
+	}
 }

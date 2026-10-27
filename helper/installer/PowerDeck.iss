@@ -68,6 +68,8 @@ var
   ResultCode: Integer;
 begin
   Exec(ExpandConstant('{sys}\net.exe'), 'stop PowerDeck', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // The service stops its presence companion; this catches any copy left behind.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM PowerDeck.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
 end;
 
