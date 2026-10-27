@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The NanoKVM only speaks plain HTTP. PowerDeck only reaches it over Tailscale (WireGuard-encrypted),
-     and the PC API uses TLS pinned to the PC's certificate, so cleartext is allowed for those calls. -->
+<!-- No plain HTTP, except to Tailscale (MagicDNS) names: NanoKVMs only speak HTTP, and PowerDeck reaches
+     them only over Tailscale, where WireGuard encrypts the traffic. The helper API is HTTPS, pinned to
+     each device's certificate. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
 </network-security-config>

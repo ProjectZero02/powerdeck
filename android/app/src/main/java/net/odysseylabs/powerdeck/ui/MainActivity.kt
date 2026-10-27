@@ -130,7 +130,7 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     setCountdown = { vm.setCountdown(it) },
                     find = { vm.find(refresh = true) },
                     install = { activity.open(INSTALL_GUIDE) },
-                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
+                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.kvmHost, p.name, user, pw, done) },
                 ),
                 snackbar,
             )
@@ -183,7 +183,7 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     addKey = { n, p, devs -> vm.addKey(d, n, p, devs) },
                     removeKey = { vm.removeKey(d, it) },
                     clearNewKey = vm::clearNewKey,
-                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
+                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.kvmHost, p.name, user, pw, done) },
                     unlinkKvm = { vm.unlinkKvm(d) },
                     setTile = { slot ->
                         val cur = state.tiles.indexOf(d.id)

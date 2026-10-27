@@ -145,6 +145,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         _state.update { it.copy(states = it.states + results) }
         Shortcuts.refreshAll(ctx)
+        viewModelScope.launch { runCatching { deck.linkHelpers(results.toMap()) } }
     }
 
     // ---- Power --------------------------------------------------------------------------------

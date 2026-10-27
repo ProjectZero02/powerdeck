@@ -131,6 +131,10 @@ data class HelperStatus(
     /** Whether AI agents may use this device, and the agent keys this helper holds (owners only). */
     val agents: Agents? = null,
     val caps: List<String> = emptyList(),
+    /** The helper still trusts every personal device on its Tailscale account (upgraded, not yet claimed). */
+    val ownersLegacy: Boolean = false,
+    /** The helpers this one holds a peer key for (owners only; null from helpers before 2.1). */
+    val peerKeys: List<String>? = null,
 ) {
     companion object {
         fun pendingFrom(p: JSONObject?) = p?.let { Pending(it.optString("action"), Instant.parse(it.optString("at")), it.optString("by")) }
@@ -157,6 +161,8 @@ data class HelperStatus(
                 update = o.optJSONObject("update")?.let(HelperUpdate::from),
                 agents = o.optJSONObject("agents")?.let(Agents::from),
                 caps = o.optJSONArray("caps")?.strings() ?: emptyList(),
+                ownersLegacy = o.optJSONObject("owners")?.optBoolean("legacy") ?: false,
+                peerKeys = o.optJSONArray("peerKeys")?.strings(),
             )
         }
     }
@@ -186,6 +192,8 @@ data class HelperUpdate(val available: Boolean, val latest: String?, val install
 data class Peer(val kind: String, val name: String, val dnsName: String?, val address: String, val port: Int, val os: String?, val pin: String?) {
     val isHelper get() = kind == "helper"
     val isKvm get() = kind == "nanokvm" // PiKVM is detected but its API isn't supported yet
+    /** How the app reaches a KVM: its Tailscale name, since plain HTTP is only allowed to those. */
+    val kvmHost get() = dnsName?.trimEnd('.')?.ifEmpty { null } ?: address
 
     companion object {
         fun from(o: JSONObject) = Peer(o.optString("kind"), o.optString("name"), o.optStringOrNull("dnsName"), o.optString("address"),
