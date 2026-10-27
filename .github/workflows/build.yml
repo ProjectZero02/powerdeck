@@ -102,6 +102,14 @@ jobs:
           TOKEN=$(sudo cat /var/lib/powerdeck/local.token)
           api() { curl -sfk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
           api https://127.0.0.1:47321/v2/status | jq -e '.you.kind=="owner" and (.checks|length) > 5'
+          # A new install: explicit owner devices (no "same account" rule), automatic updates off on Linux.
+          api https://127.0.0.1:47321/v2/status | jq -e '.owners.legacy==false and .peerKeys==[]'
+          api https://127.0.0.1:47321/v2/update | jq -e '.auto==false'
+          sudo powerdeck-helper owner list | grep -q "No owner devices"
+          # Loopback and Tailscale addresses only: nothing on all interfaces.
+          ss -ltnH '( sport = :47321 or sport = :47323 )' | tee listen.txt
+          grep -q '127.0.0.1:47321' listen.txt && grep -q '127.0.0.1:47323' listen.txt
+          ! awk '{print $4}' listen.txt | grep -E '^(0\.0\.0\.0|\*|\[::\]):' || { echo "::error::listening on all interfaces"; exit 1; }
           # Schedule a real poweroff 10 minutes out, then cancel it.
           api -X POST https://127.0.0.1:47321/v2/power/shutdown -d '{"delaySeconds":600,"force":true}' | jq -e '.pending.action=="shutdown"'
           api -X POST https://127.0.0.1:47321/v2/power/cancel | jq -e '.pending==null'
@@ -194,6 +202,13 @@ jobs:
           $h = @{ Authorization = "Bearer $tok" }
           $st = Invoke-RestMethod https://127.0.0.1:47321/v2/status -Headers $h -SkipCertificateCheck
           if ($st.you.kind -ne 'owner' -or $st.checks.Count -lt 6) { throw "status: $($st | ConvertTo-Json -Depth 4)" }
+          if ($st.owners.legacy -ne $false) { throw "a new install must not trust the whole Tailscale account: $($st.owners | ConvertTo-Json)" }
+          # Loopback and Tailscale addresses only: nothing on all interfaces.
+          $ls = Get-NetTCPConnection -State Listen -LocalPort 47321,47323 -ErrorAction SilentlyContinue
+          $ls | Format-Table LocalAddress, LocalPort
+          if (-not ($ls | Where-Object { $_.LocalAddress -eq '127.0.0.1' -and $_.LocalPort -eq 47321 })) { throw "not listening on loopback" }
+          $wild = $ls | Where-Object { $_.LocalAddress -in '0.0.0.0', '::' }
+          if ($wild) { throw "listening on all interfaces: $($wild | Format-Table | Out-String)" }
           $st.checks | Format-Table level, title
           # A real InitiateShutdown 10 minutes out, then AbortSystemShutdown.
           $p = Invoke-RestMethod https://127.0.0.1:47321/v2/power/shutdown -Method Post -Headers $h -Body '{"delaySeconds":600,"force":true}' -ContentType 'application/json' -SkipCertificateCheck

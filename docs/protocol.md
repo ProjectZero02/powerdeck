@@ -10,43 +10,71 @@ PowerDeck has three kinds of participants, all on the same [Tailscale](https://t
 
 ## Identity and trust
 
-Helpers listen on TCP **47321** (HTTPS, TLS 1.3, self-signed certificate) and answer only tailnet
-source addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and loopback.
+Helpers listen on TCP **47321** (HTTPS, TLS 1.3, self-signed certificate) and the agent port
+**47323** on **loopback and this device's Tailscale addresses only** (never `0.0.0.0`), and answer
+only tailnet source addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and loopback. Tailscale may
+start after the helper or change address; the bound set is checked again every 10 s. `run --api ADDR`
+/ `--mcp ADDR` (development) bind exactly the given address instead.
 
 On every request the helper asks its local Tailscale who the caller is (`tailscale whois`, cached
 for 60 s per address). A caller is one of:
 
 | Caller | How it's recognised | Allowed |
 |---|---|---|
-| **Owner** | Untagged node owned by the same Tailscale user as this helper's node, not shared in from another tailnet, and not this node itself (a program here reaching its own tailnet address is local, like loopback: it needs the local token) | Everything |
-| **Key holder** | Any tailnet caller presenting `Authorization: Bearer <key>` for a key this helper issued | The key's scopes |
+| **Owner device** | A tailnet node on this helper's owner list (by Tailscale stable node ID) | Everything |
+| **Local** | Loopback, or this node itself, with the local token (CLI, PC window) | Everything |
+| **Key holder** | `Authorization: Bearer <key>` for a key this helper issued | The key's scopes |
 | **Anyone else** | | `GET /v2/hello` only |
 
-Keys are created in two ways:
+### Owner devices
 
-- **Pairing code** (for phones on another Tailscale account, or when the helper's node is tagged so
-  it has no owner): the helper shows an 8-character code (`XXXX-XXXX`, Crockford base32, 40 bits,
-  single use, 10 minutes, 5 wrong guesses and it's gone). `POST /v2/pair` exchanges it for a key
-  with all scopes, for **this device only**: it can't relay to other devices, use `/mcp`, manage
-  keys, or add wake schedules. It may use the raw-MAC `/v2/wake` (a tagged hub has no owner, and a
-  magic packet only turns things on).
-- **Automation keys** (for AI agents and scripts): created by an owner, either from the phone app
-  (`POST /v2/keys`) or on the device (`powerdeck-helper key add NAME --scopes …`).
+A helper keeps an explicit list of owner devices (at most 20). A device gets on it by:
+
+- **Scanning the helper's code.** The QR code (PC window, `powerdeck-helper qr`, Linux installer)
+  always carries the current pairing code. `POST /v2/pair` with a valid code from an untagged node on
+  this helper's own Tailscale account, not shared in, records that node as an owner device and
+  returns `{owner: true, status}` with no key: Tailscale identifies it from then on.
+- **`powerdeck-helper owner add NAME`** on the machine, or `POST /v2/owners {name}` by an owner: any
+  untagged tailnet node that isn't shared in from another tailnet (whoever runs it already controls
+  the helper). This is how a tagged helper, which has no "same account", gets an owner.
+- **Claiming an upgraded helper.** A helper upgraded from 2.0 starts in *legacy* mode: as before,
+  every untagged node of the same Tailscale user counts as an owner, until the first one calls
+  `POST /v2/owners/claim`. That records the caller and ends legacy mode for good. The app does this
+  on its own (`status.owners.legacy` is `true`). New installs never use legacy mode.
+
+Owner devices are listed and removed in the PC window, with `powerdeck-helper owner list|rm`, in the
+app's device page, and with `GET /v2/owners` / `DELETE /v2/owners/{node}`.
+
+### Keys
+
+- **Pairing keys**: a phone on *another* Tailscale account that enters the pairing code (8
+  characters, `XXXX-XXXX`, Crockford base32, 40 bits, single use, 10 minutes, 5 wrong guesses and
+  it's gone) gets a key with `status`, `wake`, `power` and `force` for **this device only**: no
+  `admin`, so it can't manage keys, settings, owners or updates, relay to other devices, use `/mcp`,
+  or add wake schedules. It may use the raw-MAC `/v2/wake` (a magic packet only turns things on).
+- **Automation keys** (AI agents and scripts): created by an owner, from the app
+  (`POST /v2/keys`), the PC window, or `powerdeck-helper key add NAME --scopes …`.
+- **Peer keys** (helper to helper): kind `peer`, scopes `status`, `wake` and `power`. Helpers no
+  longer reach each other "as the owner". The owner's app creates one on the target
+  (`POST /v2/keys {name: <caller's name>, kind: "peer"}`, replacing an older one of that name) and
+  hands it to the caller (`PUT /v2/peers/{name}/key {key}`, `name` as in the caller's
+  `/v2/peers`). The caller presents it on every call to that peer. A peer key can't relay further,
+  manage keys, change settings or use `/mcp`; it may carry the `X-PowerDeck-For` and
+  `X-PowerDeck-Agent` relay headers. `status.peerKeys` lists the peers a helper holds a key for.
 
 Key scopes: `status`, `wake`, `power` (shutdown/restart/cancel), `force` (shut down even while someone
-is using the machine), `admin` (keys, settings, fixes). A pairing-code key gets all of them; an
-automation key gets what it was created with (default `status,wake`) and can't hold `force` or
-`admin`. The helper stores only the SHA-256 of each key. Keys are 32 random bytes, base64url,
-prefixed `pdk_`.
+is using the machine), `admin` (keys, settings, fixes). Automation keys default to `status,wake` and
+can't hold `force` or `admin`. The helper stores only the SHA-256 of each key. Keys are 32 random
+bytes, base64url, prefixed `pdk_`.
 
 A key with a device list is held to it on every route, including this device's own
 `/v2/power` (`403 device`), and can't use the raw-MAC `/v2/wake` (it wakes by name through the
 relay). If Tailscale can't identify a caller because it isn't answering, the helper replies
 `503 tailscale` (retry) rather than treating the caller as a stranger.
 
-An automation key is **bound to the tailnet node that first uses it**: from then on the helper
-accepts it only from that node (checked with `whois`), so a leaked key is useless elsewhere.
-It can also be limited to named devices (see [Agents](#agents-mcp)).
+Automation and peer keys are **bound to the tailnet node that first uses them**: from then on the
+helper accepts them only from that node (checked with `whois`), so a leaked key is useless elsewhere.
+Automation keys can also be limited to named devices (see [Agents](#agents-mcp)).
 
 Ten failed attempts (bad key or code) from one address within 10 minutes block that address for 10 minutes.
 
@@ -67,8 +95,12 @@ meets **one** helper, then asks it for the rest:
    QR link: `powerdeck://add?v=2&n=<name>&h=<tailnet IPv4>&p=47321&f=<cert pin>[&c=<pairing code>]`.
 2. **Find**: `GET /v2/peers` on that helper returns every PowerDeck helper and KVM it found on the
    tailnet. The phone offers them as "Found on your tailnet" and the user ticks the ones to add.
-3. **Per device**: the phone calls `GET /v2/status` on each new helper (owner trust needs no
-   pairing). For a KVM it asks for the KVM's password and which device's power button it's wired to.
+3. **Per device**: the phone calls `GET /v2/status` on each new helper. A helper that answers
+   `401 not_owner` needs the code: scanned from its QR code, or typed. For a KVM it asks for the
+   KVM's password and which device's power button it's wired to, and links it by its Tailscale
+   name (see [Phone → NanoKVM](#phone--nanokvm)).
+4. **Linking helpers**: after each refresh the app gives every pair of helpers it owns peer keys
+   for each other (see [Keys](#keys)), once per pair.
 
 ## Helper API
 
@@ -88,15 +120,20 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | POST | `/v2/schedules` | `admin` | `Schedule` without `id` → `{id}`. Wake schedules (another device) are owner-only |
 | DELETE | `/v2/schedules/{id}` | `admin` | → `204` |
 | GET | `/v2/events` | `status` | → `{events:[{at, who, action, result}]}` (last 200) |
-| GET | `/v2/keys` | owner | → `{keys:[{id, name, scopes, createdAt, lastUsed}]}` |
-| POST | `/v2/keys` | owner | `{name, scopes, devices?, allowSelf?}` → `{id, key}` (shown once) |
+| GET | `/v2/keys` | owner | → `{keys:[{id, name, kind, scopes, devices, bound, createdAt, lastUsed}]}` |
+| POST | `/v2/keys` | owner | `{name, scopes, devices?, allowSelf?}` → `{id, key}` (shown once). `{name, kind:"peer"}` creates a [peer key](#keys) |
+| GET | `/v2/owners` | owner | → `{legacy, owners:[{node, name, addedAt, addedBy, you}]}` |
+| POST | `/v2/owners` | owner | `{name}` (Tailscale name) → `{node, name}`; `404 unknown_device`, `400 not_personal` (tagged or shared in) |
+| POST | `/v2/owners/claim` | owner | `{deviceName?}` → `204`; records the caller (ends legacy mode) |
+| DELETE | `/v2/owners/{node}` | owner | → `204` |
+| PUT | `/v2/peers/{name}/key` | owner | `{key}` → `204`: the peer key this helper presents to that peer (`""` removes it) |
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
-| GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto}`; `?check=1` asks GitHub first |
+| GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto, autoAt?, pausedUntil?}`; `?check=1` asks GitHub first. `autoAt`: when an available release installs on its own |
 | POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown, `502 update_check` when GitHub can't be reached. The helper restarts a few seconds later; `installing` clears itself after 10 minutes if it doesn't, with `error` saying so |
-| POST | `/v2/settings` | owner | `{autoUpdate?, agents?}` → `204`. `autoUpdate` (default on): check every 6 hours, install when nothing is counting down. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work |
+| POST | `/v2/settings` | owner | `{autoUpdate?, agents?, pauseUpdates?}` → `204`. `autoUpdate` (default on for Windows, off for new Linux installs): check every 6 hours, install a release once it has been public for 72 hours and nothing is counting down (see [Updates](#updates)). `pauseUpdates`: `true` holds automatic installs for 7 days, `false` resumes. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work |
 | POST | `/v2/uninstall` | owner | `{confirm: <this device's name>}` → `202`, then the helper uninstalls itself and deletes its keys and settings. `409 pending` during a countdown. Offered when `caps` has `uninstall` |
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
-| POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
+| POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{owner:true, status}` (same account: now an owner device) or `{key, status}` (another account) |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
 | POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp) |
 | POST | `/mcp` | owner or automation key | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
@@ -204,20 +241,23 @@ a device going offline unexpectedly. Actions started on the phone show live prog
 
 AI agents and scripts talk to **one always-on helper** (a "hub", e.g. a home server). The hub
 relays to the other devices, because a PC that's off can't answer for itself: it wakes devices
-through its own LAN and forwards shutdown/restart/status to their helpers. The hub reaches other
-helpers as their owner (same Tailscale user), so this only works between devices of one owner.
-When it relays for an agent it adds `X-PowerDeck-For: <key name>` (shown in the target's history)
-and `X-PowerDeck-Agent: 1`, so the target applies its own `agents` switch too. Both headers are
-honoured from owners only. Helpers before 2.0.3 don't send or check `X-PowerDeck-Agent`; there the
+through its own LAN and forwards shutdown/restart/status to their helpers with its
+[peer key](#keys) for each (helpers before 2.1 relied on being on the same Tailscale account
+instead). When it relays for an agent it adds `X-PowerDeck-For: <key name>` (shown in the target's
+history) and `X-PowerDeck-Agent: 1`, so the target applies its own `agents` switch too. Both
+headers are honoured from owner devices and peer keys only. Helpers before 2.0.3 don't send or check `X-PowerDeck-Agent`; there the
 hub's remembered copy of the switch (refreshed with `GET /v2/peers?refresh=1`) is the only check.
 
 The hub serves MCP (streamable HTTP, stateless JSON-RPC `tools/list` and `tools/call`) with
 `Authorization: Bearer <automation key>` at:
 
-- `http://<hub tailnet address>:47323/mcp`: plain HTTP for agent tools that can't use a self-signed
-  certificate. Tailscale encrypts it end to end; this port serves only `/mcp` and only answers
-  tailnet addresses.
-- `https://<hub>:47321/mcp`: the same, on the pinned HTTPS port.
+- `https://<hub>:47321/mcp`: **recommended**, on the pinned HTTPS port.
+- `http://<hub tailnet address>:47323/mcp`: plain HTTP, kept for agent tools that can't pin a
+  self-signed certificate. The key crosses it in the clear *inside* Tailscale: the port is bound to
+  the Tailscale addresses (and loopback) only, so nothing outside the tailnet can even connect, and
+  WireGuard encrypts every packet end to end between the two nodes. It serves only `/mcp`. Anyone
+  who can read traffic on the hub or the agent's machine themselves could read the key, which is
+  also true of the key in the agent's config; keys are bound to one node, so a copy is useless elsewhere.
 
 | Tool | Annotations | Does |
 |---|---|---|
@@ -238,21 +278,31 @@ Rules the helper enforces for automation keys, whatever the agent asks:
 
 ## Phone → NanoKVM
 
-The NanoKVM's own web API (firmware 2.x), over Tailscale only:
+The NanoKVM's own web API (firmware 2.x), over Tailscale only. The app reaches a KVM by its
+**Tailscale (MagicDNS) name**, `<name>.<tailnet>.ts.net`: Android allows plain HTTP only to
+`*.ts.net` names (`network_security_config.xml`), and the app refuses other addresses. KVMs linked
+by IP address before 2.1 are renamed automatically from the helpers' peer lists.
 
 On `401` the phone logs in again once and retries.
 
 - `POST /api/auth/login` `{username, password}` with the password encoded as the NanoKVM UI does:
   `encodeURIComponent(CryptoJS.AES.encrypt(pw, "nanokvm-sipeed-2024"))`. That key is public, so the
-  password is only as private as the channel; Tailscale encrypts it. Token: `data.token` or the
-  `nano-kvm-token` cookie.
+  password is only as private as the channel; Tailscale encrypts it. Token: the `nano-kvm-token`
+  cookie (HttpOnly from 2.5; up to 2.4.x also `data.token`).
 - `GET /api/vm/gpio` → `data.pwr` (power LED).
 - `POST /api/vm/gpio` `{type:"power", duration:800}` short press; `duration:12000` force off.
 - `POST /api/network/wol` `{mac}`.
 
 ## Updates
 
-GitHub `releases/latest` is the source of truth. Every release has `SHA256SUMS.txt` and an Ed25519
+GitHub `releases/latest` is the source of truth.
+
+**Staged.** A helper installs a release on its own only once it has been public for **72 hours**
+(GitHub's `published_at`, or when the helper first saw it if that's later), so a bad or forged
+release can be pulled before most helpers take it. Owners can pause automatic installs for 7 days
+(`pauseUpdates`). Installing from the app or the PC window doesn't wait. Automatic updates are on by
+default on Windows and **off for new Linux installs** (servers); an upgrade keeps the existing
+setting. See [SECURITY.md](../SECURITY.md) for what the signing key protects and what it doesn't. Every release has `SHA256SUMS.txt` and an Ed25519
 signature (`.sig`, base64) for each helper download, checked against the public key built into the helper.
 
 - **Windows** downloads `PowerDeck-Setup.exe` + `.sig`, verifies, runs it with `/VERYSILENT`.
