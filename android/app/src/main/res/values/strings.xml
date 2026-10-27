@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PowerDeck</string>
+    <string name="widget_name">PowerDeck</string>
+    <string name="widget_description">Power state and one-tap buttons for your PC and server</string>
+    <string name="tile_pc">PC</string>
+    <string name="tile_server">Server</string>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The NanoKVM only speaks plain HTTP. PowerDeck only reaches it over Tailscale (WireGuard-encrypted),
+     and the PC API uses TLS pinned to the PC's certificate, so cleartext is allowed for those calls. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,22 @@
+# Go / Windows build outputs
+windows/dist/
+windows/demo
+windows/cmd/powerdeck/rsrc_windows_*.syso
+*.exe
+!windows/assets/*.exe
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+*.apk
+*.p12
+*.jks
+*.keystore
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

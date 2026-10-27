@@ -1,0 +1,34 @@
+name: Bug report
+description: Something doesn't work as described in the README
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security problems go through Security → Report a vulnerability, not here.**
+        Please remove IP addresses, device names and passwords from logs before posting.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations: { required: true }
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part?
+      options: [Windows app, Android app, Pairing, Server control (NanoKVM), Updates, Other]
+    validations: { required: true }
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: PowerDeck version (top of the PC window / app Settings), Windows version, Android version
+      placeholder: "PowerDeck 1.0.0, Windows 11 24H2, Android 16"
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Windows log is `C:\ProgramData\PowerDeck\logs\powerdeck.log`. Paste the relevant lines.
+      render: text

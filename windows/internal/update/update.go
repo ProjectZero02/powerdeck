@@ -1,0 +1,236 @@
+// Package update checks GitHub Releases for a newer PowerDeck and installs it.
+//
+// Installers are only run after their Ed25519 signature (PowerDeck-Setup.exe.sig, made by the release
+// workflow) verifies against PublicKey, so a compromised download location can't push code to the PC.
+package update
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/projectzero02/powerdeck/windows/internal/version"
+)
+
+// PublicKey verifies release installers. The private half lives only in the release workflow's secrets.
+const PublicKey = "CJxP8WfqitXsZh9tobWk/cyQbfMMVkk2+iLCHWYkucs="
+
+const (
+	InstallerAsset = "PowerDeck-Setup.exe"
+	SignatureAsset = "PowerDeck-Setup.exe.sig"
+)
+
+// Release is the latest published release.
+type Release struct {
+	Version string            `json:"version"`
+	URL     string            `json:"url"`
+	Assets  map[string]string `json:"-"`
+}
+
+// Status is shown in the PC app.
+type Status struct {
+	Current    string    `json:"current"`
+	Latest     string    `json:"latest,omitempty"`
+	Available  bool      `json:"available"`
+	CheckedAt  time.Time `json:"checkedAt,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Installing bool      `json:"installing"`
+}
+
+// Newer reports whether version a is newer than b ("1.10.0" > "1.9.3"). Non-numeric parts compare as 0.
+func Newer(a, b string) bool {
+	pa, pb := parts(a), parts(b)
+	for i := 0; i < 3; i++ {
+		if pa[i] != pb[i] {
+			return pa[i] > pb[i]
+		}
+	}
+	return false
+}
+
+func parts(v string) [3]int {
+	var out [3]int
+	v = strings.TrimPrefix(strings.SplitN(v, "-", 2)[0], "v")
+	for i, p := range strings.SplitN(v, ".", 3) {
+		out[i], _ = strconv.Atoi(p)
+	}
+	return out
+}
+
+// Verify checks an installer against its detached signature (base64 text).
+func Verify(installer, sig []byte) error {
+	pub, err := base64.StdEncoding.DecodeString(PublicKey)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return errors.New("bad embedded public key")
+	}
+	s, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sig)))
+	if err != nil {
+		return fmt.Errorf("signature is not base64: %w", err)
+	}
+	if !ed25519.Verify(pub, installer, s) {
+		return errors.New("signature does not match")
+	}
+	return nil
+}
+
+// Manager keeps update state and performs checks and installs.
+type Manager struct {
+	mu      sync.Mutex
+	status  Status
+	latest  *Release
+	client  *http.Client
+	api     string // GitHub API base, overridable for tests
+	dataDir string
+	log     *slog.Logger
+	run     func(path string) error // starts the installer; OS-specific
+}
+
+func NewManager(dataDir string, log *slog.Logger) *Manager {
+	return &Manager{
+		status:  Status{Current: version.Version},
+		client:  &http.Client{Timeout: 60 * time.Second},
+		api:     "https://api.github.com",
+		dataDir: dataDir,
+		log:     log,
+		run:     runInstaller,
+	}
+}
+
+// Status returns the current update state.
+func (m *Manager) Status() Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.status
+}
+
+// Check asks GitHub for the latest release.
+func (m *Manager) Check(ctx context.Context) (Status, error) {
+	rel, err := m.fetchLatest(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status.CheckedAt = time.Now().UTC()
+	if err != nil {
+		m.status.Error = err.Error()
+		return m.status, err
+	}
+	m.latest = rel
+	m.status.Error = ""
+	m.status.Latest = rel.Version
+	m.status.Available = version.IsRelease() && Newer(rel.Version, version.Version)
+	return m.status, nil
+}
+
+func (m *Manager) fetchLatest(ctx context.Context) (*Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.api+"/repos/"+version.Repo+"/releases/latest", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "PowerDeck/"+version.Version)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub answered %s", resp.Status)
+	}
+	var body struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+		Assets  []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, err
+	}
+	rel := &Release{Version: strings.TrimPrefix(body.TagName, "v"), URL: body.HTMLURL, Assets: map[string]string{}}
+	for _, a := range body.Assets {
+		rel.Assets[a.Name] = a.URL
+	}
+	return rel, nil
+}
+
+func (m *Manager) download(ctx context.Context, url string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "PowerDeck/"+version.Version)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// Install downloads, verifies and starts the latest installer. The installer stops this service,
+// replaces the files and starts the new version.
+func (m *Manager) Install(ctx context.Context) error {
+	m.mu.Lock()
+	rel, avail, busy := m.latest, m.status.Available, m.status.Installing
+	if busy {
+		m.mu.Unlock()
+		return errors.New("an update is already being installed")
+	}
+	m.status.Installing = true
+	m.mu.Unlock()
+	err := m.install(ctx, rel, avail)
+	if err != nil {
+		m.mu.Lock()
+		m.status.Installing = false
+		m.status.Error = err.Error()
+		m.mu.Unlock()
+	}
+	return err
+}
+
+func (m *Manager) install(ctx context.Context, rel *Release, avail bool) error {
+	if rel == nil || !avail {
+		return errors.New("no update available")
+	}
+	exeURL, sigURL := rel.Assets[InstallerAsset], rel.Assets[SignatureAsset]
+	if exeURL == "" || sigURL == "" {
+		return errors.New("release is missing the installer or its signature")
+	}
+	exe, err := m.download(ctx, exeURL, 200<<20)
+	if err != nil {
+		return err
+	}
+	sig, err := m.download(ctx, sigURL, 4<<10)
+	if err != nil {
+		return err
+	}
+	if err := Verify(exe, sig); err != nil {
+		return fmt.Errorf("refusing update %s: %w", rel.Version, err)
+	}
+	dir := filepath.Join(m.dataDir, "updates")
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "PowerDeck-Setup-"+rel.Version+".exe")
+	if err := os.WriteFile(path, exe, 0o600); err != nil {
+		return err
+	}
+	m.log.Info("update verified, starting installer", "version", rel.Version)
+	return m.run(path)
+}

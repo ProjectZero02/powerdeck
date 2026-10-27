@@ -1,0 +1,224 @@
+name: Build
+
+# Every push and pull request builds and tests both apps. A tag like v1.2.3 also signs them and
+# publishes a GitHub release with PowerDeck-Setup.exe, its update signature, PowerDeck.apk and checksums.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # SHA-256 of the Android release signing certificate; release APKs must match it.
+  APK_CERT_SHA256: 1f1e38e8d301a80d1c4e8451c1025e5be68d8ccd2d7c485c99b6b43c540e00fc
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must look like v1.2.3"; exit 1; }
+            echo "version=$v" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-ci" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  pc-test:
+    name: PC app · tests
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: windows } }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: windows/go.mod, cache-dependency-path: windows/go.sum }
+      - run: go vet ./...
+      - run: GOOS=windows go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Screenshot the PC window (sample data)
+        run: |
+          go build -o demo ./tools/demo && (./demo > demo.log 2>&1 &)
+          for i in $(seq 50); do curl -sf -o /dev/null http://127.0.0.1:47322/ && break; sleep 0.2; done
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --force-device-scale-factor=1 \
+            --window-size=1060,1640 --virtual-time-budget=4000 --screenshot="$PWD/pc-window.png" http://127.0.0.1:47322/
+      - uses: actions/upload-artifact@v7
+        with: { name: pc-window-screenshot, path: windows/pc-window.png }
+
+  pc-windows:
+    name: PC app · build, install, uninstall on Windows
+    needs: version
+    runs-on: windows-latest
+    defaults: { run: { working-directory: windows, shell: pwsh } }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: windows/go.mod, cache-dependency-path: windows/go.sum }
+      - name: Build PowerDeck.exe
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          $fv = ($env:VERSION -split '-')[0]
+          go-winres make --in winres/winres.json --out cmd/powerdeck/rsrc --arch amd64 --product-version $env:VERSION --file-version "$fv.0"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -ldflags "-s -w -H=windowsgui -X github.com/projectzero02/powerdeck/windows/internal/version.Version=$env:VERSION" -o dist/PowerDeck.exe ./cmd/powerdeck
+      - name: Build installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DAppVersion=$env:VERSION" "/DSourceExe=..\dist\PowerDeck.exe" installer\PowerDeck.iss
+          if ($LASTEXITCODE) { throw "ISCC failed" }
+          Get-Item dist\PowerDeck-Setup.exe | Format-List Name, Length
+
+      - name: "End-to-end: silent install"
+        run: |
+          $p = Start-Process dist\PowerDeck-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode) { throw "installer exit $($p.ExitCode)" }
+          Get-Content "$env:TEMP\PowerDeck-install.log" -ErrorAction SilentlyContinue
+          $svc = Get-Service PowerDeck
+          if ($svc.Status -ne 'Running') { throw "service is $($svc.Status)" }
+          if ((Get-CimInstance Win32_Service -Filter "Name='PowerDeck'").StartMode -ne 'Auto') { throw "service is not automatic" }
+          $rule = Get-NetFirewallRule -DisplayName 'PowerDeck (phone, tailnet only)'
+          $addr = ($rule | Get-NetFirewallAddressFilter).RemoteAddress
+          if ($addr -notcontains '100.64.0.0/255.192.0.0' -and $addr -notcontains '100.64.0.0/10') { throw "firewall remote addresses: $addr" }
+          $fs = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power').HiberbootEnabled
+          if ($fs -ne 0) { throw "Fast Startup still on" }
+          foreach ($f in 'state.json','cert.pem','key.pem','setup.json') {
+            if (-not (Test-Path "$env:ProgramData\PowerDeck\$f")) { throw "missing $f" }
+          }
+          $acl = (Get-Acl "$env:ProgramData\PowerDeck").Access | ForEach-Object { $_.IdentityReference.Value }
+          if ($acl | Where-Object { $_ -match 'Users|Everyone' }) { throw "data folder readable by ordinary users: $acl" }
+          Get-Content "$env:ProgramData\PowerDeck\setup.json"
+
+      - name: "End-to-end: phone API and PC window"
+        run: |
+          for ($i = 0; $i -lt 30; $i++) { try { $info = Invoke-RestMethod https://127.0.0.1:47321/v1/info -SkipCertificateCheck; break } catch { Start-Sleep 1 } }
+          if ($info.app -ne 'PowerDeck' -or $info.version -ne $env:VERSION) { throw "info: $($info | ConvertTo-Json)" }
+          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/status -SkipCertificateCheck -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 401) { throw "status without token: $($r.StatusCode)" }
+          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/pair -Method Post -Body '{"code":"wrong"}' -ContentType 'application/json' -SkipCertificateCheck -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 403) { throw "pair with a wrong code: $($r.StatusCode)" }
+          $r = Invoke-WebRequest https://127.0.0.1:47321/v1/power/shutdown -Method Post -SkipCertificateCheck -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 401) { throw "unauthenticated shutdown: $($r.StatusCode)" }
+          $page = Invoke-WebRequest http://127.0.0.1:47322/
+          $key = [regex]::Match($page.Content, 'name="pd-key" content="([^"]+)"').Groups[1].Value
+          if (-not $key) { throw "no key in PC window" }
+          $state = Invoke-RestMethod http://127.0.0.1:47322/api/state -Headers @{ 'X-PowerDeck-Key' = $key }
+          $state | ConvertTo-Json -Depth 5
+          $r = Invoke-WebRequest http://127.0.0.1:47322/api/state -SkipHttpErrorCheck
+          if ($r.StatusCode -ne 403) { throw "PC window API without key: $($r.StatusCode)" }
+
+      - name: "End-to-end: upgrade in place (reinstall over itself)"
+        run: |
+          $p = Start-Process dist\PowerDeck-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode) { throw "reinstall exit $($p.ExitCode)" }
+          if ((Get-Service PowerDeck).Status -ne 'Running') { throw "service not running after reinstall" }
+
+      - name: "End-to-end: silent uninstall leaves nothing behind"
+        run: |
+          # The uninstaller re-launches itself from %TEMP%, so wait for the outcome rather than the process.
+          Start-Process "$env:ProgramFiles\PowerDeck\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path "$env:ProgramFiles\PowerDeck\unins000.exe"); $i++) { Start-Sleep 1 }
+          if (Get-Service PowerDeck -ErrorAction SilentlyContinue) { throw "service still registered" }
+          if (Get-NetFirewallRule -DisplayName 'PowerDeck (phone, tailnet only)' -ErrorAction SilentlyContinue) { throw "firewall rule left behind" }
+          if (Test-Path "$env:ProgramData\PowerDeck") { throw "data folder left behind" }
+          if (Test-Path "$env:ProgramFiles\PowerDeck\PowerDeck.exe") { throw "program files left behind" }
+
+      - name: Sign installer for in-app updates
+        if: needs.version.outputs.release == 'true'
+        env:
+          POWERDECK_UPDATE_SIGNING_KEY: ${{ secrets.POWERDECK_UPDATE_SIGNING_KEY }}
+        run: go run ./tools/sign dist/PowerDeck-Setup.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            windows/dist/PowerDeck-Setup.exe
+            windows/dist/PowerDeck-Setup.exe.sig
+          if-no-files-found: error
+
+  android:
+    name: Android app · tests, screenshots, APK
+    needs: version
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: android } }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: "21" }
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Release keystore
+        if: needs.version.outputs.release == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.POWERDECK_APK_KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "POWERDECK_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+      - name: Unit tests and screenshots
+        run: ./gradlew --no-configuration-cache testDebugUnitTest -Proborazzi.test.record=true
+      - name: Build release APK
+        env:
+          POWERDECK_KEYSTORE_PASSWORD: ${{ secrets.POWERDECK_APK_KEYSTORE_PASSWORD }}
+          POWERDECK_KEY_PASSWORD: ${{ secrets.POWERDECK_APK_KEYSTORE_PASSWORD }}
+          POWERDECK_KEY_ALIAS: powerdeck
+        run: |
+          ./gradlew assembleRelease -PversionName="$VERSION"
+          cp app/build/outputs/apk/release/app-release.apk PowerDeck.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs PowerDeck.apk | tee signer.txt
+          if [ "${{ needs.version.outputs.release }}" = "true" ]; then
+            grep -qi "SHA-256 digest: $APK_CERT_SHA256" signer.txt || { echo "::error::APK not signed with the release key"; exit 1; }
+          fi
+      - uses: actions/upload-artifact@v7
+        with: { name: android, path: android/PowerDeck.apk, if-no-files-found: error }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with: { name: android-screenshots, path: android/app/build/outputs/roborazzi/ }
+
+  release:
+    name: Publish release
+    if: needs.version.outputs.release == 'true'
+    needs: [version, pc-test, pc-windows, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with: { path: out, merge-multiple: true }
+      - name: Build provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/PowerDeck-Setup.exe
+            out/PowerDeck.apk
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cd out
+          ls -la
+          test -s PowerDeck-Setup.exe.sig
+          sha256sum PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk > SHA256SUMS.txt
+          notes=$(awk -v v="## $VERSION" '$0==v{f=1;next} /^## /{f=0} f' ../CHANGELOG.md)
+          printf '%s\n\n**Install:** Windows → download `PowerDeck-Setup.exe` and run it. Android → download `PowerDeck.apk` on your phone and open it.\n' "$notes" > notes.md
+          gh release create "v$VERSION" PowerDeck-Setup.exe PowerDeck-Setup.exe.sig PowerDeck.apk SHA256SUMS.txt \
+            --title "PowerDeck $VERSION" --notes-file notes.md --latest
