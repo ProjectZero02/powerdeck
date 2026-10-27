@@ -78,7 +78,7 @@ func (l *Linux) Presence() *Presence {
 		if syscall.Stat("/dev/"+tty, &st) != nil {
 			return time.Time{}, false
 		}
-		return time.Unix(st.Atim.Sec, st.Atim.Nsec), true
+		return time.Unix(int64(st.Atim.Sec), int64(st.Atim.Nsec)), true
 	}, time.Now())
 }
 
