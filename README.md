@@ -17,6 +17,10 @@
   <img src="docs/images/welcome-pairing.png" width="200" alt="Pairing with a PC">
 </p>
 
+<p align="center">
+  <img src="docs/images/pc-window.png" width="560" alt="The PowerDeck window on the PC: pairing QR codes, paired phones and setup checks">
+</p>
+
 ---
 
 PowerDeck is two small apps:
