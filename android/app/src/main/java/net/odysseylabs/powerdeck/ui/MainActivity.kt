@@ -148,11 +148,15 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     addWidget = { Shortcuts.pinWidget(ctx) },
                     addTiles = { Shortcuts.addTiles(ctx, state.devices, state.tiles) { slot, d -> vm.setTile(slot, d) } },
                     checkUpdate = vm::checkUpdate,
+                    installUpdate = vm::installUpdate,
                     updateDevices = vm::updateAllHelpers,
                     setDevicesAutoUpdate = vm::setHelperAutoUpdate,
                     openProject = { activity.open("https://github.com/ProjectZero02/powerdeck") },
                 ),
                 helpers = vm.helperUpdates(state),
+                update = state.update,
+                appCheck = state.appCheck,
+                snackbar = snackbar,
             )
         }
         route.startsWith("device:") -> {

@@ -45,6 +45,8 @@ data class UiState(
     val settings: Settings = Settings(),
     val tiles: List<String?> = emptyList(),
     val update: Release? = null,
+    /** The phone app's update check from Settings: null before any, then checking, then done. */
+    val appCheck: AppCheck? = null,
     val add: AddStep = AddStep.Idle,
     val found: List<Peer>? = null,
     val finding: Boolean = false,
@@ -60,6 +62,8 @@ sealed interface AddStep {
     data class Review(val info: AddInfo, val external: Boolean) : AddStep
     data class Failed(val message: String) : AddStep
 }
+
+enum class AppCheck { Checking, UpToDate, Failed }
 
 /** Someone is using the device: ask before forcing. */
 data class ForcePrompt(val device: Device, val restart: Boolean, val ask: Ask)
@@ -505,12 +509,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun checkUpdate() {
+        if (_state.value.appCheck == AppCheck.Checking) return
+        _state.update { it.copy(appCheck = AppCheck.Checking) }
         viewModelScope.launch {
             val r = runCatching { Updater.available() }.getOrElse {
+                _state.update { it.copy(appCheck = AppCheck.Failed) }
                 _messages.send("Couldn't check for updates. Try again when you're online.")
                 return@launch
             }
-            _state.update { it.copy(update = r) }
+            _state.update { it.copy(update = r, appCheck = if (r == null) AppCheck.UpToDate else null) }
             _messages.send(if (r != null) "PowerDeck ${r.version} is available." else "PowerDeck is up to date.")
         }
     }

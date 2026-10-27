@@ -238,6 +238,10 @@ class ScreenshotTest {
     }
 
     @Test fun settings() = shot("settings") { SettingsScreen(Settings(), SettingsActions()) }
+    @Test fun settingsUpdate() {
+        shot("settings-update") { SettingsScreen(Settings(), SettingsActions(), update = Release("9.9.9", "", null, "")) }
+        compose.onNodeWithText("PowerDeck 9.9.9 is ready. Tap to install").assertExists()
+    }
 
     /** The README banner and GitHub social preview: the real screens in phone frames. */
     @Config(qualifiers = "w1280dp-h640dp-hdpi")

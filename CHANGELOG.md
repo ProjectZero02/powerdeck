@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.4
+
+- **Settings → Updates** now shows what happened. Checking the app for an update says "Checking…", then "Up to date" or "PowerDeck x.y.z is ready" with an **Update** button. Before, the result only appeared after going back to the home screen. **Update devices now** and the automatic-updates switch also report their result on the Settings screen.
+
 ## 2.0.3
 
 A proper Windows window, a scanner that works everywhere, and simpler controls.
