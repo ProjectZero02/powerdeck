@@ -48,7 +48,7 @@ func New(d Deps) *Fleet {
 	}
 	if d.Call == nil {
 		d.Call = func(ctx context.Context, p store.Peer, method, path string, body, out any, onBehalfOf string) error {
-			return peer.Do(ctx, p.Address, p.Port, p.Pin, method, path, body, out, onBehalfOf)
+			return peer.Do(ctx, p.Address, p.Port, p.Pin, p.Key, method, path, body, out, onBehalfOf)
 		}
 	}
 	return &Fleet{Deps: d}
@@ -164,7 +164,7 @@ func (f *Fleet) Wake(name string) ([]string, error) {
 	return f.Deps.Wake(p.MAC, own.LAN)
 }
 
-// Forward calls a remembered helper's API as this helper (its owner), on behalf of who.
+// Forward calls a remembered helper's API with this helper's peer key for it, on behalf of who.
 func (f *Fleet) Forward(ctx context.Context, name, method, path string, body, out any, who string) error {
 	p, err := f.Peer(name)
 	if err != nil {

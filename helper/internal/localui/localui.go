@@ -100,6 +100,7 @@ func New(d Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/pairing/renew", u.keyed(u.renew))
 	mux.HandleFunc("POST /api/keys", u.keyed(u.addKey))
 	mux.HandleFunc("POST /api/keys/{id}/remove", u.keyed(u.removeKey))
+	mux.HandleFunc("POST /api/owners/{node}/remove", u.keyed(u.removeOwner))
 	mux.HandleFunc("POST /api/checks/{id}/fix", u.keyed(u.fix))
 	mux.HandleFunc("POST /api/settings", u.keyed(u.settings))
 	mux.HandleFunc("POST /api/update/check", u.keyed(u.updateCheck))
@@ -167,16 +168,14 @@ func AddLink(name string, ip netip.Addr, port int, pin, code string) string {
 	return "powerdeck://add?" + q.Encode()
 }
 
-func (u *ui) addLink(withCode bool) (string, error) {
+// addLink is the QR payload. It always carries the current pairing code: scanning it is how a phone
+// becomes an owner device.
+func (u *ui) addLink() (string, error) {
 	ip, ok := u.TailnetIP()
 	if !ok {
 		return "", fmt.Errorf("this PC has no Tailscale address. Is Tailscale running and signed in?")
 	}
-	code := ""
-	if withCode {
-		code = u.Pairing.Current().Value
-	}
-	return AddLink(u.Name, ip, u.APIPort, u.Fingerprint, code), nil
+	return AddLink(u.Name, ip, u.APIPort, u.Fingerprint, u.Pairing.Current().Value), nil
 }
 
 type keyView struct {
@@ -191,7 +190,7 @@ type keyView struct {
 
 func (u *ui) state(w http.ResponseWriter, r *http.Request) {
 	code := u.Pairing.Current()
-	_, linkErr := u.addLink(false)
+	_, linkErr := u.addLink()
 	keys := []keyView{}
 	for _, k := range u.Store.Keys() {
 		keys = append(keys, keyView{ID: k.ID, Name: k.Name, Kind: k.Kind, Scopes: k.Scopes, Devices: k.Devices, CreatedAt: k.CreatedAt, LastUsed: k.LastUsed})
@@ -207,21 +206,23 @@ func (u *ui) state(w http.ResponseWriter, r *http.Request) {
 		checks = []check.Result{}
 	}
 	body := map[string]any{
-		"name":        u.Name,
-		"os":          u.OS,
-		"version":     version.Version,
-		"tailnetIP":   ip.String(),
-		"network":     n,
-		"pairCode":    code.Value,
-		"pairExpires": code.Expires,
-		"appUrl":      AppDownloadURL,
-		"mcpUrl":      "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(MCPPort)) + "/mcp",
-		"keys":        keys,
-		"peers":       peers,
-		"events":      u.Store.Events(),
-		"checks":      checks,
-		"update":      u.Update.Status(),
-		"settings":    u.Store.Settings(),
+		"name":         u.Name,
+		"os":           u.OS,
+		"version":      version.Version,
+		"tailnetIP":    ip.String(),
+		"network":      n,
+		"pairCode":     code.Value,
+		"pairExpires":  code.Expires,
+		"appUrl":       AppDownloadURL,
+		"mcpUrl":       "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(MCPPort)) + "/mcp",
+		"keys":         keys,
+		"owners":       u.Store.Owners(),
+		"ownersLegacy": u.Store.OwnerMode() == store.OwnersLegacy,
+		"peers":        peers,
+		"events":       u.Store.Events(),
+		"checks":       checks,
+		"update":       u.Update.Status(),
+		"settings":     u.Store.Settings(),
 	}
 	if linkErr != nil {
 		body["linkError"] = linkErr.Error()
@@ -236,7 +237,7 @@ func (u *ui) qr(w http.ResponseWriter, r *http.Request) {
 	case "app.svg":
 		text = AppDownloadURL
 	case "add.svg", "pair.svg":
-		link, err := u.addLink(r.PathValue("which") == "pair.svg")
+		link, err := u.addLink()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
@@ -315,6 +316,15 @@ func (u *ui) addKey(w http.ResponseWriter, r *http.Request) {
 	u.Store.AddEvent(store.Event{At: time.Now(), Who: "this PC", Action: "created key " + k.Name, Result: strings.Join(scopes, ",")})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": k.ID, "key": secret})
+}
+
+func (u *ui) removeOwner(w http.ResponseWriter, r *http.Request) {
+	if err := u.Store.RemoveOwner(r.PathValue("node")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	u.Store.AddEvent(store.Event{At: time.Now(), Who: "this PC", Action: "removed an owner device", Result: "ok"})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (u *ui) removeKey(w http.ResponseWriter, r *http.Request) {

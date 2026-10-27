@@ -125,7 +125,7 @@ func TestOpenRecoversFromBrokenState(t *testing.T) {
 	// Both unreadable: start fresh instead of refusing to run.
 	_ = os.WriteFile(filepath.Join(dir, "state.json"), []byte("x"), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "state.json.bak"), []byte("x"), 0o600)
-	if s3, err := Open(dir); err != nil || !s3.Settings().AutoUpdate {
+	if s3, err := Open(dir); err != nil || s3.Settings().AutoUpdate != DefaultAutoUpdate || s3.OwnerMode() != OwnersExplicit {
 		t.Errorf("fresh start: %v", err)
 	}
 }
@@ -147,5 +147,60 @@ func TestOpenAfterResetStartsFresh(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "state.json.bak")); !os.IsNotExist(err) {
 		t.Errorf("old backup kept: %v", err)
+	}
+}
+
+func TestOwnerModes(t *testing.T) {
+	// A state file from before owner devices: legacy until the first owner is recorded.
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"keys":[],"settings":{"autoUpdate":true}}`), 0o600)
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.OwnerMode() != OwnersLegacy || !s.Settings().AutoUpdate {
+		t.Fatalf("upgrade: mode %q, settings %+v", s.OwnerMode(), s.Settings())
+	}
+	now := time.Now()
+	if err := s.AddOwner(Owner{NodeID: "nPHONE", Name: "phone", AddedAt: now, AddedBy: "upgrade"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.AddOwner(Owner{NodeID: "nPHONE", Name: "renamed", AddedAt: now})
+	s2, _ := Open(dir)
+	if s2.OwnerMode() != OwnersExplicit || !s2.IsOwnerNode("nPHONE") || s2.IsOwnerNode("nOTHER") || s2.IsOwnerNode("") {
+		t.Errorf("after first owner: mode %q owners %v", s2.OwnerMode(), s2.Owners())
+	}
+	if o := s2.Owners(); len(o) != 1 || o[0].Name != "renamed" {
+		t.Errorf("owners %v", o)
+	}
+	if err := s2.RemoveOwner("nPHONE"); err != nil || s2.IsOwnerNode("nPHONE") || s2.OwnerMode() != OwnersExplicit {
+		t.Errorf("remove: %v, mode %q", err, s2.OwnerMode())
+	}
+	if s2.RemoveOwner("nPHONE") != ErrNotFound {
+		t.Error("removing twice")
+	}
+	// A new install starts explicit, with nobody.
+	s3, _ := Open(t.TempDir())
+	if s3.OwnerMode() != OwnersExplicit || len(s3.Owners()) != 0 {
+		t.Errorf("new install: %q %v", s3.OwnerMode(), s3.Owners())
+	}
+}
+
+func TestPeerKeyKept(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	_ = s.PutPeer(Peer{Name: "pve", Pin: "pin1", Address: "100.1.1.1"})
+	if err := s.SetPeerKey("PVE", "pdk_x"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.PutPeer(Peer{Name: "pve", Pin: "pin1", Address: "100.1.1.2"}) // a rescan
+	if p, _ := s.Peer("pve"); p.Key != "pdk_x" {
+		t.Errorf("rescan lost the key: %+v", p)
+	}
+	_ = s.PutPeer(Peer{Name: "pve", Pin: "pin2", Address: "100.1.1.2"}) // reinstalled
+	if p, _ := s.Peer("pve"); p.Key != "" {
+		t.Errorf("reinstalled peer kept the old key: %+v", p)
+	}
+	if s.SetPeerKey("nope", "k") != ErrNotFound {
+		t.Error("unknown peer")
 	}
 }

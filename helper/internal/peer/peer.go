@@ -92,11 +92,12 @@ type Error struct {
 func (e *Error) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Code, e.Message) }
 
 // ForHeader names the person or agent a relayed request is for. Helpers only show it (activity
-// log, shutdown message), and only when the caller is an owner.
+// log, shutdown message), and only when the caller is an owner or a peer helper.
 const ForHeader = "X-PowerDeck-For"
 
 // AgentHeader marks a relayed request as made for an AI agent, so the device applies its
-// "Allow AI agents" switch itself. It can only take rights away, so helpers trust it from owners.
+// "Allow AI agents" switch itself. It can only take rights away; helpers read it from owners and
+// peer helpers.
 const AgentHeader = "X-PowerDeck-Agent"
 
 type agentKey struct{}
@@ -104,9 +105,9 @@ type agentKey struct{}
 // ForAgent marks requests sent with ctx as made for an AI agent (see AgentHeader).
 func ForAgent(ctx context.Context) context.Context { return context.WithValue(ctx, agentKey{}, true) }
 
-// Do sends a pinned request and decodes a JSON answer into out (may be nil). onBehalfOf, when set,
-// is sent as ForHeader.
-func Do(ctx context.Context, addr string, port int, pin, method, path string, body, out any, onBehalfOf string) error {
+// Do sends a pinned request and decodes a JSON answer into out (may be nil). key, when set, is sent
+// as the bearer (a peer key); onBehalfOf, when set, as ForHeader.
+func Do(ctx context.Context, addr string, port int, pin, key, method, path string, body, out any, onBehalfOf string) error {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -118,6 +119,9 @@ func Do(ctx context.Context, addr string, port int, pin, method, path string, bo
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	if onBehalfOf != "" {
 		req.Header.Set(ForHeader, onBehalfOf)

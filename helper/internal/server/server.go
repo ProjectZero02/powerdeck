@@ -28,6 +28,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/peer"
 	"github.com/projectzero02/powerdeck/helper/internal/power"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
+	"github.com/projectzero02/powerdeck/helper/internal/tailscale"
 	"github.com/projectzero02/powerdeck/helper/internal/update"
 	"github.com/projectzero02/powerdeck/helper/internal/version"
 )
@@ -50,7 +51,7 @@ type Deps struct {
 	Update   Updater // nil: updates aren't managed here (tests, development builds)
 	// Uninstall removes PowerDeck from this device in the background (nil: not supported here).
 	Uninstall func() error
-	// PairLink returns this device's add link (QR payload, no code) and the current pairing code.
+	// PairLink returns this device's add link (QR payload, with the code) and the current pairing code.
 	PairLink func() (link, code string)
 	// AllowRemote is the source-address policy (default: tailnet and loopback).
 	AllowRemote func(netip.Addr) bool
@@ -105,6 +106,11 @@ func New(d Deps) *API {
 	mux.HandleFunc("POST /v2/settings", s.with(store.ScopeAdmin, s.ownersOnly(s.putSettings)))
 	mux.HandleFunc("POST /v2/uninstall", s.with(store.ScopeAdmin, s.ownersOnly(s.uninstall)))
 	mux.HandleFunc("GET /v2/pairing", s.with(store.ScopeAdmin, s.ownersOnly(s.pairing))) // codes mint keys
+	mux.HandleFunc("GET /v2/owners", s.with(store.ScopeAdmin, s.ownersOnly(s.listOwners)))
+	mux.HandleFunc("POST /v2/owners", s.with(store.ScopeAdmin, s.ownersOnly(s.addOwner)))
+	mux.HandleFunc("POST /v2/owners/claim", s.with(store.ScopeAdmin, s.ownersOnly(s.claimOwner)))
+	mux.HandleFunc("DELETE /v2/owners/{node}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeOwner)))
+	mux.HandleFunc("PUT /v2/peers/{name}/key", s.with(store.ScopeAdmin, s.ownersOnly(s.setPeerKey)))
 	mux.HandleFunc("GET /v2/status", s.with(store.ScopeStatus, s.status))
 	mux.HandleFunc("GET /v2/peers", s.with(store.ScopeStatus, s.peers))
 	mux.HandleFunc("POST /v2/power/{action}", s.with(store.ScopePower, s.power))
@@ -233,14 +239,14 @@ func (s *server) with(scope string, h func(http.ResponseWriter, *http.Request, a
 		}
 		if c.Kind == auth.Nobody {
 			fail(w, http.StatusUnauthorized, "not_owner",
-				"This device belongs to another Tailscale account. Enter its pairing code to add it.")
+				"This phone isn't one of "+s.Name+"'s devices yet. Scan its code, or enter the pairing code it shows.")
 			return
 		}
-		// An owner relaying for someone (a hub acting for an agent or a schedule) names them.
-		if who := clean(r.Header.Get(peer.ForHeader), 64); who != "" && c.Kind == auth.Owner {
+		// A helper relaying for someone (a hub acting for an agent or a schedule) names them.
+		if who := clean(r.Header.Get(peer.ForHeader), 64); who != "" && c.Relays() {
 			c.Name = who + " via " + c.Name
 		}
-		if r.Header.Get(peer.AgentHeader) != "" && c.Kind == auth.Owner {
+		if r.Header.Get(peer.AgentHeader) != "" && c.Relays() {
 			c.Agent = true
 		}
 		if scope != "" && !c.Has(scope) {
@@ -316,6 +322,10 @@ func (s *server) pair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := remoteAddr(r)
+	if s.limiter.blocked(ip) {
+		fail(w, http.StatusTooManyRequests, "throttled", "Too many failed attempts. Try again in 10 minutes.")
+		return
+	}
 	if !s.Pairing.Consume(req.Code) {
 		s.limiter.fail(ip)
 		s.Log.Warn("pairing rejected", "from", ip)
@@ -326,7 +336,19 @@ func (s *server) pair(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Phone"
 	}
-	k, secret, err := s.Store.AddKey(store.NewKey{Name: name, Kind: store.KindPhone, Scopes: store.AllScopes}, s.Now())
+	// A phone on this device's own Tailscale account becomes an owner device: the code proves
+	// someone at this device let it in, and Tailscale proves which node it is from then on.
+	if id, err := s.Auth.TS.WhoIs(r.Context(), ip); err == nil && s.Auth.SameAccount(r.Context(), id) {
+		if err := s.Store.AddOwner(store.Owner{NodeID: id.NodeID, Name: name, AddedAt: s.Now(), AddedBy: "pairing code"}); err != nil {
+			fail(w, http.StatusConflict, "too_many_owners", "Too many owner devices. Remove one first.")
+			return
+		}
+		s.logEvent(name, "added as an owner device", "ok")
+		c := auth.Caller{Kind: auth.Owner, Name: name, NodeID: id.NodeID, Node: id.NodeName, Scopes: store.AllScopes}
+		writeJSON(w, http.StatusOK, map[string]any{"owner": true, "status": s.statusBody(r.Context(), c)})
+		return
+	}
+	k, secret, err := s.Store.AddKey(store.NewKey{Name: name, Kind: store.KindPhone, Scopes: store.PhoneScopes}, s.Now())
 	if errors.Is(err, store.ErrTooManyKeys) {
 		fail(w, http.StatusConflict, "too_many_keys", "Too many keys. Remove one on the device first.")
 		return
@@ -339,6 +361,108 @@ func (s *server) pair(w http.ResponseWriter, r *http.Request) {
 	s.logEvent(name, "paired", "ok")
 	c := auth.Caller{Kind: auth.Holder, Name: name, Scopes: k.Scopes, Key: &k}
 	writeJSON(w, http.StatusOK, map[string]any{"key": secret, "status": s.statusBody(r.Context(), c)})
+}
+
+func (s *server) listOwners(w http.ResponseWriter, _ *http.Request, c auth.Caller) {
+	list := []map[string]any{}
+	for _, o := range s.Store.Owners() {
+		list = append(list, map[string]any{"node": o.NodeID, "name": o.Name, "addedAt": o.AddedAt, "addedBy": o.AddedBy, "you": o.NodeID == c.NodeID})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"legacy": s.Store.OwnerMode() == store.OwnersLegacy, "owners": list})
+}
+
+// claimOwner records the calling owner as an owner device. On a helper upgraded from before owner
+// devices that ends the old "any device on my Tailscale account" rule; the app does it on its own.
+func (s *server) claimOwner(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	if c.NodeID == "" || c.NodeID == "local" {
+		fail(w, http.StatusBadRequest, "not_a_device", "Only a phone or computer on the tailnet can be an owner device.")
+		return
+	}
+	var req struct {
+		DeviceName string `json:"deviceName"`
+	}
+	_ = decode(r, &req)
+	name := clean(req.DeviceName, 64)
+	if name == "" {
+		name = c.Name
+	}
+	legacy := s.Store.OwnerMode() == store.OwnersLegacy
+	if err := s.Store.AddOwner(store.Owner{NodeID: c.NodeID, Name: name, AddedAt: s.Now(), AddedBy: map[bool]string{true: "upgrade", false: "owner"}[legacy]}); err != nil {
+		fail(w, http.StatusConflict, "too_many_owners", "Too many owner devices. Remove one first.")
+		return
+	}
+	if legacy {
+		s.logEvent(name, "became the first owner device (other devices on the account now need the code)", "ok")
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// addOwner records another tailnet device as an owner device by its Tailscale name (`powerdeck-helper
+// owner add`, or an owner in the app). Any untagged device that isn't shared in from another tailnet
+// can be chosen: whoever runs this already controls the helper.
+func (s *server) addOwner(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !decode(r, &req) || strings.TrimSpace(req.Name) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "Give the device's Tailscale name.")
+		return
+	}
+	st, err := s.Auth.TS.Status(r.Context())
+	if err != nil {
+		fail(w, http.StatusServiceUnavailable, "tailscale", "Tailscale on this device isn't answering. Try again in a moment.")
+		return
+	}
+	want := strings.ToLower(strings.TrimSpace(req.Name))
+	var found *tailscale.Node
+	for i, n := range st.Peers {
+		if strings.ToLower(n.Name()) == want || strings.ToLower(n.HostName) == want || strings.ToLower(n.DNSName) == want {
+			found = &st.Peers[i]
+			break
+		}
+	}
+	switch {
+	case found == nil:
+		fail(w, http.StatusNotFound, "unknown_device", "No device called "+clean(req.Name, 64)+" on this tailnet.")
+		return
+	case len(found.Tags) > 0 || found.Shared:
+		fail(w, http.StatusBadRequest, "not_personal", found.Name()+" is a tagged or shared-in device; only personal devices can be owner devices.")
+		return
+	}
+	if err := s.Store.AddOwner(store.Owner{NodeID: found.ID, Name: found.HostName, AddedAt: s.Now(), AddedBy: c.Name}); err != nil {
+		fail(w, http.StatusConflict, "too_many_owners", "Too many owner devices. Remove one first.")
+		return
+	}
+	s.logEvent(c.Name, "made "+found.Name()+" an owner device", "ok")
+	writeJSON(w, http.StatusOK, map[string]any{"node": found.ID, "name": found.HostName})
+}
+
+func (s *server) removeOwner(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	if err := s.Store.RemoveOwner(r.PathValue("node")); err != nil {
+		fail(w, http.StatusNotFound, "not_found", "No such owner device.")
+		return
+	}
+	s.logEvent(c.Name, "removed an owner device", "ok")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setPeerKey stores the peer key another helper issued for this one (the owner's phone passes it
+// on), so this helper can reach it with status, wake and power only.
+func (s *server) setPeerKey(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	var req struct {
+		Key string `json:"key"`
+	}
+	if !decode(r, &req) || (req.Key != "" && !strings.HasPrefix(req.Key, store.KeyPrefix)) {
+		fail(w, http.StatusBadRequest, "bad_request", "That isn't a PowerDeck key.")
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.Store.SetPeerKey(name, req.Key); err != nil {
+		fail(w, http.StatusNotFound, "unknown_device", "This helper hasn't seen "+clean(name, 64)+" on the tailnet yet. Try again in a few minutes.")
+		return
+	}
+	s.logEvent(c.Name, "set the key for "+clean(name, 64), "ok")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // pairing shows the add link and current pairing code, for the CLI (`powerdeck-helper qr`) and for
@@ -395,6 +519,18 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 		if s.Uninstall != nil {
 			body["caps"] = append(body["caps"].([]string), "uninstall")
 		}
+		// For the app: whether to claim this helper, and which peers it can already reach.
+		peerKeys := []string{}
+		for _, p := range s.Store.Peers() {
+			if p.Key != "" {
+				peerKeys = append(peerKeys, p.Name)
+			}
+		}
+		body["owners"] = map[string]any{"legacy": s.Store.OwnerMode() == store.OwnersLegacy, "you": s.Store.IsOwnerNode(c.NodeID)}
+		body["peerKeys"] = peerKeys
+	} else if c.IsPeer() {
+		// A hub needs this to honour the switch for agents before it even asks.
+		body["agents"] = map[string]any{"allowed": !s.Store.Settings().NoAgents}
 	}
 	return body
 }
@@ -721,12 +857,21 @@ func (s *server) listKeys(w http.ResponseWriter, _ *http.Request, _ auth.Caller)
 func (s *server) addKey(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	var req struct {
 		Name      string   `json:"name"`
+		Kind      string   `json:"kind"`
 		Scopes    []string `json:"scopes"`
 		Devices   []string `json:"devices"`
 		AllowSelf bool     `json:"allowSelf"`
 	}
 	if !decode(r, &req) || clean(req.Name, 64) == "" {
 		fail(w, http.StatusBadRequest, "bad_request", "A key needs a name.")
+		return
+	}
+	if req.Kind == store.KindPeer {
+		s.addPeerKey(w, clean(req.Name, 64), c)
+		return
+	}
+	if req.Kind != "" && req.Kind != store.KindAutomation {
+		fail(w, http.StatusBadRequest, "bad_kind", "Keys are for agents (automation) or other helpers (peer).")
 		return
 	}
 	scopes, err := auth.ParseScopes(strings.Join(req.Scopes, ","))
@@ -752,6 +897,27 @@ func (s *server) addKey(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	s.logEvent(c.Name, "created key "+k.Name, strings.Join(scopes, ","))
+	writeJSON(w, http.StatusOK, map[string]any{"id": k.ID, "key": secret, "info": viewKey(k)})
+}
+
+// addPeerKey issues the key another helper of this owner uses to reach this one (replacing any it
+// had): status, wake and power, bound to that helper's node on first use, no relaying.
+func (s *server) addPeerKey(w http.ResponseWriter, name string, c auth.Caller) {
+	for _, k := range s.Store.Keys() {
+		if k.Kind == store.KindPeer && strings.EqualFold(k.Name, name) {
+			_ = s.Store.RemoveKey(k.ID)
+		}
+	}
+	k, secret, err := s.Store.AddKey(store.NewKey{Name: name, Kind: store.KindPeer, Scopes: store.PeerScopes}, s.Now())
+	if errors.Is(err, store.ErrTooManyKeys) {
+		fail(w, http.StatusConflict, "too_many_keys", "Too many keys. Remove one first.")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "Couldn't save the key: "+err.Error())
+		return
+	}
+	s.logEvent(c.Name, "created peer key for "+name, strings.Join(k.Scopes, ","))
 	writeJSON(w, http.StatusOK, map[string]any{"id": k.ID, "key": secret, "info": viewKey(k)})
 }
 

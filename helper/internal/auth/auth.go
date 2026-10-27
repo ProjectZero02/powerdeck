@@ -41,6 +41,13 @@ func (c Caller) Has(scope string) bool { return slices.Contains(c.Scopes, scope)
 // IsAutomation reports whether the caller uses an automation key.
 func (c Caller) IsAutomation() bool { return c.Key != nil && c.Key.Kind == store.KindAutomation }
 
+// IsPeer reports whether the caller is another PowerDeck helper using its peer key.
+func (c Caller) IsPeer() bool { return c.Key != nil && c.Key.Kind == store.KindPeer }
+
+// Relays reports whether the caller is a helper passing on someone else's request (an owner's other
+// helper, or a peer key), so its X-PowerDeck-For and X-PowerDeck-Agent headers count.
+func (c Caller) Relays() bool { return c.Kind == Owner || c.IsPeer() }
+
 // ForAgent reports whether the request comes from an AI agent, directly or through a hub.
 func (c Caller) ForAgent() bool { return c.IsAutomation() || c.Agent }
 
@@ -86,8 +93,8 @@ func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer strin
 		if !ok {
 			return Caller{Kind: Nobody}, ErrBadKey
 		}
-		if k.Kind == store.KindAutomation {
-			// Automation keys are bound to the node that first uses them.
+		if k.Kind == store.KindAutomation || k.Kind == store.KindPeer {
+			// Automation and peer keys are bound to the node that first uses them.
 			if idErr != nil || id.NodeID == "" {
 				return Caller{Kind: Nobody}, ErrBadKey
 			}
@@ -118,18 +125,32 @@ func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer strin
 	return Caller{Kind: Nobody, NodeID: id.NodeID}, nil
 }
 
-// isOwner: an untagged node, not shared in, owned by the same user as this (untagged) device. This
-// device itself doesn't count: a program here reaching our own tailnet address is as local as one
-// on loopback, so it needs the local token too.
+// isOwner: a recorded owner device. A helper upgraded from before owner devices (legacy mode) also
+// trusts the old rule until its first owner device is recorded. This device itself never counts: a
+// program here reaching our own tailnet address is as local as one on loopback, so it needs the
+// local token too.
 func (a *Authenticator) isOwner(ctx context.Context, id tailscale.Identity) bool {
-	if id.Tagged || id.Shared || id.UserID == 0 {
+	if id.NodeID == "" {
 		return false
 	}
 	st, err := a.TS.Status(ctx)
-	if err != nil || len(st.Self.Tags) > 0 || st.Self.UserID == 0 {
+	if err != nil || id.NodeID == st.Self.ID {
 		return false
 	}
-	if id.NodeID == "" || id.NodeID == st.Self.ID {
+	if a.Store.IsOwnerNode(id.NodeID) {
+		return true
+	}
+	return a.Store.OwnerMode() == store.OwnersLegacy && a.SameAccount(ctx, id)
+}
+
+// SameAccount: an untagged node, not shared in, owned by the same Tailscale user as this (untagged)
+// device. Such a node may become an owner device with a pairing code; on its own it's nobody.
+func (a *Authenticator) SameAccount(ctx context.Context, id tailscale.Identity) bool {
+	if id.Tagged || id.Shared || id.UserID == 0 || id.NodeID == "" {
+		return false
+	}
+	st, err := a.TS.Status(ctx)
+	if err != nil || len(st.Self.Tags) > 0 || st.Self.UserID == 0 || id.NodeID == st.Self.ID {
 		return false
 	}
 	return st.Self.UserID == id.UserID

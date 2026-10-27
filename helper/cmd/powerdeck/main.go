@@ -7,6 +7,8 @@
 //	qr                         show the QR code and pairing code that add this device to the app
 //	key add NAME [--scopes status,wake,power] [--devices a,b] [--allow-self]
 //	key list | key rm ID       manage automation keys (AI agents, scripts)
+//	owner list | owner add NAME | owner rm NODE
+//	                           the owner devices (phones, computers) that manage this device
 //	run [--dry-run]            run in the foreground (development; --dry-run only logs power actions)
 //	version
 //
@@ -22,6 +24,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/projectzero02/powerdeck/helper/internal/app"
 	"github.com/projectzero02/powerdeck/helper/internal/applog"
@@ -55,13 +58,15 @@ func main() {
 		err = showQR()
 	case "key":
 		err = key(args)
+	case "owner":
+		err = owner(args)
 	case "run":
 		err = runForeground(args)
 	case "version", "--version", "-v":
 		fmt.Println(version.Version)
 	default:
 		if !platformCommand(cmd, args, &err) {
-			fmt.Fprintln(os.Stderr, "usage: powerdeck-helper install|uninstall|status|qr|key|run|version")
+			fmt.Fprintln(os.Stderr, "usage: powerdeck-helper install|uninstall|status|qr|key|owner|run|version")
 			os.Exit(2)
 		}
 	}
@@ -126,9 +131,9 @@ func showQR() error {
 	if err != nil {
 		return err
 	}
-	fmt.Print("\nIn the PowerDeck app tap Add devices and scan:\n\n")
+	fmt.Print("\nIn the PowerDeck app tap Add devices and scan (works once, for 10 minutes):\n\n")
 	fmt.Print(q)
-	fmt.Printf("\nPhone on a different Tailscale account? Enter the code %s (works once, 10 minutes).\n", p.Code)
+	fmt.Printf("\nOr enter the code %s in the app.\n", p.Code)
 	return nil
 }
 
@@ -149,7 +154,7 @@ func key(args []string) error {
 			return err
 		}
 		if len(r.Keys) == 0 {
-			fmt.Println("No keys. Your own devices are trusted through your Tailscale account.")
+			fmt.Println("No keys. Owner devices need none (see: owner list).")
 		}
 		for _, k := range r.Keys {
 			fmt.Printf("%s  %-20s %-10s %s  %s\n", k.ID, k.Name, k.Kind, strings.Join(k.Scopes, ","), strings.Join(k.Devices, ","))
@@ -181,6 +186,55 @@ func key(args []string) error {
 		return client().Do("DELETE", "/v2/keys/"+args[1], nil, nil)
 	default:
 		return fmt.Errorf("usage: key add|list|rm")
+	}
+}
+
+func owner(args []string) error {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	switch args[0] {
+	case "list":
+		var r struct {
+			Legacy bool
+			Owners []struct {
+				Node, Name, AddedBy string
+				AddedAt             time.Time
+			}
+		}
+		if err := client().Do("GET", "/v2/owners", nil, &r); err != nil {
+			return err
+		}
+		if r.Legacy {
+			fmt.Println("No owner devices yet: until one is recorded, every personal device on this")
+			fmt.Println("device's Tailscale account counts as an owner (how PowerDeck 2.0 worked).")
+			fmt.Println("Open the updated app, or run: owner add <your phone's Tailscale name>")
+			return nil
+		}
+		if len(r.Owners) == 0 {
+			fmt.Println("No owner devices. Scan the code from `qr` in the app, or run: owner add NAME")
+		}
+		for _, o := range r.Owners {
+			fmt.Printf("%-16s %-28s added %s by %s\n", o.Node, o.Name, o.AddedAt.Local().Format("2006-01-02"), o.AddedBy)
+		}
+		return nil
+	case "add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: owner add NAME (the device's Tailscale name)")
+		}
+		var r struct{ Node, Name string }
+		if err := client().Do("POST", "/v2/owners", map[string]any{"name": args[1]}, &r); err != nil {
+			return err
+		}
+		fmt.Printf("%s (%s) is now an owner device.\n", r.Name, r.Node)
+		return nil
+	case "rm", "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: owner rm NODE (from owner list)")
+		}
+		return client().Do("DELETE", "/v2/owners/"+args[1], nil, nil)
+	default:
+		return fmt.Errorf("usage: owner list|add|rm")
 	}
 }
 

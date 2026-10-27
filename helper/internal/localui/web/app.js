@@ -6,6 +6,7 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const GUIDE = "https://github.com/ProjectZero02/powerdeck#ai-agents-mcp";
 let state = null;
 let qrLoaded = false;
+let qrCode = "";
 let step = 0; // 0: not in setup; 1–3: the setup step shown
 let revealed = false; // the step-3 checks have played their animation
 let started = false;
@@ -106,14 +107,34 @@ function renderSetupChecks(checks) {
   });
 }
 
+function renderOwners(owners, legacy) {
+  $("owners-legacy").hidden = !legacy;
+  const ul = $("owners");
+  ul.replaceChildren();
+  for (const o of owners) {
+    const li = el("li");
+    const info = el("div");
+    info.append(el("div", "name", o.name + " · owner device"));
+    info.append(el("div", "sub", `full access · added ${ago(o.addedAt)}`));
+    const btn = el("button", "danger small", "Remove");
+    btn.onclick = async () => {
+      if (!confirm(`Remove ${o.name}? It can't control this PC until it scans the code again.`)) return;
+      await api(`/api/owners/${encodeURIComponent(o.nodeId)}/remove`, { method: "POST" });
+      refresh();
+    };
+    li.append(info, btn);
+    ul.append(li);
+  }
+}
+
 function renderKeys(keys) {
   const ul = $("keys");
   ul.replaceChildren();
   for (const k of keys) {
     const li = el("li");
     const info = el("div");
-    info.append(el("div", "name", k.name + (k.kind === "automation" ? " · agent" : " · phone")));
-    const can = k.kind === "automation" ? (k.scopes || []).map((s) => scopeText[s] || s).join(", ") : "full access";
+    info.append(el("div", "name", k.name + ({ automation: " · agent", peer: " · PowerDeck device" }[k.kind] || " · phone")));
+    const can = k.kind === "phone" ? "power and wake, no settings" : (k.scopes || []).map((s) => scopeText[s] || s).join(", ");
     const where = k.devices && k.devices.length ? " · " + k.devices.join(", ") : "";
     info.append(el("div", "sub", `${can}${where} · last used ${ago(k.lastUsed)}`));
     const btn = el("button", "danger small", "Remove");
@@ -198,7 +219,11 @@ async function refresh() {
   if (!qrLoaded && !s.linkError) {
     qrLoaded = true;
     $("qr-app").src = `/qr/app.svg?k=${encodeURIComponent(key)}`;
-    $("qr-add").src = $("qr-add-home").src = `/qr/add.svg?k=${encodeURIComponent(key)}`;
+  }
+  // The add code carries the pairing code, so it changes when the code is used or expires.
+  if (s.pairCode !== qrCode && !s.linkError) {
+    qrCode = s.pairCode;
+    $("qr-add").src = $("qr-add-home").src = `/qr/add.svg?k=${encodeURIComponent(key)}&c=${encodeURIComponent(s.pairCode)}`;
   }
   const mins = Math.max(0, Math.round((Date.parse(s.pairExpires) - Date.now()) / 60000));
   $$(".pair-code").forEach((e) => { e.textContent = s.pairCode; });
@@ -214,6 +239,7 @@ async function refresh() {
   const checks = s.checks || [];
   renderChecks(checks);
   if (step === 3) renderSetupChecks(checks);
+  renderOwners(s.owners || [], !!s.ownersLegacy);
   renderKeys(s.keys || []);
   renderEvents(s.events || []);
   renderUpdate(s.update);

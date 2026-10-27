@@ -160,7 +160,7 @@ func Run(ctx context.Context, o Options) error {
 		PairLink: func() (string, string) {
 			ip, _ := netinfo.TailnetIPv4()
 			code := pm.Current().Value
-			return localui.AddLink(name, ip, APIPort, id.Fingerprint, ""), code
+			return localui.AddLink(name, ip, APIPort, id.Fingerprint, code), code
 		},
 		Log: log, Now: now,
 	})

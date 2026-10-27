@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -37,12 +39,19 @@ const (
 	atlas     = "100.101.1.50:51234" // tagged agent VM
 	atlasTwin = "100.101.1.51:51234" // another tagged node
 	selfAddr  = "100.101.1.10:51234" // this device itself
+	laptop    = "100.101.1.41:51234" // same Tailscale user, not paired as an owner device
+	hubAddr   = "100.101.1.12:51234" // another helper of the owner, untagged (e.g. a server)
 )
 
 type fakeTS struct{}
 
 func (fakeTS) Status(context.Context) (*tailscale.Status, error) {
-	return &tailscale.Status{BackendState: "Running", Self: tailscale.Node{ID: "nSELF", HostName: "Gaming-PC", UserID: 1}}, nil
+	return &tailscale.Status{BackendState: "Running", Self: tailscale.Node{ID: "nSELF", HostName: "Gaming-PC", UserID: 1},
+		Peers: []tailscale.Node{
+			{ID: "nATLAS", HostName: "atlas", DNSName: "atlas.example.ts.net", UserID: 99, Tags: []string{"tag:agent"}, IPv4: netip.MustParseAddr("100.101.1.50")},
+			{ID: "nGUEST", HostName: "guest", DNSName: "guest.example.ts.net", UserID: 7, Shared: true, IPv4: netip.MustParseAddr("100.101.1.70")},
+			{ID: "nLAPTOP", HostName: "Laptop", DNSName: "laptop.example.ts.net", UserID: 1, IPv4: netip.MustParseAddr("100.101.1.41")},
+		}}, nil
 }
 
 func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error) {
@@ -55,6 +64,10 @@ func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error
 		return tailscale.Identity{NodeID: "nATLAS", NodeName: "atlas", UserID: 99, Tagged: true}, nil
 	case "100.101.1.51":
 		return tailscale.Identity{NodeID: "nTWIN", NodeName: "twin", UserID: 99, Tagged: true}, nil
+	case "100.101.1.41":
+		return tailscale.Identity{NodeID: "nLAPTOP", NodeName: "laptop", Hostname: "Laptop", UserID: 1}, nil
+	case "100.101.1.12":
+		return tailscale.Identity{NodeID: "nHUB", NodeName: "hub", Hostname: "hub", UserID: 1}, nil
 	case "100.101.1.10":
 		return tailscale.Identity{NodeID: "nSELF", NodeName: "gaming-pc", Hostname: "Gaming-PC", UserID: 1}, nil
 	}
@@ -133,6 +146,13 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = st.SetAutoUpdate(true) // a desktop's default
+	_ = st.AddOwner(store.Owner{NodeID: "nPHONE", Name: "Pixel 9 Pro", AddedAt: testStart, AddedBy: "pairing code"})
+	return newEnvWith(t, st)
+}
+
+func newEnvWith(t *testing.T, st *store.Store) *env {
+	t.Helper()
 	e := &env{t: t, sys: &fakeSys{}, st: st, clock: testStart, upd: &fakeUpdater{st: update.Status{Current: "2.0.1"}, installed: make(chan struct{})}}
 	now := func() time.Time { return e.clock }
 	e.pm = pairing.NewManager(now)
@@ -718,4 +738,176 @@ func TestUninstall(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("Uninstall wasn't called")
+}
+
+func TestOwnerDevices(t *testing.T) {
+	e := newEnv(t)
+	// Same Tailscale account but never paired: nobody.
+	if code, out := e.do(req{method: "GET", path: "/v2/status", from: laptop}); code != http.StatusUnauthorized || out["error"] != "not_owner" {
+		t.Fatalf("unpaired laptop: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/pair", from: laptop, body: map[string]any{"code": "WRONG-CODE"}}); code != http.StatusForbidden {
+		t.Errorf("wrong code: %d", code)
+	}
+	code, out := e.do(req{method: "POST", path: "/v2/pair", from: laptop, body: map[string]any{"code": e.pm.Current().Value, "deviceName": "Laptop"}})
+	if code != 200 || out["owner"] != true || out["key"] != nil {
+		t.Fatalf("pair same account: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: laptop}); code != 200 {
+		t.Errorf("new owner device can't manage: %d", code)
+	}
+	_, list := e.do(req{method: "GET", path: "/v2/owners", from: phone})
+	if owners := list["owners"].([]any); len(owners) != 2 || list["legacy"] != false {
+		t.Errorf("owners: %v", list)
+	}
+	// Another account: a key for this device, without admin.
+	code, out = e.do(req{method: "POST", path: "/v2/pair", from: friend, body: map[string]any{"code": e.pm.Current().Value, "deviceName": "Friend"}})
+	if code != 200 || out["key"] == nil {
+		t.Fatalf("pair friend: %d %v", code, out)
+	}
+	fk := out["key"].(string)
+	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: friend, key: fk}); code != http.StatusForbidden {
+		t.Errorf("friend managing keys: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/power/shutdown", from: friend, key: fk}); code != http.StatusAccepted {
+		t.Errorf("friend shutting down: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/owners/claim", from: friend, key: fk}); code != http.StatusForbidden {
+		t.Errorf("friend claiming: %d", code)
+	}
+	// Removing an owner device.
+	if code, _ := e.do(req{method: "DELETE", path: "/v2/owners/nLAPTOP", from: phone}); code != http.StatusNoContent {
+		t.Errorf("remove owner: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: laptop}); code != http.StatusUnauthorized {
+		t.Errorf("removed owner still in: %d", code)
+	}
+}
+
+func TestLegacyOwnersUntilClaimed(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"keys":[],"settings":{"autoUpdate":true}}`), 0o600)
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnvWith(t, st)
+	// Upgraded helper: the old rule still holds.
+	code, out := e.do(req{method: "GET", path: "/v2/status", from: laptop})
+	if code != 200 || out["owners"].(map[string]any)["legacy"] != true {
+		t.Fatalf("legacy status: %d %v", code, out["owners"])
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: friend}); code != http.StatusUnauthorized {
+		t.Errorf("other account in legacy mode: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: atlas}); code != http.StatusUnauthorized {
+		t.Errorf("tagged node in legacy mode: %d", code)
+	}
+	// The first claim ends it.
+	if code, _ := e.do(req{method: "POST", path: "/v2/owners/claim", from: laptop, body: map[string]any{"deviceName": "Laptop"}}); code != http.StatusNoContent {
+		t.Fatalf("claim: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: phone}); code != http.StatusUnauthorized {
+		t.Errorf("other same-account device after the claim: %d", code)
+	}
+	if code, out := e.do(req{method: "GET", path: "/v2/status", from: laptop}); code != 200 || out["owners"].(map[string]any)["legacy"] != false {
+		t.Errorf("claimed owner: %d %v", code, out["owners"])
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/owners/claim", from: "127.0.0.1:5000", key: "pdl_local"}); code != http.StatusBadRequest {
+		t.Errorf("local tools claiming: %d", code)
+	}
+}
+
+func TestPeerKeys(t *testing.T) {
+	e := newEnv(t)
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: hubAddr}); code != http.StatusUnauthorized {
+		t.Fatalf("hub without a key: %d", code)
+	}
+	code, out := e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "hub", "kind": "peer"}})
+	if code != 200 {
+		t.Fatalf("peer key: %d %v", code, out)
+	}
+	pk := out["key"].(string)
+	code, st := e.do(req{method: "GET", path: "/v2/status", from: hubAddr, key: pk})
+	if code != 200 || st["agents"].(map[string]any)["allowed"] != true || st["checks"] != nil || st["owners"] != nil {
+		t.Fatalf("peer status: %d %v", code, st)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/power/shutdown", from: hubAddr, key: pk, header: map[string]string{peer.ForHeader: "Atlas"}}); code != http.StatusAccepted {
+		t.Errorf("peer shutdown: %d", code)
+	}
+	if ev := e.st.Events(); !strings.HasPrefix(ev[0].Who, "Atlas via ") {
+		t.Errorf("relayed name not shown: %v", ev[0])
+	}
+	for _, r := range []req{
+		{method: "GET", path: "/v2/keys"},
+		{method: "POST", path: "/v2/settings", body: map[string]any{"agents": true}},
+		{method: "POST", path: "/v2/devices/workstation/status"},
+		{method: "POST", path: "/mcp"},
+		{method: "GET", path: "/v2/owners"},
+	} {
+		r.from, r.key = hubAddr, pk
+		if code, _ := e.do(r); code != http.StatusForbidden {
+			t.Errorf("peer %s %s: %d", r.method, r.path, code)
+		}
+	}
+	// Bound to the hub's node.
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: atlas, key: pk}); code != http.StatusUnauthorized {
+		t.Errorf("peer key from another node: %d", code)
+	}
+	// The agent mark from a peer counts.
+	_, _ = e.do(req{method: "POST", path: "/v2/power/cancel", from: phone})
+	_, _ = e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"agents": false}})
+	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: hubAddr, key: pk, header: map[string]string{peer.AgentHeader: "1"}}); code != http.StatusForbidden || out["error"] != "agents_off" {
+		t.Errorf("peer relaying for an agent while agents are off: %d %v", code, out)
+	}
+	// A new peer key replaces the old one.
+	_, out = e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "hub", "kind": "peer"}})
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: hubAddr, key: pk}); code != http.StatusUnauthorized {
+		t.Errorf("replaced peer key still works: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/status", from: hubAddr, key: out["key"].(string)}); code != 200 {
+		t.Errorf("new peer key: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "x", "kind": "phone"}}); code != http.StatusBadRequest {
+		t.Errorf("other kinds: %d", code)
+	}
+	// Storing the key this helper uses for a peer.
+	if code, _ := e.do(req{method: "PUT", path: "/v2/peers/workstation/key", from: phone, body: map[string]any{"key": "pdk_abc"}}); code != http.StatusNoContent {
+		t.Errorf("set peer key: %d", code)
+	}
+	if p, _ := e.st.Peer("workstation"); p.Key != "pdk_abc" {
+		t.Errorf("stored peer key: %+v", p)
+	}
+	if code, _ := e.do(req{method: "PUT", path: "/v2/peers/nowhere/key", from: phone, body: map[string]any{"key": "pdk_abc"}}); code != http.StatusNotFound {
+		t.Errorf("unknown peer: %d", code)
+	}
+	if code, _ := e.do(req{method: "PUT", path: "/v2/peers/workstation/key", from: phone, body: map[string]any{"key": "nope"}}); code != http.StatusBadRequest {
+		t.Errorf("not a key: %d", code)
+	}
+	_, st = e.do(req{method: "GET", path: "/v2/status", from: phone})
+	if pks := st["peerKeys"].([]any); len(pks) != 1 || pks[0] != "workstation" {
+		t.Errorf("peerKeys: %v", st["peerKeys"])
+	}
+}
+
+func TestAddOwnerByName(t *testing.T) {
+	e := newEnv(t)
+	local := req{method: "POST", path: "/v2/owners", from: "127.0.0.1:5000", key: "pdl_local"}
+	for name, want := range map[string]int{"atlas": http.StatusBadRequest, "guest": http.StatusBadRequest, "nobody": http.StatusNotFound, "": http.StatusBadRequest} {
+		r := local
+		r.body = map[string]any{"name": name}
+		if code, _ := e.do(r); code != want {
+			t.Errorf("owner add %q: %d, want %d", name, code, want)
+		}
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/owners", from: friend, body: map[string]any{"name": "laptop"}}); code != http.StatusUnauthorized {
+		t.Errorf("a stranger adding an owner: %d", code)
+	}
+	local.body = map[string]any{"name": "LAPTOP"}
+	if code, out := e.do(local); code != 200 || out["node"] != "nLAPTOP" {
+		t.Fatalf("owner add laptop: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: laptop}); code != 200 {
+		t.Errorf("added owner can't manage: %d", code)
+	}
 }
