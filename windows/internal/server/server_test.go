@@ -45,7 +45,10 @@ func (f *fakeSys) Abort() error {
 	return nil
 }
 
-func (f *fakeSys) BootTime() (time.Time, error) { return time.Now().Add(-90 * time.Minute), nil }
+// testStart is the env's fixed clock; the fake PC booted 90 minutes before it.
+var testStart = time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+
+func (f *fakeSys) BootTime() (time.Time, error) { return testStart.Add(-90 * time.Minute), nil }
 
 type env struct {
 	t     *testing.T
@@ -63,14 +66,16 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, sys: &fakeSys{}, st: st, from: "100.101.1.40:51234", clock: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)}
+	e := &env{t: t, sys: &fakeSys{}, st: st, from: "100.101.1.40:51234", clock: testStart}
 	now := func() time.Time { return e.clock }
 	e.pm = pairing.NewManager(now)
 	e.h = New(Deps{
 		Store: st, Pairing: e.pm, Power: power.NewController(e.sys, now), Name: "Gaming-PC",
-		MAC:       func() string { return "d8:5e:d3:12:34:56" },
-		Discovery: func() netinfo.Discovered { return netinfo.Discovered{NanoKVM: &netinfo.Found{Address: "100.101.1.20", Name: "server-nanokvm"}} },
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)), Now: now,
+		MAC: func() string { return "d8:5e:d3:12:34:56" },
+		Discovery: func() netinfo.Discovered {
+			return netinfo.Discovered{NanoKVM: &netinfo.Found{Address: "100.101.1.20", Name: "server-nanokvm"}}
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: now,
 	})
 	return e
 }

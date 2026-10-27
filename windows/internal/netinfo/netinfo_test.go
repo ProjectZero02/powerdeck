@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"sync"
 	"testing"
 )
 
@@ -26,9 +27,12 @@ func TestDiscover(t *testing.T) {
 	if st.SelfDNSName != "gaming-pc.example-tailnet.ts.net" || len(st.Peers) != 5 {
 		t.Fatalf("parse: %+v", st)
 	}
+	var mu sync.Mutex // Discover probes concurrently
 	var probed []string
 	probe := func(_ context.Context, url string) (string, error) {
+		mu.Lock()
 		probed = append(probed, url)
+		mu.Unlock()
 		switch url {
 		case "http://100.101.1.20/":
 			return `<!doctype html><html><head><title>NanoKVM</title>`, nil

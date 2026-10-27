@@ -100,7 +100,6 @@ func (s *server) guard(next http.Handler) http.Handler {
 	})
 }
 
-
 func (s *server) auth(h func(http.ResponseWriter, *http.Request, store.Device)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")

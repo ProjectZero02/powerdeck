@@ -6,6 +6,12 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+; File version must be numeric (a.b.c.d): drop a "-ci" style suffix.
+#if Pos("-", AppVersion) > 0
+  #define NumVersion Copy(AppVersion, 1, Pos("-", AppVersion) - 1)
+#else
+  #define NumVersion AppVersion
+#endif
 #ifndef SourceExe
   #define SourceExe "..\dist\PowerDeck.exe"
 #endif
@@ -19,7 +25,7 @@ AppPublisher=PowerDeck
 AppPublisherURL=https://github.com/ProjectZero02/powerdeck
 AppSupportURL=https://github.com/ProjectZero02/powerdeck/issues
 AppUpdatesURL=https://github.com/ProjectZero02/powerdeck/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#NumVersion}
 DefaultDirName={autopf}\PowerDeck
 UninstallDisplayName=PowerDeck
 UninstallDisplayIcon={app}\PowerDeck.exe

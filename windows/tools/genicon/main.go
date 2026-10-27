@@ -44,7 +44,7 @@ func segDist(px, py, ax, ay, bx, by float64) float64 {
 
 func arcDist(px, py float64) float64 {
 	// Angle from straight up, clockwise, in degrees (screen coordinates, y down).
-	a := math.Atan2(px-cx, -(py - cy)) * 180 / math.Pi
+	a := math.Atan2(px-cx, -(py-cy)) * 180 / math.Pi
 	if math.Abs(a) >= gapAngle {
 		return math.Abs(math.Hypot(px-cx, py-cy) - radius)
 	}
