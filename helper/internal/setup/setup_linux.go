@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/projectzero02/powerdeck/helper/internal/check"
+	"github.com/projectzero02/powerdeck/helper/internal/secret"
 	"github.com/projectzero02/powerdeck/helper/internal/wol"
 )
 
@@ -136,6 +137,13 @@ func Uninstall(purge bool) error {
 	_ = systemctl("daemon-reload")
 	if purge {
 		errs = append(errs, os.RemoveAll(DataDir()))
+		// The key that seals KVM passwords: the file, then its folder if nothing else is in it.
+		if k, ok := secret.Default().(*secret.KeyFile); ok {
+			if err := os.Remove(k.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			_ = os.Remove(filepath.Dir(k.Path))
+		}
 	}
 	return errors.Join(errs...)
 }

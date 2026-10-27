@@ -148,6 +148,7 @@ type state struct {
 	Schedules []Schedule      `json:"schedules"`
 	Owners    []Owner         `json:"owners,omitempty"`
 	OwnerMode string          `json:"ownerMode,omitempty"`
+	KVMs      []KVM           `json:"kvms,omitempty"`
 }
 
 // fresh is a new install's state.
@@ -172,6 +173,9 @@ type Store struct {
 	path string
 	st   state
 }
+
+// Path is the state file.
+func (s *Store) Path() string { return s.path }
 
 // Open loads (or creates) state.json in dir.
 func Open(dir string) (*Store, error) {
@@ -412,6 +416,119 @@ func (s *Store) Peers() []Peer {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// KVM is a NanoKVM this helper drives, and the machine its ATX board is wired to.
+type KVM struct {
+	Name     string    `json:"name"`            // its Tailscale host name, e.g. "kvm-desk"
+	Address  string    `json:"address"`         // Tailscale name, or the HTTPS URL it moved to
+	Model    string    `json:"model,omitempty"` // "" (Full, Cube, PCIe) or "pro"
+	User     string    `json:"user"`
+	Password string    `json:"password"`      // sealed (internal/secret)
+	Pin      string    `json:"pin,omitempty"` // its HTTPS certificate, once seen
+	Machine  string    `json:"machine"`       // a peer's name, or a machine without a helper
+	MAC      string    `json:"mac,omitempty"` // that machine's, when no helper reports it
+	Firmware string    `json:"firmware,omitempty"`
+	Wiring   Wiring    `json:"wiring"`
+	AddedAt  time.Time `json:"addedAt"`
+}
+
+// Wiring is what was learned about a KVM's connections to the machine's front panel.
+type Wiring struct {
+	LED   string `json:"led"`   // Unknown, Wired or NotWired
+	Power string `json:"power"` // the power switch
+	Reset string `json:"reset"` // the reset switch
+	// LEDOffWhileUp counts readings in a row with the LED off while the machine's helper answered.
+	LEDOffWhileUp int       `json:"ledOffWhileUp,omitempty"`
+	CheckedAt     time.Time `json:"checkedAt,omitzero"`
+}
+
+// Wiring states.
+const (
+	Unknown  = "unknown"
+	Wired    = "wired"
+	NotWired = "not_wired"
+)
+
+// Fresh wiring: nothing learned yet.
+func (w Wiring) Fresh() Wiring { return Wiring{LED: Unknown, Power: Unknown, Reset: Unknown} }
+
+const maxKVMs = 20
+
+// ErrTooManyKVMs is returned when the KVM list is full.
+var ErrTooManyKVMs = errors.New("too many KVMs")
+
+// KVMs lists the KVMs this helper drives.
+func (s *Store) KVMs() []KVM {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]KVM(nil), s.st.KVMs...)
+}
+
+// KVM finds a KVM by its name or by the machine it's wired to (case-insensitive).
+func (s *Store) KVM(name string) (KVM, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := s.kvmIndex(name); i >= 0 {
+		return s.st.KVMs[i], true
+	}
+	return KVM{}, false
+}
+
+func (s *Store) kvmIndex(name string) int {
+	for i, k := range s.st.KVMs {
+		if strings.EqualFold(k.Name, name) {
+			return i
+		}
+	}
+	for i, k := range s.st.KVMs {
+		if strings.EqualFold(k.Machine, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// PutKVM adds a KVM or replaces the one with its name.
+func (s *Store) PutKVM(k KVM) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, old := range s.st.KVMs {
+		if strings.EqualFold(old.Name, k.Name) {
+			s.st.KVMs[i] = k
+			return s.saveLocked()
+		}
+	}
+	if len(s.st.KVMs) >= maxKVMs {
+		return ErrTooManyKVMs
+	}
+	s.st.KVMs = append(s.st.KVMs, k)
+	return s.saveLocked()
+}
+
+// UpdateKVM changes a KVM in place (found by name or machine).
+func (s *Store) UpdateKVM(name string, f func(*KVM)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.kvmIndex(name)
+	if i < 0 {
+		return ErrNotFound
+	}
+	f(&s.st.KVMs[i])
+	return s.saveLocked()
+}
+
+// RemoveKVM forgets a KVM.
+func (s *Store) RemoveKVM(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, k := range s.st.KVMs {
+		if strings.EqualFold(k.Name, name) {
+			s.st.KVMs = append(s.st.KVMs[:i], s.st.KVMs[i+1:]...)
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
 }
 
 const maxSchedules = 20

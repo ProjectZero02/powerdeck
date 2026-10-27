@@ -23,6 +23,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/check"
 	"github.com/projectzero02/powerdeck/helper/internal/fleet"
 	"github.com/projectzero02/powerdeck/helper/internal/guests"
+	"github.com/projectzero02/powerdeck/helper/internal/machines"
 	"github.com/projectzero02/powerdeck/helper/internal/netinfo"
 	"github.com/projectzero02/powerdeck/helper/internal/pairing"
 	"github.com/projectzero02/powerdeck/helper/internal/peer"
@@ -40,6 +41,7 @@ type Deps struct {
 	Pairing  *pairing.Manager
 	Power    *power.Controller
 	Fleet    *fleet.Fleet
+	Machines *machines.Hub // KVMs this helper drives (nil: none)
 	Name     string
 	OS       string
 	SelfNode func(ctx context.Context) string // this device's tailnet node ID
@@ -126,6 +128,12 @@ func New(d Deps) *API {
 	mux.HandleFunc("POST /v2/schedules", s.with(store.ScopeAdmin, s.addSchedule))
 	mux.HandleFunc("DELETE /v2/schedules/{id}", s.with(store.ScopeAdmin, s.removeSchedule))
 	mux.HandleFunc("POST /v2/devices/{name}/{action}", s.with(store.ScopeStatus, s.relay))
+	mux.HandleFunc("GET /v2/kvms", s.with(store.ScopeAdmin, s.ownersOnly(s.listKVMs)))
+	mux.HandleFunc("POST /v2/kvms", s.with(store.ScopeAdmin, s.ownersOnly(s.addKVM)))
+	mux.HandleFunc("PATCH /v2/kvms/{name}", s.with(store.ScopeAdmin, s.ownersOnly(s.patchKVM)))
+	mux.HandleFunc("DELETE /v2/kvms/{name}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeKVM)))
+	mux.HandleFunc("GET /v2/machines", s.with(store.ScopeStatus, s.listMachines))
+	mux.HandleFunc("POST /v2/machines/{name}/{action}", s.with(store.ScopeStatus, s.machineAction))
 	mux.HandleFunc("POST /mcp", s.with(store.ScopeStatus, s.ownersAndAgents(s.mcp)))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed) // no server-initiated stream
@@ -495,6 +503,9 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 		if n.Wired {
 			body["caps"] = []string{"shutdown", "restart", "wake"}
 		}
+	}
+	if s.Machines != nil {
+		body["caps"] = append(body["caps"].([]string), "kvm") // drives NanoKVMs (/v2/kvms, /v2/machines)
 	}
 	if g := s.Guests(ctx); g != nil {
 		body["guests"] = g

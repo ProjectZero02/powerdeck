@@ -14,6 +14,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/auth"
 	"github.com/projectzero02/powerdeck/helper/internal/discovery"
 	"github.com/projectzero02/powerdeck/helper/internal/fleet"
+	"github.com/projectzero02/powerdeck/helper/internal/machines"
 	"github.com/projectzero02/powerdeck/helper/internal/peer"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
 )
@@ -23,6 +24,8 @@ type discoveryPeer = discovery.Peer
 var actionScope = map[string]string{
 	"status": store.ScopeStatus, "wake": store.ScopeWake,
 	"shutdown": store.ScopePower, "restart": store.ScopePower, "cancel": store.ScopePower,
+	// Through a KVM on this helper. Owner devices only until recovery needs a confirmation (phase 4).
+	"reset": store.ScopeForce, "force-off": store.ScopeForce,
 }
 
 func (s *server) relay(w http.ResponseWriter, r *http.Request, c auth.Caller) {
@@ -37,6 +40,11 @@ func (s *server) relay(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 // act runs one device action for a caller: on this device, or relayed to another helper. It's
 // shared by the REST relay, MCP and schedules, so the same rules apply everywhere.
 func (s *server) act(ctx context.Context, c auth.Caller, device, action string) (map[string]any, *apiError) {
+	return s.actWith(ctx, c, device, action, machines.Options{})
+}
+
+// actWith is act with options for actions through a KVM (force, stayOff).
+func (s *server) actWith(ctx context.Context, c auth.Caller, device, action string, o machines.Options) (map[string]any, *apiError) {
 	scope, ok := actionScope[action]
 	if !ok {
 		return nil, &apiError{Status: http.StatusNotFound, Code: "not_found", Message: "Unknown action " + action + "."}
@@ -69,6 +77,11 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 			return nil, e
 		}
 	}
+	recovery := action == "reset" || action == "force-off"
+	if recovery && (c.Kind != auth.Owner || c.ForAgent()) { // an agent relayed by a hub is still an agent
+		return nil, &apiError{Status: http.StatusForbidden, Code: "owner_only",
+			Message: "Only the owner's devices can reset a machine or force it off."}
+	}
 	if c.ForAgent() {
 		ctx = peer.ForAgent(ctx) // the device checks its own switch too
 	}
@@ -78,16 +91,26 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 			return s.statusBody(ctx, c), nil
 		case "wake":
 			return map[string]any{"online": true, "message": device + " is already on."}, nil
+		case "reset", "force-off":
+			return nil, &apiError{Status: http.StatusUnprocessableEntity, Code: "self", Message: device + " can't " + action + " itself."}
 		default:
 			return s.localPower(ctx, c, action, powerRequest{})
 		}
 	}
+	kvm := s.Machines.HasKVM(device)
+	if recovery && !kvm {
+		return nil, &apiError{Status: http.StatusUnprocessableEntity, Code: "no_kvm", Message: "No KVM on " + s.Name + " is wired to " + device + "."}
+	}
+	o.Who, o.Agent = c.Name, c.ForAgent()
 	switch action {
 	case "wake":
 		if c.IsAutomation() {
 			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindWake); e != nil {
 				return nil, e
 			}
+		}
+		if kvm {
+			return s.hubAct(ctx, c, device, action, o)
 		}
 		sent, err := s.Fleet.Wake(device)
 		if err != nil {
@@ -120,6 +143,9 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindPower); e != nil {
 				return nil, e
 			}
+		}
+		if kvm && action != "cancel" {
+			return s.hubAct(ctx, c, device, action, o)
 		}
 		var res map[string]any
 		err := s.Fleet.Forward(ctx, device, "POST", "/v2/power/"+action, map[string]any{"delaySeconds": 60}, &res, c.Name)
