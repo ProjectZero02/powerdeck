@@ -290,10 +290,13 @@ can do for it now; `reset` and `force-off` appear only while a wired LED reads o
 |---|---|
 | `wake` | Nothing if the helper answers or the LED is on. Else a short power press when a wired LED reads off, checking that the LED comes on; else Wake-on-LAN from the hub's LAN, then from the KVM |
 | `shutdown`, `restart` | Asks the machine's helper (60 s countdown, its in-use check applies). `press: true`, or no helper: a short power press for a clean OS shutdown, only while a wired LED reads on, **owner devices only** (nobody can check whether someone is using the machine). `restart` always needs the helper |
-| `reset` | Refused while the helper answers (`409 helper_answers`) unless `force`. Reads the LED (must be wired and on), presses reset, reads the LED again, then (machines with a helper) checks in the background that the helper answers within 5 minutes |
+| `reset` | Refused while the helper answers (`409 helper_answers`) unless `force`. Reads the LED (must be wired and on), presses reset, reads the LED again, then, when the helper wasn't answering, checks in the background that it answers again within 5 minutes |
 | `force-off` | Same checks. Holds power for 12 s, waits for the LED to go off, then (unless `stayOff`) waits 5 s and presses power to start it again, waiting for the LED to come on |
 
-One action per machine at a time (`409 busy`). **`reset` and `force-off` are for owner devices
+One action per machine at a time (`409 busy`), at most 2 minutes. An action runs to its end even when
+the caller hangs up, so a machine held off is also started again. A KVM whose stored password can't
+be opened (`kvm_credentials`: link it again) still lets the machine's helper wake, shut down or
+restart it. Nothing is learned about the wiring from a reading that failed. **`reset` and `force-off` are for owner devices
 only** (`403 owner_only`), never an automation key or an agent relayed through a hub; agents get them
 with the owner's confirmation in a later release.
 

@@ -46,6 +46,13 @@ func (k *KeyFile) load(create bool) ([]byte, error) {
 		return k.key, nil
 	}
 	b, err := os.ReadFile(k.Path)
+	if err == nil && len(b) == 0 && create {
+		// Left empty by a crash of a version that wrote the key after creating the file: nothing
+		// can have been sealed with it.
+		if err = os.Remove(k.Path); err == nil {
+			err = os.ErrNotExist
+		}
+	}
 	if err == nil {
 		if len(b) != 32 {
 			return nil, fmt.Errorf("%s isn't a PowerDeck key", k.Path)
@@ -63,8 +70,9 @@ func (k *KeyFile) load(create bool) ([]byte, error) {
 	if err := os.MkdirAll(filepath.Dir(k.Path), 0o700); err != nil {
 		return nil, err
 	}
-	// O_EXCL: two writers can't both create it with different keys.
-	f, err := os.OpenFile(k.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// Written and synced under a temporary name, then linked into place: a reader never sees a
+	// half-written key, a crash leaves no empty one, and two writers can't both create it.
+	err = k.create(b)
 	if errors.Is(err, os.ErrExist) { // created by someone else meanwhile: use theirs
 		if b, err = os.ReadFile(k.Path); err != nil {
 			return nil, err
@@ -78,15 +86,37 @@ func (k *KeyFile) load(create bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
-		return nil, err
-	}
 	k.key = b
 	return b, nil
+}
+
+func (k *KeyFile) create(key []byte) error {
+	dir := filepath.Dir(k.Path)
+	f, err := os.CreateTemp(dir, ".secret-*") // 0600
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(key); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmp, k.Path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil { // the new name survives a power cut too
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 func (k *KeyFile) aead(create bool) (cipher.AEAD, error) {

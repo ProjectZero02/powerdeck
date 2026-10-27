@@ -513,6 +513,13 @@ func TestStaleCredentials(t *testing.T) {
 	// Another installation's key (or a tampered value) can't open it: a clear error, no press.
 	e.hub.Box = &secret.KeyFile{Path: filepath.Join(t.TempDir(), "other.key")}
 	e.hub.forget("kvm")
+	// The helper still shuts it down; only the presses need the KVM.
+	if r := e.act("shutdown", Options{}); !r.OK || len(e.fleet.forwards) != 1 {
+		t.Errorf("shutdown: %+v", r)
+	}
+	if r := e.act("wake", Options{}); !r.OK || r.Code != "already_on" {
+		t.Errorf("wake: %+v", r)
+	}
 	e.kvm.Hang()
 	if r := e.act("reset", Options{}); r.Code != "kvm_credentials" || presses(e.kvm) != "" {
 		t.Errorf("%+v", r)
@@ -524,4 +531,74 @@ func TestStaleCredentials(t *testing.T) {
 		t.Errorf("wiring lost: %+v", e.wiring())
 	}
 	_ = nanokvm.Power
+}
+
+func TestKVMNamedLikeAnotherMachine(t *testing.T) {
+	e := newEnv(t, fakekvm.Options{On: true})
+	if _, _, err := e.hub.Link(context.Background(), LinkRequest{Name: "laptop", Address: e.kvm.URL, Password: "admin", Machine: "gaming-pc"}); err != nil {
+		t.Fatal(err)
+	}
+	e.kvm.Hang()
+	if e.hub.HasKVM("laptop") || !e.hub.HasKVM("gaming-pc") {
+		t.Error("HasKVM went by the KVM's name")
+	}
+	if r := e.hub.Act(context.Background(), "laptop", "force-off", Options{}); r.Code != "no_kvm" || presses(e.kvm) != "" {
+		t.Errorf("laptop: %+v %s", r, presses(e.kvm))
+	}
+}
+
+func TestForcedResetWhileAnsweringLearnsNothing(t *testing.T) {
+	e := newEnv(t, fakekvm.Options{On: true, NoResetSwitch: true})
+	e.link("gaming-pc")
+	if r := e.act("reset", Options{Force: true}); !r.OK || presses(e.kvm) != "reset 800ms" {
+		t.Fatalf("%+v %s", r, presses(e.kvm))
+	}
+	e.hub.Wait()
+	if e.wiring().Reset != store.Unknown {
+		t.Errorf("a machine that answered all along proved nothing: %+v", e.wiring())
+	}
+}
+
+// blinding is a KVM whose power light can't be read once a button was pressed.
+type blinding struct {
+	KVM
+	mu      sync.Mutex
+	pressed bool
+}
+
+func (b *blinding) Press(ctx context.Context, button string, d time.Duration) error {
+	b.mu.Lock()
+	b.pressed = true
+	b.mu.Unlock()
+	return b.KVM.Press(ctx, button, d)
+}
+
+func (b *blinding) PowerLED(ctx context.Context) (bool, error) {
+	b.mu.Lock()
+	p := b.pressed
+	b.mu.Unlock()
+	if p {
+		return false, nanokvm.ErrUnreachable
+	}
+	return b.KVM.PowerLED(ctx)
+}
+
+func TestUnreadableLightAfterPressLearnsNothing(t *testing.T) {
+	e := newEnv(t, fakekvm.Options{On: true})
+	e.hub.Dial = func(k store.KVM, pw string) KVM {
+		return &blinding{KVM: &nanokvm.Client{Address: k.Address, User: k.User, Password: pw}}
+	}
+	e.link("gaming-pc")
+	e.kvm.Hang()
+	e.hub.Settle = 50 * time.Millisecond
+	if r := e.act("force-off", Options{}); r.Code != "led_unreadable" || e.wiring().Power != store.Unknown {
+		t.Errorf("force off: %+v %+v", r, e.wiring())
+	}
+	e.hub.forget("kvm")
+	e.kvm.SetOn(false)
+	e.fleet.silent = true
+	e.fleet.wakeErr = errors.New("no LAN")
+	if r := e.act("wake", Options{}); e.wiring().Power != store.Unknown {
+		t.Errorf("wake: %+v %+v", r, e.wiring())
+	}
 }

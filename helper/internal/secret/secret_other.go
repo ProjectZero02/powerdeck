@@ -18,8 +18,3 @@ func Default() Box {
 	}
 	return &KeyFile{Path: filepath.Join(dir, "secret.key")}
 }
-
-// Dir is the folder Default keeps its key in (uninstall removes it with the data).
-func Dir() string {
-	return filepath.Dir(Default().(*KeyFile).Path)
-}

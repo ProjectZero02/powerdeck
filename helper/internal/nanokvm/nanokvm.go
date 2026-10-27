@@ -42,7 +42,9 @@ type APIError struct {
 	Msg  string
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("NanoKVM %s failed (%d): %s", e.Path, e.Code, e.Msg) }
+func (e *APIError) Error() string {
+	return fmt.Sprintf("NanoKVM %s failed (%d): %s", e.Path, e.Code, e.Msg)
+}
 
 // Buttons on the ATX board.
 const (

@@ -254,7 +254,7 @@ func (h *Hub) Link(ctx context.Context, r LinkRequest) (KVMView, *bool, error) {
 		}
 		r.MAC = mac
 	}
-	if old, ok := h.Store.KVM(r.Machine); ok && !strings.EqualFold(old.Name, r.Name) {
+	if old, ok := h.Store.KVMFor(r.Machine); ok && !strings.EqualFold(old.Name, r.Name) {
 		return KVMView{}, nil, fail(http.StatusConflict, "machine_has_kvm", "%s is already wired to %s.", r.Machine, old.Name)
 	}
 	k := store.KVM{Name: r.Name, Address: r.Address, Model: r.Model, User: r.User, Machine: r.Machine, MAC: r.MAC,
@@ -278,7 +278,7 @@ func (h *Hub) Link(ctx context.Context, r LinkRequest) (KVMView, *bool, error) {
 			k.Firmware = strings.TrimSpace(info.Application + " " + info.Hardware)
 		}
 	}
-	if old, ok := h.Store.KVM(k.Name); ok && strings.EqualFold(old.Name, k.Name) && old.Machine == k.Machine && old.Address == k.Address {
+	if old, ok := h.Store.KVM(k.Name); ok && old.Machine == k.Machine && old.Address == k.Address {
 		k.Wiring, k.AddedAt = old.Wiring, old.AddedAt // linked again (new password): keep what was learned
 		if on {
 			k.Wiring.LED = store.Wired
@@ -309,7 +309,7 @@ type Patch struct {
 // Update applies a patch. A new user or password is tried first.
 func (h *Hub) Update(ctx context.Context, name string, p Patch) (KVMView, error) {
 	k, ok := h.Store.KVM(name)
-	if !ok || !strings.EqualFold(k.Name, name) {
+	if !ok {
 		return KVMView{}, fail(http.StatusNotFound, "unknown_kvm", "No KVM called %s.", name)
 	}
 	if p.User != nil || p.Password != nil {
@@ -342,7 +342,7 @@ func (h *Hub) Update(ctx context.Context, name string, p Patch) (KVMView, error)
 		if pr, err := h.Fleet.Peer(m); err == nil {
 			m = pr.Name
 		}
-		if other, ok := h.Store.KVM(m); ok && !strings.EqualFold(other.Name, k.Name) && strings.EqualFold(other.Machine, m) {
+		if other, ok := h.Store.KVMFor(m); ok && !strings.EqualFold(other.Name, k.Name) {
 			return KVMView{}, fail(http.StatusConflict, "machine_has_kvm", "%s is already wired to %s.", m, other.Name)
 		}
 		if !strings.EqualFold(m, k.Machine) {
@@ -432,12 +432,12 @@ type Machine struct {
 	Actions []string `json:"actions"` // what the hub can do for it now
 }
 
-// HasKVM reports whether a machine (or KVM name) has a KVM here.
-func (h *Hub) HasKVM(name string) bool {
+// HasKVM reports whether a machine has a KVM here.
+func (h *Hub) HasKVM(machine string) bool {
 	if h == nil {
 		return false
 	}
-	_, ok := h.Store.KVM(name)
+	_, ok := h.Store.KVMFor(machine)
 	return ok
 }
 
@@ -564,6 +564,9 @@ func (h *Hub) observe(name string, helperUp, led bool) {
 		w := &k.Wiring
 		switch {
 		case led:
+			if w.LED == store.Wired && w.LEDOffWhileUp == 0 {
+				return // nothing new
+			}
 			if w.LED != store.Wired {
 				h.log().Info("KVM power light is wired", "kvm", k.Name)
 			}
@@ -679,22 +682,23 @@ func (r *run) press(button string, d time.Duration) error {
 	return err
 }
 
-// waitLED reads the light until it shows want or the settle time runs out.
-func (r *run) waitLED(want bool) bool {
+// waitLED reads the light until it shows want or the settle time runs out. seen is false when the
+// last reading failed or the action ran out of time: then nothing can be learned from it.
+func (r *run) waitLED(want bool) (ok, seen bool) {
 	deadline := r.h.now().Add(dur(r.h.Settle, 15*time.Second))
 	for {
 		on, err := r.kvm.PowerLED(r.ctx)
 		if err == nil && on == want {
 			r.step("read power light after", &on, nil)
-			return true
+			return true, true
 		}
 		if r.h.now().After(deadline) || r.ctx.Err() != nil {
 			if err != nil {
 				r.step("read power light after", nil, err)
-			} else {
-				r.step("read power light after", &on, nil)
+				return false, false
 			}
-			return false
+			r.step("read power light after", &on, nil)
+			return false, r.ctx.Err() == nil
 		}
 		select {
 		case <-r.ctx.Done():
@@ -713,12 +717,18 @@ func (r *run) learn(f func(w *store.Wiring)) {
 // Actions the hub runs.
 var Actions = []string{"wake", "shutdown", "restart", "reset", "force-off"}
 
+// actionTime bounds one action. A press sequence runs to its end even when the caller hangs up, so
+// a machine held off is also started again.
+const actionTime = 2 * time.Minute
+
 // Act runs one action on a machine with a KVM here. One action per machine at a time. The caller
 // checks permissions (internal/server's act).
 func (h *Hub) Act(ctx context.Context, name, action string, o Options) Result {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actionTime)
+	defer cancel()
 	res := &Result{Machine: name, Action: action, Steps: []Step{}}
 	r := &run{h: h, ctx: ctx, res: res}
-	k, ok := h.Store.KVM(name)
+	k, ok := h.Store.KVMFor(name)
 	if !ok {
 		return r.refuse(http.StatusNotFound, "no_kvm", "No KVM here is wired to %s.", name)
 	}
@@ -740,15 +750,18 @@ func (h *Hub) Act(ctx context.Context, name, action string, o Options) Result {
 		delete(h.busy, key)
 		h.mu.Unlock()
 	}()
+	_, helperErr := h.Fleet.Peer(k.Machine)
+	hasHelper := helperErr == nil
 	c, err := h.client(k)
 	if err != nil {
 		var e *Error
 		errors.As(err, &e)
-		return r.refuse(e.Status, e.Code, "%s", e.Message)
+		if !hasHelper || action == "reset" || action == "force-off" {
+			return r.refuse(e.Status, e.Code, "%s", e.Message)
+		}
+		c = unusable{e} // the helper can still wake, shut down or restart it
 	}
 	r.kvm = c
-	_, helperErr := h.Fleet.Peer(k.Machine)
-	hasHelper := helperErr == nil
 	switch action {
 	case "wake":
 		return r.wake(hasHelper)
@@ -778,12 +791,15 @@ func (r *run) wake(hasHelper bool) Result {
 	switch {
 	case led != nil && !*led && trusted && r.k.Wiring.Power != store.NotWired:
 		if err := r.press(nanokvm.Power, 800*time.Millisecond); err == nil {
-			if r.waitLED(true) {
+			ok, seen := r.waitLED(true)
+			if ok {
 				r.learn(func(w *store.Wiring) { w.Power = store.Wired })
 				return r.done(true, "", "%s is starting.", m)
 			}
-			r.learn(func(w *store.Wiring) { w.Power = store.NotWired })
-			r.h.log().Warn("power press didn't turn the machine on: power switch not wired?", "kvm", r.k.Name)
+			if seen {
+				r.learn(func(w *store.Wiring) { w.Power = store.NotWired })
+				r.h.log().Warn("power press didn't turn the machine on: power switch not wired?", "kvm", r.k.Name)
+			}
 		}
 	case led != nil && !*led && !trusted:
 		r.step("no press: the power light hasn't been seen on yet, so off can't be told from not wired", nil, nil)
@@ -893,28 +909,31 @@ func (r *run) pressOff(led *bool, o Options) Result {
 }
 
 // gate checks what reset and force off need: a trusted light that reads on, and a helper that
-// doesn't answer (unless forced).
-func (r *run) gate(hasHelper bool, o Options, what string) *Result {
+// doesn't answer (unless forced). answers: the helper answered (forced).
+func (r *run) gate(hasHelper bool, o Options, what string) (answers bool, res *Result) {
 	m := r.k.Machine
-	if hasHelper && !o.Force && r.h.Fleet.Answers(r.ctx, m) {
+	if hasHelper && r.h.Fleet.Answers(r.ctx, m) {
 		r.step("helper answers", nil, nil)
-		res := r.refuse(http.StatusConflict, "helper_answers", "%s is answering, so it isn't frozen. Shut it down or restart it instead: %s loses unsaved work.", m, what)
-		return &res
+		if !o.Force {
+			res := r.refuse(http.StatusConflict, "helper_answers", "%s is answering, so it isn't frozen. Shut it down or restart it instead: %s loses unsaved work.", m, what)
+			return true, &res
+		}
+		answers = true
 	}
 	led := r.led("before")
 	switch {
 	case led == nil:
 		res := r.refuse(http.StatusBadGateway, "led_unreadable", "Can't read %s's power light, so nothing is pressed.", m)
-		return &res
+		return answers, &res
 	case *led:
 		r.ledWired()
-		return nil
+		return answers, nil
 	case r.k.Wiring.LED != store.Wired:
 		res := r.refuse(http.StatusUnprocessableEntity, "led_untrusted", "%s's power light reads off and hasn't been seen on yet, so PowerDeck can't tell off from not wired. Check the LED cable on the KVM's ATX board.", m)
-		return &res
+		return answers, &res
 	default:
 		res := r.refuse(http.StatusConflict, "already_off", "%s's power light is off: it's already off. Wake it instead.", m)
-		return &res
+		return answers, &res
 	}
 }
 
@@ -927,7 +946,8 @@ func (r *run) ledWired() {
 
 func (r *run) reset(hasHelper bool, o Options) Result {
 	m := r.k.Machine
-	if res := r.gate(hasHelper, o, "a reset"); res != nil {
+	answered, res := r.gate(hasHelper, o, "a reset")
+	if res != nil {
 		return *res
 	}
 	if r.k.Wiring.Reset == store.NotWired && !o.Force {
@@ -936,8 +956,8 @@ func (r *run) reset(hasHelper bool, o Options) Result {
 	if err := r.press(nanokvm.Reset, 800*time.Millisecond); err != nil {
 		return r.refuse(http.StatusBadGateway, "kvm_failed", "The reset press failed: %v", kvmError(r.k.Name, err))
 	}
-	r.led("after") // stays on through a reset on most boards: the result shows when the helper is back
-	if hasHelper {
+	r.led("after")              // stays on through a reset on most boards: the result shows when the helper is back
+	if hasHelper && !answered { // a machine that answered all along can't show whether the reset worked
 		r.h.verifyReset(r.k.Name, m)
 		return r.done(true, "", "Pressed reset on %s. It should answer again in a few minutes.", m)
 	}
@@ -971,18 +991,28 @@ func (h *Hub) verifyReset(kvm, machine string) {
 	}()
 }
 
+// unusable stands in for a KVM whose stored password can't be opened: every call fails with why.
+type unusable struct{ err error }
+
+func (u unusable) PowerLED(context.Context) (bool, error)             { return false, u.err }
+func (u unusable) Press(context.Context, string, time.Duration) error { return u.err }
+func (u unusable) Wake(context.Context, string) error                 { return u.err }
+
 // Wait waits for background checks (tests).
 func (h *Hub) Wait() { h.wg.Wait() }
 
 func (r *run) forceOff(hasHelper bool, o Options) Result {
 	m := r.k.Machine
-	if res := r.gate(hasHelper, o, "forcing it off"); res != nil {
+	if _, res := r.gate(hasHelper, o, "forcing it off"); res != nil {
 		return *res
 	}
 	if err := r.press(nanokvm.Power, 12*time.Second); err != nil {
 		return r.refuse(http.StatusBadGateway, "kvm_failed", "The power hold failed: %v", kvmError(r.k.Name, err))
 	}
-	if !r.waitLED(false) {
+	if ok, seen := r.waitLED(false); !ok {
+		if !seen {
+			return r.refuse(http.StatusBadGateway, "led_unreadable", "Held %s's power button for 12 s, but its power light can't be read now. Check it before pressing again.", m)
+		}
 		r.learn(func(w *store.Wiring) { w.Power = store.NotWired })
 		return r.refuse(http.StatusBadGateway, "no_effect", "Held %s's power button for 12 s, but its power light stayed on. Is the power switch wired to the KVM?", m)
 	}
@@ -998,7 +1028,7 @@ func (r *run) forceOff(hasHelper bool, o Options) Result {
 	if err := r.press(nanokvm.Power, 800*time.Millisecond); err != nil {
 		return r.refuse(http.StatusBadGateway, "kvm_failed", "%s is off, but the power press to start it failed: %v", m, kvmError(r.k.Name, err))
 	}
-	if !r.waitLED(true) {
+	if ok, _ := r.waitLED(true); !ok {
 		return r.refuse(http.StatusBadGateway, "didnt_start", "%s is off, but didn't start again. Wake it, or press its power button.", m)
 	}
 	return r.done(true, "", "Switched %s off and on again. It's starting.", m)

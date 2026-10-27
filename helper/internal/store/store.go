@@ -465,7 +465,7 @@ func (s *Store) KVMs() []KVM {
 	return append([]KVM(nil), s.st.KVMs...)
 }
 
-// KVM finds a KVM by its name or by the machine it's wired to (case-insensitive).
+// KVM finds a KVM by its own name (case-insensitive).
 func (s *Store) KVM(name string) (KVM, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -475,14 +475,22 @@ func (s *Store) KVM(name string) (KVM, bool) {
 	return KVM{}, false
 }
 
+// KVMFor finds the KVM wired to a machine (case-insensitive). Kept apart from KVM, so a KVM named
+// like another machine can't stand in for it.
+func (s *Store) KVMFor(machine string) (KVM, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range s.st.KVMs {
+		if strings.EqualFold(k.Machine, machine) {
+			return k, true
+		}
+	}
+	return KVM{}, false
+}
+
 func (s *Store) kvmIndex(name string) int {
 	for i, k := range s.st.KVMs {
 		if strings.EqualFold(k.Name, name) {
-			return i
-		}
-	}
-	for i, k := range s.st.KVMs {
-		if strings.EqualFold(k.Machine, name) {
 			return i
 		}
 	}
@@ -506,7 +514,7 @@ func (s *Store) PutKVM(k KVM) error {
 	return s.saveLocked()
 }
 
-// UpdateKVM changes a KVM in place (found by name or machine).
+// UpdateKVM changes a KVM in place (found by its name). Nothing is written when nothing changed.
 func (s *Store) UpdateKVM(name string, f func(*KVM)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -514,7 +522,11 @@ func (s *Store) UpdateKVM(name string, f func(*KVM)) error {
 	if i < 0 {
 		return ErrNotFound
 	}
+	before := s.st.KVMs[i]
 	f(&s.st.KVMs[i])
+	if s.st.KVMs[i] == before {
+		return nil
+	}
 	return s.saveLocked()
 }
 

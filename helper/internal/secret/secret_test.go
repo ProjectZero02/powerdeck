@@ -52,6 +52,27 @@ func TestKeyFile(t *testing.T) {
 	}
 }
 
+func TestEmptyKeyFileReplaced(t *testing.T) {
+	// An older version crashing between creating the file and writing the key left it empty.
+	k := &KeyFile{Path: filepath.Join(t.TempDir(), "secret.key")}
+	if err := os.WriteFile(k.Path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := k.Seal("hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(k.Path); len(b) != 32 {
+		t.Errorf("key file %d bytes", len(b))
+	}
+	if p, err := (&KeyFile{Path: k.Path}).Open(s); err != nil || p != "hunter2" {
+		t.Fatalf("open: %q %v", p, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(k.Path), ".secret-*")); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}
+
 func TestDefaultBox(t *testing.T) {
 	// On Windows this is DPAPI (the Windows CI job runs it).
 	t.Setenv("POWERDECK_KEYS", t.TempDir())

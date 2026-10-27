@@ -13,9 +13,6 @@ import (
 // Default is DPAPI in the service account's scope.
 func Default() Box { return dpapi{} }
 
-// Dir is "" on Windows: DPAPI keeps no key file.
-func Dir() string { return "" }
-
 type dpapi struct{}
 
 const dpapiPrefix = "d1:"

@@ -262,7 +262,7 @@ class HelperClient(
      */
     suspend fun machineAction(machine: String, action: String, force: Boolean = false, stayOff: Boolean = false, press: Boolean = false): HubResult =
         HubResult.from(call("POST", "/v2/machines/${path(machine)}/$action",
-            JSONObject().put("force", force).put("stayOff", stayOff).put("press", press), timeoutSeconds = 90))
+            JSONObject().put("force", force).put("stayOff", stayOff).put("press", press), timeoutSeconds = 150)) // the hub bounds an action to 2 minutes
 
     private fun path(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 

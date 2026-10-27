@@ -106,6 +106,7 @@ class KvmHubTest {
 
     @Before fun setUp() = runBlocking {
         for (id in store.all().map { it.id }) store.remove(id)
+        for ((h, n) in store.kvmsLeftOnHubs()) store.setKvmLeftOnHub(h, n, false)
         store.setKvmHub("")
         pve = store.get(store.upsert(Device(id = "pve", name = "pve", host = hub.server.hostName, port = hub.server.port, pin = hub.pin, os = "linux")))!!
         pc = store.get(store.upsert(Device(id = "pc", name = "Gaming-PC", host = gaming.server.hostName, port = gaming.server.port, pin = gaming.pin,
@@ -205,5 +206,18 @@ class KvmHubTest {
         deck.linkHelpers(states)
         assertTrue(hub.calls.any { it.startsWith("DELETE /v2/kvms/kvm") })
         assertNull(store.get(pc.id)!!.kvm!!.hub)
+    }
+
+    @Test fun aHubThatMissedTheUnlinkIsAskedAgain() = runBlocking {
+        onHub()
+        hubReplies["DELETE /v2/kvms/kvm"] = 503 to """{"error":"tailscale","message":"Tailscale isn't answering."}"""
+        deck.unlinkKvm(pc)
+        assertNull(store.get(pc.id)!!.kvm)
+        assertEquals(listOf("pve" to "kvm"), store.kvmsLeftOnHubs())
+
+        hubReplies["DELETE /v2/kvms/kvm"] = 204 to ""
+        deck.linkHelpers(mapOf(pve.id to DeviceState.On(HelperStatus.from(JSONObject("""{"name":"pve","os":"linux","peerKeys":[]}""")))))
+        assertEquals(2, hub.calls.count { it.startsWith("DELETE /v2/kvms/kvm") })
+        assertTrue("the hub no longer holds it", store.kvmsLeftOnHubs().isEmpty())
     }
 }

@@ -143,6 +143,7 @@ class PowerDeck(
         val pw = store.kvmPassword(d.id) ?: return "Its password isn't on this phone. Link it again."
         val err = try {
             val linked = client(hub)!!.addKvm(k.name, k.address, k.user, pw, d.fleetName, d.mac, d.hasHelper)
+            store.setKvmLeftOnHub(hub.id, k.name, false) // back on a hub it was to be removed from
             store.update(d.id) {
                 it.copy(kvm = it.kvm?.copy(hub = hub.id, machine = linked.machine, wiring = linked.wiring, hubError = null,
                     ledSeen = it.kvm.ledSeen || linked.wiring?.ledWired == true))
@@ -164,19 +165,43 @@ class PowerDeck(
      * there's no hub. A failed move is tried again after LINK_RETRY_MS.
      */
     private suspend fun placeKvms(states: Map<String, DeviceState>) {
+        val held = store.all().mapNotNull { d -> d.kvm?.let { it.hub to it.name } }.toSet()
+        for ((hubId, name) in store.kvmsLeftOnHubs()) when {
+            (hubId to name) in held -> store.setKvmLeftOnHub(hubId, name, false)
+            due("kvm:-$name@$hubId") -> leaveHub(hubId, name)
+        }
         val hub = kvmHub()
         for (d in store.all()) {
             val k = d.kvm ?: continue
             if (k.hub == hub?.id && (hub != null || k.hubError == null)) continue
-            val old = k.hub?.let { store.get(it) }
+            val old = k.hub
             if (hub == null || hub.id == d.id) { // a hub can't drive the KVM wired to itself
-                old?.let { o -> runCatching { client(o)!!.removeKvm(k.name) } }
+                old?.let { leaveHub(it, k.name) }
                 store.update(d.id) { it.copy(kvm = it.kvm?.copy(hub = null, machine = null, hubError = null)) }
                 continue
             }
             if (states[hub.id] !is DeviceState.On || !due("kvm:${d.id}>${hub.id}")) continue
-            if (moveToHub(d, hub) == null && old != null) runCatching { client(old)!!.removeKvm(k.name) }
+            if (moveToHub(d, hub) == null && old != null) leaveHub(old, k.name)
         }
+    }
+
+    /**
+     * Deletes a KVM (and its password) from a hub that no longer drives it. When the hub doesn't
+     * answer, it's asked again on later refreshes, so it doesn't keep driving the KVM.
+     */
+    private suspend fun leaveHub(hubId: String, name: String) {
+        val c = store.get(hubId)?.let { client(it) }
+        val again = c != null && try {
+            c.removeKvm(name)
+            false
+        } catch (e: HelperException.Unreachable) {
+            true
+        } catch (e: HelperException.Api) {
+            e.status >= 500 // 404: already gone
+        } catch (e: Exception) {
+            true
+        }
+        store.setKvmLeftOnHub(hubId, name, again)
     }
 
     private suspend fun due(what: String): Boolean = linkLock.withLock {
@@ -220,8 +245,8 @@ class PowerDeck(
 
     suspend fun unlinkKvm(d: Device) {
         val k = d.kvm
-        k?.hub?.let { store.get(it) }?.let { hub -> runCatching { client(hub)!!.removeKvm(k.name) } }
         store.unlinkKvm(d.id)
+        k?.hub?.let { leaveHub(it, k.name) }
     }
 
     // ---- Adding devices -----------------------------------------------------------------------

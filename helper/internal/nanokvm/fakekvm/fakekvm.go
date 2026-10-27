@@ -35,13 +35,13 @@ type Options struct {
 	Style          string // default Style25
 	LockAfter      int    // failed logins before a lockout (default 5)
 	LockFor        time.Duration
-	HTTPS          bool // plain HTTP redirects to a self-signed HTTPS port
-	Forbidden      bool // the account lacks the power permission: gpio and wol answer 403
-	NoLED          bool // power LED not wired (or reversed): always reads off
-	LEDError       bool // reading the LED fails, as the firmware reports it (-2)
-	NoPowerSwitch  bool // power button not wired: presses do nothing
-	NoResetSwitch  bool // reset button not wired
-	On             bool // the computer starts on
+	HTTPS          bool          // plain HTTP redirects to a self-signed HTTPS port
+	Forbidden      bool          // the account lacks the power permission: gpio and wol answer 403
+	NoLED          bool          // power LED not wired (or reversed): always reads off
+	LEDError       bool          // reading the LED fails, as the firmware reports it (-2)
+	NoPowerSwitch  bool          // power button not wired: presses do nothing
+	NoResetSwitch  bool          // reset button not wired
+	On             bool          // the computer starts on
 	BootDelay      time.Duration // default 30 s (scaled)
 	ShutdownDelay  time.Duration // default 20 s (scaled)
 	TimeScale      float64       // default 1
@@ -143,7 +143,9 @@ func (f *Fake) Close() {
 	f.mu.Unlock()
 }
 
-func (f *Fake) scale(d time.Duration) time.Duration { return time.Duration(float64(d) * f.opt.TimeScale) }
+func (f *Fake) scale(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * f.opt.TimeScale)
+}
 
 // ---- the simulated computer ----
 
@@ -181,7 +183,11 @@ func (f *Fake) Presses() []Press {
 }
 
 // Wakes lists the MACs Wake-on-LAN was sent to.
-func (f *Fake) Wakes() []string { f.mu.Lock(); defer f.mu.Unlock(); return append([]string(nil), f.wakes...) }
+func (f *Fake) Wakes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.wakes...)
+}
 
 // Logins counts successful logins.
 func (f *Fake) Logins() int { f.mu.Lock(); defer f.mu.Unlock(); return f.logins }
