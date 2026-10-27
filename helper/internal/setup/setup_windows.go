@@ -480,7 +480,7 @@ func Checks(e Env) []check.Check {
 					return check.Result{Level: check.OK, Title: "Fast Startup off"}
 				}
 				return check.Result{Level: check.Warn, Title: "Fast Startup is on",
-					Detail: "PowerDeck's own shutdowns are full shutdowns anyway, but shutting down from the Start menu then leaves the PC unable to wake."}
+					Detail: "Shutting down from the Start menu then leaves the PC unable to wake."}
 			},
 			Fix: func(context.Context) error { return disableFastStartup() },
 		},

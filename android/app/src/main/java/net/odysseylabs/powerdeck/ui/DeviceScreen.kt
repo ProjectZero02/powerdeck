@@ -136,7 +136,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
     val st = state.states[d.id]
     val status = (st as? DeviceState.On)?.status
     val now = rememberNow(status?.pending != null)
-    val (line, tone) = describe(st, now)
+    val tone = describe(st, now).second
     val busy = d.id in state.busy
     val hold = state.settings.confirmShutdown
     var menu by remember { mutableStateOf(false) }
@@ -151,10 +151,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text(d.name) },
-                navigationIcon = { IconButton(onClick = a.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } },
-                actions = {
+            AppBar(d.name, onBack = a.back) {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "More") }
                     DropdownMenu(menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
@@ -162,39 +159,39 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         if (d.kvm != null) DropdownMenuItem(text = { Text("Force off (hold power 12 s)") }, onClick = { menu = false; confirmForce = true })
                         DropdownMenuItem(text = { Text("Remove from this phone") }, onClick = { menu = false; confirmRemove = true })
                     }
-                },
-            )
+            }
         },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Margin), verticalArrangement = Arrangement.spacedBy(Gap)) {
             // ---- State and power
             Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    // Same anatomy as the home card: what it is and its dot, then only the news.
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconTile(d.icon(), 56)
-                        Spacer(Modifier.width(14.dp))
+                        IconTile(d.icon())
+                        Spacer(Modifier.width(16.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(d.subtitle(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                StatusDot(tone)
+                                Text(d.kindName(), style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.width(8.dp))
-                                Text(line, style = MaterialTheme.typography.titleMedium, color = if (tone == Tone.Warn) MaterialTheme.colorScheme.error else Color.Unspecified)
+                                StatusDot(tone)
+                            }
+                            val news = note(st, now) ?: status?.let { ("Up " + uptime(it.uptimeSeconds)) to Tone.On }
+                            news?.let { (text, t) ->
+                                Text(text, style = MaterialTheme.typography.bodyMedium,
+                                    color = if (t == Tone.Warn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
-                    status?.presence?.takeIf { it.active }?.let {
-                        Spacer(Modifier.height(10.dp))
-                        Text(it.describe(d.name), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                     status?.guestsRunning?.takeIf { it > 0 }?.let { n ->
-                        Spacer(Modifier.height(6.dp))
-                        Text("$n VM${if (n == 1) "" else "s"} running: ${status.guestNames.joinToString(", ")}. A shutdown stops them cleanly first.",
+                        Spacer(Modifier.height(12.dp))
+                        Text("$n VM${if (n == 1) "" else "s"} running: ${status.guestNames.joinToString(", ")}",
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (state.tailnet) Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (state.tailnet) Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         when {
-                            status?.pending != null -> OutlinedButton(onClick = a.cancel, enabled = !busy, modifier = Modifier.weight(1f).height(52.dp), shape = RoundedCornerShape(16.dp)) {
-                                Text("Cancel", fontWeight = FontWeight.SemiBold)
+                            status?.pending != null -> OutlinedButton(onClick = a.cancel, enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
+                                Text("Cancel")
                             }
                             st is DeviceState.On -> {
                                 if (d.hasHelper || d.kvm != null) HoldButton("Shut down", Icons.Rounded.PowerSettingsNew, true, !busy, Modifier.weight(1f), hold = hold,
@@ -219,18 +216,24 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             // ---- PowerDeck helper update
             status?.update?.takeIf { it.available || it.installing }?.let { u ->
                 Section("Update") {
-                    Row2(if (u.installing) "Updating to ${u.latest}…" else "PowerDeck ${u.latest} is ready",
-                        "${d.name} has ${status.version}." + (if (u.auto) " It installs on its own within 6 hours." else "") +
-                            (u.error?.takeIf { !u.installing }?.let { " Last try: $it." } ?: ""),
+                    Row2(if (u.installing) "Updating to ${u.latest}…" else "Version ${u.latest} is ready",
+                        when {
+                            u.installing -> null
+                            u.error != null -> "Last try: ${u.error}"
+                            u.auto -> "Installs on its own within 6 hours"
+                            else -> null
+                        },
                         icon = { Icon(Icons.Rounded.SystemUpdateAlt, null, tint = MaterialTheme.colorScheme.primary) },
                         trailing = if (u.installing) null else ({ TextButton(onClick = a.updateHelper, enabled = !busy && status.pending == null) { Text("Update") } }))
                 }
             }
 
-            // ---- Setup checks
+            // ---- Setup checks: what needs attention first; checks that passed fold into one row
             val checks = status?.checks.orEmpty()
             if (checks.isNotEmpty()) Section("Setup") {
-                checks.sortedBy { if (it.problem) 0 else if (it.level == "info") 1 else 2 }.forEach { c ->
+                var showPassed by rememberSaveable { mutableStateOf(false) }
+                val passed = checks.filter { it.ok }
+                (checks - passed.toSet()).sortedBy { if (it.problem) 0 else 1 }.plus(if (showPassed) passed else emptyList()).forEach { c ->
                     Row2(c.title, c.detail, icon = {
                         when {
                             c.ok -> Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen)
@@ -240,19 +243,23 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         }
                     }, trailing = if (c.fixable && c.problem) ({ TextButton(onClick = { a.fix(c) }, enabled = !busy) { Text("Fix") } }) else null)
                 }
+                if (passed.isNotEmpty() && !showPassed) {
+                    Row2(if (passed.size == checks.size) "All set" else "${passed.size} more passed",
+                        icon = { Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen) },
+                        trailing = { TextButton(onClick = { showPassed = true }) { Text("Show") } })
+                }
             }
 
             // ---- Schedules
             if (d.hasHelper) Section("Schedules") {
                 val list = detail.schedules
                 if (list == null) Row2("Loading…")
-                else if (list.isEmpty()) Row2("No schedules", "Shut down every night, or wake up before you get home.")
                 list?.forEach { (host, s) ->
                     Row2(
-                        "${s.action.replaceFirstChar { it.uppercase() }} at ${s.time}",
+                        "${when (s.action) { "shutdown" -> "Shut down"; "restart" -> "Restart"; else -> "Turn on" }} at ${s.time}",
                         buildList {
                             add(if (s.days.size == 7) "Every day" else s.days.joinToString(" ") { it.replaceFirstChar(Char::uppercase) })
-                            if (s.action != "wake" && s.skipIfInUse) add("skipped while in use")
+                            if (s.action != "wake" && s.skipIfInUse) add("not while in use")
                             if (host.id != d.id) add("kept by ${host.name}")
                             else if (clockNote(d.name, status?.utcOffsetMinutes) != null) add("${d.name}'s time")
                         }.joinToString(" · "),
@@ -263,13 +270,14 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             }
 
             // ---- Power button (KVM)
-            Section("Power button") {
+            // Only when there's a KVM to show or to link: most people have none.
+            val kvms = state.found.orEmpty().filter { it.isKvm }
+            if (d.kvm != null || kvms.isNotEmpty()) Section("Power button") {
                 val k = d.kvm
                 if (k != null) {
-                    Row2(k.name, "${k.address} · signed in as ${k.user}", trailing = { TextButton(onClick = a.unlinkKvm) { Text("Unlink") } })
+                    Row2(k.name, "Signed in as ${k.user}", trailing = { TextButton(onClick = a.unlinkKvm) { Text("Unlink") } })
                 } else {
-                    val kvms = state.found.orEmpty().filter { it.isKvm }
-                    Row2("No KVM linked", if (kvms.isEmpty()) "A NanoKVM wired to the power button can turn it on even when Wake-on-LAN can't." else null)
+                    Row2("Link a NanoKVM", "Presses the power button when Wake-on-LAN can't")
                     kvms.forEach { p -> TextButton(onClick = { linkKvm = p }, modifier = Modifier.padding(start = 8.dp)) { Text("Link ${p.name}") } }
                 }
             }
@@ -291,7 +299,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
 
             // ---- Agents
             if (d.hasHelper) Section("AI agents and scripts") {
-                Row2("Let an agent use PowerDeck", "Through this device (best: one that's always on). Agents can't force, and always leave a 60-second countdown.")
+                Row2("Let an agent use PowerDeck", "Shutdowns from agents always count down 60 s")
                 detail.keys?.forEach { k ->
                     Row2(k.name, k.scopes.joinToString(", ") + if (k.devices.isNotEmpty()) " · ${k.devices.joinToString()}" else "",
                         trailing = { IconButton(onClick = { a.removeKey(k) }) { Icon(Icons.Rounded.Delete, contentDescription = "Remove") } })

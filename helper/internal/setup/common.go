@@ -39,7 +39,7 @@ func tailscaleCheck(e Env) check.Check {
 		st, err := e.TS.Status(ctx)
 		switch {
 		case err != nil:
-			return check.Result{Level: check.Error, Title: "Tailscale isn't running", Detail: "Install Tailscale and sign in. PowerDeck works only over your tailnet."}
+			return check.Result{Level: check.Error, Title: "Tailscale isn't running", Detail: "Install Tailscale and sign in."}
 		case st.BackendState != "Running":
 			return check.Result{Level: check.Error, Title: "Tailscale isn't connected", Detail: "Tailscale says " + st.BackendState + ". Open Tailscale and sign in."}
 		}
@@ -62,7 +62,7 @@ func keyExpiryCheck(e Env) check.Check {
 			lvl = check.Error
 		}
 		return check.Result{Level: lvl, Title: fmt.Sprintf("Tailscale key expires in %d days", days),
-			Detail: "After that this device drops off your tailnet until someone signs in on it. In the Tailscale admin console → Machines → " +
+			Detail: "Then it drops off your tailnet. Tailscale admin console → Machines → " +
 				st.Self.Name() + " → ⋯ → Disable key expiry."}
 	}}
 }
@@ -75,7 +75,7 @@ func wiredCheck(e Env) check.Check {
 			return check.Result{Level: check.Warn, Title: "No network card with internet access found"}
 		case !n.Wired:
 			return check.Result{Level: check.Warn, Title: "Connected over Wi-Fi",
-				Detail: "Wi-Fi can't wake a computer from shutdown. Use Ethernet if you want to turn this device on remotely."}
+				Detail: "Wi-Fi can't wake a computer. Use Ethernet to turn it on remotely."}
 		}
 		return check.Result{Level: check.OK, Title: "Wired network", Detail: n.Interface + " · " + n.MAC}
 	}}
@@ -85,7 +85,7 @@ func batteryCheck(e Env) check.Check {
 	return check.Check{ID: "battery", Run: func(context.Context) check.Result {
 		if n, ok := e.Network(); ok && n.Battery {
 			return check.Result{Level: check.Warn, Title: "Running on battery",
-				Detail: "Laptops usually can't be woken remotely unless plugged in (and often only with the lid open)."}
+				Detail: "Laptops usually wake only when plugged in."}
 		}
 		return check.Result{Level: check.OK, Title: "On mains power"}
 	}}
@@ -93,8 +93,8 @@ func batteryCheck(e Env) check.Check {
 
 func biosCheck() check.Check {
 	return check.Check{ID: "bios", Run: func(context.Context) check.Result {
-		return check.Result{Level: check.Info, Title: "BIOS: Wake-on-LAN on, ErP/EuP off",
-			Detail: "These are BIOS settings PowerDeck can't see (ASUS: ErP Ready Disabled, Power On By PCI-E Enabled). Turn it off, then tap Turn on in the app once to confirm."}
+		return check.Result{Level: check.Info, Title: "Check the BIOS: Wake-on-LAN on, ErP off",
+			Detail: "PowerDeck can't see these (ASUS: ErP Ready off, Power On By PCI-E on). A first wake from the app confirms them."}
 	}}
 }
 

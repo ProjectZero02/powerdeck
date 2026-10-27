@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,13 +19,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -48,7 +55,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -63,18 +71,12 @@ fun Device.icon(): ImageVector = when (kind) {
     Device.Kind.Other -> Icons.Rounded.Memory
 }
 
-fun Device.subtitle(): String = buildList {
-    add(
-        when {
-            guests -> "Proxmox server"
-            os == "windows" -> "Windows PC"
-            os == "linux" -> "Linux"
-            else -> "Device"
-        },
-    )
-    kvm?.let { add("via ${it.name}") }
-    if (!hasHelper) add("no helper")
-}.joinToString(" · ")
+fun Device.kindName(): String = when {
+    guests -> "Proxmox server"
+    os == "windows" -> "Windows PC"
+    os == "linux" -> "Linux"
+    else -> "Device"
+}
 
 fun uptime(seconds: Long): String {
     val h = seconds / 3600
@@ -86,11 +88,12 @@ fun uptime(seconds: Long): String {
     }
 }
 
-enum class Tone { On, Off, Busy, Warn }
+/** Dot meanings: green on, grey off, ring unknown, primary in progress, red problem. */
+enum class Tone { On, Off, Unknown, Busy, Warn }
 
 /** One line for a device's state, plus its colour. `now` drives the countdown. */
 fun describe(state: DeviceState?, now: Long): Pair<String, Tone> = when (state) {
-    null, DeviceState.Checking -> "Checking…" to Tone.Busy
+    null, DeviceState.Checking -> "Checking…" to Tone.Unknown
     DeviceState.Off -> "Off" to Tone.Off
     is DeviceState.Problem -> state.message to Tone.Warn
     is DeviceState.On -> {
@@ -108,21 +111,58 @@ fun describe(state: DeviceState?, now: Long): Pair<String, Tone> = when (state) 
     }
 }
 
+/**
+ * The words worth adding next to a device's dot, or null: the dot already says on or off, so only
+ * news gets text (in use, a countdown, a problem).
+ */
+fun note(state: DeviceState?, now: Long): Pair<String, Tone>? = when (state) {
+    is DeviceState.Problem -> state.message to Tone.Warn
+    is DeviceState.On -> {
+        val s = state.status
+        val p = s?.pending
+        when {
+            p != null -> describe(state, now)
+            s?.presence?.active == true -> "In use${s.presence.user?.let { " by $it" } ?: ""}" to Tone.On
+            else -> null
+        }
+    }
+    else -> null
+}
+
 @Composable
 fun toneColor(tone: Tone): Color = when (tone) {
     Tone.On -> OnGreen
-    Tone.Off -> MaterialTheme.colorScheme.outline
+    Tone.Off, Tone.Unknown -> MaterialTheme.colorScheme.outline
     Tone.Busy -> MaterialTheme.colorScheme.primary
     Tone.Warn -> MaterialTheme.colorScheme.error
 }
 
+/** The power-state dot. Screen readers hear the state, since colour alone can't carry it. */
 @Composable
 fun StatusDot(tone: Tone) {
-    Box(Modifier.size(10.dp).clip(CircleShape).background(toneColor(tone)))
+    val label = when (tone) { Tone.On -> "On"; Tone.Off -> "Off"; Tone.Unknown -> "Unknown"; Tone.Busy -> "Working"; Tone.Warn -> "Problem" }
+    val dot = Modifier.size(10.dp).clip(CircleShape)
+    Box((if (tone == Tone.Unknown) dot.border(1.5.dp, toneColor(tone), CircleShape) else dot.background(toneColor(tone))).semantics { contentDescription = label })
 }
 
+/** The one top bar every screen uses: same height, inset, type and colour. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun IconTile(icon: ImageVector, size: Int = 48) {
+fun AppBar(title: String, onBack: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
+    TopAppBar(
+        title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        navigationIcon = { onBack?.let { IconButton(onClick = it) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } } },
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+    )
+}
+
+/** Screen-edge margin (Material: 16 dp on phones) and the gap between cards. */
+val Margin = 16.dp
+val Gap = 12.dp
+
+@Composable
+fun IconTile(icon: ImageVector, size: Int = 40) {
     Box(
         Modifier.size(size.dp).clip(RoundedCornerShape((size * 0.3).dp)).background(MaterialTheme.colorScheme.primaryContainer),
         contentAlignment = Alignment.Center,
@@ -171,7 +211,7 @@ fun HoldButton(
         color = container,
         contentColor = content,
         modifier = modifier
-            .height(52.dp)
+            .height(48.dp)
             .semantics {
                 role = Role.Button
                 if (enabled) onClick(label) { onConfirm(); true }
@@ -207,7 +247,7 @@ fun HoldButton(
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                Text(label, style = MaterialTheme.typography.labelLarge)
             }
         }
     }
@@ -222,12 +262,12 @@ fun Banner(icon: ImageVector, title: String, text: String, button: String?, onCl
             Icon(icon, contentDescription = null)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(text, style = MaterialTheme.typography.bodySmall)
             }
             if (button != null) {
                 Spacer(Modifier.width(8.dp))
-                TextButton(onClick = onClick) { Text(button, color = content, fontWeight = FontWeight.SemiBold) }
+                TextButton(onClick = onClick) { Text(button, color = content) }
             }
         }
     }

@@ -156,7 +156,7 @@ func Checks(e Env) []check.Check {
 					return check.Result{Level: check.OK, Title: "Tailscale starts at boot"}
 				}
 				return check.Result{Level: check.Error, Title: "Tailscale doesn't start at boot",
-					Detail: "Without it this device is unreachable after a restart."}
+					Detail: "Without it, this device is unreachable after a restart."}
 			},
 			Fix: func(context.Context) error { return systemctl("enable", "--now", "tailscaled") },
 		},
@@ -176,7 +176,7 @@ func Checks(e Env) []check.Check {
 				case !on:
 					return check.Result{Level: check.Warn, Title: "Wake-on-LAN is off on " + n.Interface}
 				}
-				return check.Result{Level: check.OK, Title: "Wake-on-LAN on " + n.Interface, Detail: "Re-applied every time the helper starts."}
+				return check.Result{Level: check.OK, Title: "Wake-on-LAN on " + n.Interface}
 			},
 			Fix: func(context.Context) error {
 				n, ok := e.Network()
@@ -190,7 +190,7 @@ func Checks(e Env) []check.Check {
 		biosCheck(),
 		{ID: "ac_restore", Run: func(context.Context) check.Result {
 			return check.Result{Level: check.Info, Title: "BIOS: restore power after an outage",
-				Detail: "For a server, set \"Restore on AC power loss\" to On (or Last state) so it comes back after a power cut."}
+				Detail: "Set \"Restore on AC power loss\" to On so it comes back after a power cut."}
 		}},
 		updatesCheck(e),
 	}

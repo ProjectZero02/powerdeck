@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,8 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.odysseylabs.powerdeck.data.Device
@@ -71,33 +70,22 @@ fun HomeScreen(state: UiState, a: HomeActions, snackbar: SnackbarHostState, show
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            AppBar("PowerDeck") { IconButton(onClick = a.settings) { Icon(Icons.Rounded.Settings, contentDescription = "Settings") } }
+        },
         floatingActionButton = {
             ExtendedFloatingActionButton(onClick = a.add, icon = { Icon(Icons.Rounded.Add, null) }, text = { Text("Add device") })
         },
     ) { pad ->
         LazyColumn(
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = pad.calculateTopPadding() + 12.dp, bottom = pad.calculateBottomPadding() + 96.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(start = Margin, end = Margin, top = pad.calculateTopPadding() + 4.dp, bottom = pad.calculateBottomPadding() + 96.dp),
+            verticalArrangement = Arrangement.spacedBy(Gap),
         ) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("PowerDeck", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-                        val on = state.devices.count { state.states[it.id] is DeviceState.On }
-                        Text(
-                            "${state.devices.size} ${if (state.devices.size == 1) "device" else "devices"} · $on on",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = a.settings) { Icon(Icons.Rounded.Settings, contentDescription = "Settings") }
-                }
-            }
             if (!state.tailnet) {
                 item {
                     Banner(
                         Icons.Rounded.VpnLock, "Tailscale is off",
-                        if (state.tailscaleInstalled) "PowerDeck reaches your devices through Tailscale." else "Install Tailscale and sign in to reach your devices.",
+                        if (state.tailscaleInstalled) "PowerDeck needs it to reach your devices." else "Install it and sign in to reach your devices.",
                         if (state.tailscaleInstalled) "Turn on" else "Get Tailscale", a.connectTailscale, warn = true,
                     )
                 }
@@ -123,10 +111,10 @@ fun HomeScreen(state: UiState, a: HomeActions, snackbar: SnackbarHostState, show
                     Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                         Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Rounded.Widgets, null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(14.dp))
+                            Spacer(Modifier.width(16.dp))
                             Column(Modifier.weight(1f).clickable(onClick = a.addWidget)) {
-                                Text("One-tap buttons", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                Text("Add a home-screen widget or Quick Settings tiles.", style = MaterialTheme.typography.bodySmall)
+                                Text("One-tap buttons", style = MaterialTheme.typography.titleSmall)
+                                Text("Add a widget or Quick Settings tile", style = MaterialTheme.typography.bodySmall)
                             }
                             IconButton(onClick = a.dismissWidgetTip) { Icon(Icons.Rounded.Close, contentDescription = "Dismiss") }
                         }
@@ -139,32 +127,34 @@ fun HomeScreen(state: UiState, a: HomeActions, snackbar: SnackbarHostState, show
 
 @Composable
 private fun DeviceCard(d: Device, st: DeviceState?, busy: Boolean, online: Boolean, hold: Boolean, now: Long, a: HomeActions) {
-    val (line, tone) = describe(st, now)
+    // With Tailscale off nothing can be known; the banner above says why, so the cards stay quiet.
+    val tone = if (online) describe(st, now).second else Tone.Unknown
+    val extra = if (online) note(st, now) else null
     val pending = (st as? DeviceState.On)?.status?.pending
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth().clickable { a.open(d) },
     ) {
-        Column(Modifier.padding(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 40.dp)) {
                 IconTile(d.icon())
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(d.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(d.subtitle(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(d.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        Spacer(Modifier.width(8.dp))
+                        StatusDot(tone)
+                    }
+                    extra?.let { (text, t) ->
+                        Text(text, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            color = if (t == Tone.Warn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp)
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(tone)
-                Spacer(Modifier.width(8.dp))
-                Text(line, style = MaterialTheme.typography.bodyLarge, color = if (tone == Tone.Warn) MaterialTheme.colorScheme.error else Color.Unspecified,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             }
             if (online) {
-                Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Buttons(d, st, pending != null, busy, hold, a)
                 }
             }
@@ -176,8 +166,8 @@ private fun DeviceCard(d: Device, st: DeviceState?, busy: Boolean, online: Boole
 private fun RowScope.Buttons(d: Device, st: DeviceState?, pending: Boolean, busy: Boolean, hold: Boolean, a: HomeActions) {
     val canOff = d.hasHelper || d.kvm != null
     when {
-        pending -> OutlinedButton(onClick = { a.cancel(d) }, enabled = !busy, modifier = Modifier.weight(1f).height(52.dp), shape = RoundedCornerShape(16.dp)) {
-            Text("Cancel", fontWeight = FontWeight.SemiBold)
+        pending -> OutlinedButton(onClick = { a.cancel(d) }, enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
+            Text("Cancel")
         }
         st is DeviceState.On -> if (canOff) {
             HoldButton("Shut down", Icons.Rounded.PowerSettingsNew, danger = true, enabled = !busy, hold = hold, modifier = Modifier.weight(1f),
@@ -187,7 +177,7 @@ private fun RowScope.Buttons(d: Device, st: DeviceState?, pending: Boolean, busy
                     onHint = { a.hint("Hold to restart ${d.name}") }) { a.restart(d) }
             }
         }
-        st is DeviceState.Problem -> OutlinedButton(onClick = a.retry, modifier = Modifier.weight(1f).height(52.dp), shape = RoundedCornerShape(16.dp)) { Text("Try again") }
+        st is DeviceState.Problem -> OutlinedButton(onClick = a.retry, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) { Text("Try again") }
         st == DeviceState.Off -> HoldButton("Turn on", Icons.Rounded.PowerSettingsNew, danger = false, enabled = !busy, hold = false, modifier = Modifier.weight(1f)) { a.turnOn(d) }
         else -> Unit
     }

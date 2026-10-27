@@ -13,6 +13,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -50,6 +52,7 @@ private fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> 
         headlineContent = { Text(title) },
         supportingContent = subtitle?.let { { Text(it) } },
         trailingContent = trailing,
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
     )
 }
@@ -58,45 +61,40 @@ private fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> 
 @Composable
 fun SettingsScreen(settings: Settings, a: SettingsActions, helpers: List<Pair<Device, HelperUpdate>> = emptyList()) {
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = { IconButton(onClick = a.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } },
-            )
+            AppBar("Settings", onBack = a.back)
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
             Header("Behaviour")
-            SettingRow("Hold to shut down", "Shut down and Restart need a press-and-hold, so a stray tap does nothing", trailing = {
+            SettingRow("Hold to shut down", "Press and hold Shut down and Restart", trailing = {
                 Switch(checked = settings.confirmShutdown, onCheckedChange = a.setConfirm)
             })
-            SettingRow("Turn on Tailscale automatically", "Connects Tailscale when you press a button", trailing = {
+            SettingRow("Turn on Tailscale automatically", "When you press a button", trailing = {
                 Switch(checked = settings.autoTailscale, onCheckedChange = a.setAutoTailscale)
             })
-            SettingRow("Notifications", "When a schedule or an agent acts, or a device goes offline unexpectedly", trailing = {
+            SettingRow("Notifications", "When a schedule or agent acts", trailing = {
                 Switch(checked = settings.notifications, onCheckedChange = a.setNotifications)
             })
-            HorizontalDivider()
 
             Header("Updates")
             val outdated = helpers.filter { it.second.available }
             SettingRow("Update devices now",
                 when {
-                    helpers.isEmpty() -> "Updates the PowerDeck helper on every computer that's on"
+                    helpers.isEmpty() -> "Every computer that's on"
                     outdated.isEmpty() -> "All ${helpers.size} ${if (helpers.size == 1) "device is" else "devices are"} up to date"
                     else -> "${outdated.joinToString(", ") { it.first.name }}: ${outdated.first().second.latest} is ready"
                 },
                 onClick = a.updateDevices)
-            SettingRow("Update devices automatically", "Each computer checks every 6 hours and installs signed updates, never during a shutdown countdown", trailing = {
+            SettingRow("Update devices automatically", "Signed updates, checked every 6 hours", trailing = {
                 Switch(checked = helpers.isEmpty() || helpers.all { it.second.auto }, onCheckedChange = a.setDevicesAutoUpdate, enabled = helpers.isNotEmpty())
             })
-            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME} on this phone", "Tap to check for an app update. With notifications on, you're told about new ones", onClick = a.checkUpdate)
-            HorizontalDivider()
+            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME} on this phone", "Check for an update", onClick = a.checkUpdate)
 
             Header("Shortcuts")
-            SettingRow("Add home-screen widget", "Every device with its state and a power button", onClick = a.addWidget)
-            SettingRow("Add Quick Settings tiles", "Pick which device each tile controls on its device page", onClick = a.addTiles)
-            HorizontalDivider()
+            SettingRow("Add home-screen widget", "Every device, one tap each", onClick = a.addWidget)
+            SettingRow("Add Quick Settings tiles", "Choose a tile on a device's page", onClick = a.addTiles)
 
             Header("About")
             SettingRow("Help, source code and releases", "github.com/ProjectZero02/powerdeck", onClick = a.openProject)

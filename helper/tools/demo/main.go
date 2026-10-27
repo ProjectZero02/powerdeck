@@ -52,13 +52,13 @@ func main() {
 			return []check.Result{
 				{ID: "tailscale", Level: check.OK, Title: "Connected to Tailscale", Detail: "gaming-pc · 100.101.1.10"},
 				{ID: "key_expiry", Level: check.Warn, Title: "Tailscale key expires in 58 days",
-					Detail: "After that this device drops off your tailnet until someone signs in on it. In the Tailscale admin console → Machines → gaming-pc → ⋯ → Disable key expiry."},
+					Detail: "Then it drops off your tailnet. Tailscale admin console → Machines → gaming-pc → ⋯ → Disable key expiry."},
 				{ID: "unattended", Level: check.Error, Title: "Tailscale stops when you sign out", Detail: "Turn on Run unattended (Tailscale tray menu → Preferences), or press Fix.", Fixable: true},
 				{ID: "firewall", Level: check.OK, Title: "Firewall allows PowerDeck (tailnet only)"},
 				{ID: "wired", Level: check.OK, Title: "Wired network", Detail: "Ethernet · d8:5e:d3:12:34:56"},
 				{ID: "wol_nic", Level: check.OK, Title: "Wake-on-LAN on Ethernet", Detail: "d8:5e:d3:12:34:56"},
 				{ID: "fast_startup", Level: check.OK, Title: "Fast Startup off"},
-				{ID: "bios", Level: check.Info, Title: "BIOS: Wake-on-LAN on, ErP/EuP off", Detail: "These are BIOS settings PowerDeck can't see. Turn it off, then tap Turn on in the app once to confirm."},
+				{ID: "bios", Level: check.Info, Title: "Check the BIOS: Wake-on-LAN on, ErP off", Detail: "PowerDeck can't see these. A first wake from the app confirms them."},
 				{ID: "updates", Level: check.OK, Title: "Automatic updates on"},
 			}
 		},

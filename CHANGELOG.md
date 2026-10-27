@@ -4,6 +4,7 @@
 
 Fixes from a final security and reliability review, and updates you control from the phone.
 
+- **Cleaner design:** one top bar style on every screen, 16 dp margins, the same type scale throughout. A device's dot says on or off by itself; text appears only for news (in use, a countdown, a problem). A ring means unknown. Passed setup checks fold into one row, the power-button section shows only when there's a KVM, and wording is shorter everywhere.
 - **Updates from the app:** Settings → **Update devices now** updates every computer at once, and **Update devices automatically** turns self-updates on or off everywhere. A device page shows when its update is ready, with an **Update** button. The app notifies you once when a new version of itself is out.
 - **Security:** a program on a computer running the helper could act as its owner by calling the computer's own Tailscale address. It now needs the local token, like any other local program. A key from a pairing code can no longer read new pairing codes or change system settings.
 - **Easier Linux install:** the one-liner is now `curl … | sh`. It works in a root shell (Proxmox has no `sudo`) and as any user with sudo.

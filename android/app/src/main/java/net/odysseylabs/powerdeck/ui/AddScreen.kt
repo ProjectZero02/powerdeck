@@ -148,21 +148,18 @@ fun AddScreen(state: UiState, a: AddActions, snackbar: SnackbarHostState) {
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            if (!first) TopAppBar(
-                title = { Text("Add devices") },
-                navigationIcon = { a.back?.let { IconButton(onClick = it) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } } },
-            )
+            if (!first) AppBar("Add devices", onBack = a.back)
         },
     ) { pad ->
         Column(
-            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).imePadding(),
+            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Margin).imePadding(),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (first) {
                 Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(84.dp))
                     Spacer(Modifier.height(16.dp))
-                    Text("PowerDeck", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.SemiBold)
+                    Text("PowerDeck", style = MaterialTheme.typography.displaySmall)
                     Spacer(Modifier.height(6.dp))
                     Text("Turn your computers on and off from anywhere.", style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
@@ -236,18 +233,18 @@ fun AddScreen(state: UiState, a: AddActions, snackbar: SnackbarHostState) {
 @Composable
 private fun FoundRow(p: Peer, enabled: Boolean, onAdd: () -> Unit) {
     Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             val icon = if (p.isKvm) Icons.Rounded.SettingsInputComponent else Device(id = "", name = p.name, host = null, pin = null, os = p.os).icon()
-            IconTile(icon, 40)
-            Spacer(Modifier.width(12.dp))
+            IconTile(icon)
+            Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text(p.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(p.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     when {
-                        p.kind == "nanokvm" -> "NanoKVM · presses a power button"
-                        p.kind == "pikvm" -> "PiKVM · presses a power button"
-                        p.os == "windows" -> "Windows PC with PowerDeck"
-                        else -> "${p.os?.replaceFirstChar { it.uppercase() } ?: "Device"} with PowerDeck"
+                        p.kind == "nanokvm" -> "NanoKVM"
+                        p.kind == "pikvm" -> "PiKVM"
+                        p.os == "windows" -> "Windows PC"
+                        else -> p.os?.replaceFirstChar { it.uppercase() } ?: "Device"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

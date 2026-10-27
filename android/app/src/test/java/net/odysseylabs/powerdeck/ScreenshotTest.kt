@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -38,6 +39,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BatteryFull
+import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material3.Icon
 import com.github.takahirom.roborazzi.captureRoboImage
 import net.odysseylabs.powerdeck.data.Check
 import net.odysseylabs.powerdeck.data.Device
@@ -89,8 +94,8 @@ class ScreenshotTest {
         name, os, "2.0.0", 3 * 3600 + 720, pending, presence, null, emptyList(), true, guests, if (guests != null) listOf("public", "private", "agent") else emptyList(),
         updatesPending = os == "windows", checks = listOf(
             Check("tailscale", "ok", "Tailscale connected", null, false),
-            Check("fast_startup", "warn", "Fast Startup is on", "Turn it off so a shutdown is a real power-off the network card can wake from.", true),
-            Check("bios", "info", "BIOS: Wake-on-LAN on, ErP off", "Confirmed by the first successful test wake.", false),
+            Check("fast_startup", "warn", "Fast Startup is on", "Shutting down from the Start menu then leaves the PC unable to wake.", true),
+            Check("bios", "info", "Check the BIOS: Wake-on-LAN on, ErP off", "A first wake from the app confirms them.", false),
         ), youName = "Pixel",
     )
     private val all = UiState(
@@ -103,7 +108,7 @@ class ScreenshotTest {
     )
 
     private fun shot(name: String, content: @Composable () -> Unit) {
-        compose.setContent { PowerDeckTheme(dynamic = false) { content() } }
+        compose.setContent { PowerDeckTheme(dynamic = false) { WithStatusBar(content) } }
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
     }
 
@@ -201,6 +206,22 @@ class ScreenshotTest {
         }
     }
 
+    /** The screen under a phone's status bar, as it looks on a device (Robolectric has no system bars). */
+    @Composable
+    private fun WithStatusBar(screen: @Composable () -> Unit) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            Column {
+                Row(Modifier.fillMaxWidth().height(32.dp).padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("9:41", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    Icon(Icons.Rounded.Wifi, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Icon(Icons.Rounded.BatteryFull, null, Modifier.size(16.dp))
+                }
+                Box(Modifier.weight(1f)) { screen() }
+            }
+        }
+    }
+
     /** A 411×914 dp screen at 58 %, in a rounded bezel. */
     @Composable
     private fun Phone(x: Dp, y: Dp, dark: Boolean, screen: @Composable () -> Unit) {
@@ -212,7 +233,7 @@ class ScreenshotTest {
         ) {
             Box(Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).requiredSize(411.dp, 914.dp)
                 .graphicsLayer { scaleX = scale; scaleY = scale; transformOrigin = TransformOrigin(0f, 0f) }) {
-                PowerDeckTheme(dynamic = false, dark = dark) { Surface(color = MaterialTheme.colorScheme.background) { screen() } }
+                PowerDeckTheme(dynamic = false, dark = dark) { WithStatusBar(screen) }
             }
         }
     }
