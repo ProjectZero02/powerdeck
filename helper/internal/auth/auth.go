@@ -30,6 +30,9 @@ type Caller struct {
 	Node   string // short MagicDNS name of the caller's node
 	Scopes []string
 	Key    *store.Key // set for key holders
+	// Agent: an owner (a hub) relaying for an automation key. Such requests honour the device's
+	// "Allow AI agents" switch like the agent's own would.
+	Agent bool
 }
 
 // Has reports whether the caller has a scope.
@@ -37,6 +40,9 @@ func (c Caller) Has(scope string) bool { return slices.Contains(c.Scopes, scope)
 
 // IsAutomation reports whether the caller uses an automation key.
 func (c Caller) IsAutomation() bool { return c.Key != nil && c.Key.Kind == store.KindAutomation }
+
+// ForAgent reports whether the request comes from an AI agent, directly or through a hub.
+func (c Caller) ForAgent() bool { return c.IsAutomation() || c.Agent }
 
 // MayUse reports whether the caller may act on the named device (relay).
 func (c Caller) MayUse(device string) bool { return c.Key == nil || c.Key.MayUse(device) }

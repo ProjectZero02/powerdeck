@@ -67,7 +67,7 @@ type Options struct {
 }
 
 func uninstall(o Options) func() error {
-	if !o.Installed {
+	if !o.Installed || !setup.CanUninstall() {
 		return nil
 	}
 	return setup.UninstallLater

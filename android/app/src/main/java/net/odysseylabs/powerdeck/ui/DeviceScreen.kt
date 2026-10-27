@@ -335,6 +335,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         headlineContent = { Text("Allow AI agents to use this device") },
                         supportingContent = {
                             Text(when {
+                                agents == null && status != null -> "Only phones on ${d.name}'s Tailscale account can change this"
                                 agents == null -> "Turn ${d.name} on to change this"
                                 on -> "${keys.joinToString()} can use it. Shutdowns count down 60 s"
                                 else -> "Agents can see whether it's on, but can't turn it on or off"

@@ -49,35 +49,37 @@ fun uninstallBlocker(d: Device, st: DeviceState?): String? {
 }
 
 /**
- * Delete: remove from this phone only, or also uninstall PowerDeck from the device. Uninstalling
- * also removes it from every other phone, so it's never the default.
+ * Delete: remove from this phone only, or also uninstall PowerDeck from the device. Other phones
+ * can't reach it after an uninstall, so it's never the default.
  */
 @Composable
 fun DeleteDialog(d: Device, st: DeviceState?, onRemove: () -> Unit, onUninstall: () -> Unit, onDismiss: () -> Unit) {
     var uninstall by rememberSaveable { mutableStateOf(false) }
     val blocker = uninstallBlocker(d, st)
+    // The device may go off while the dialog is open.
+    val doUninstall = uninstall && blocker == null
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete ${d.name}?") },
         text = {
             Column(Modifier.selectableGroup()) {
                 Choice(
-                    selected = !uninstall, enabled = true, onClick = { uninstall = false },
+                    selected = !doUninstall, enabled = true, onClick = { uninstall = false },
                     title = "Remove from this phone",
                     sub = if (d.hasHelper) "PowerDeck stays on ${d.name}. You can add it again by scanning its code." else "Its KVM login is deleted from this phone.",
                 )
                 if (d.hasHelper) Choice(
-                    selected = uninstall, enabled = blocker == null, onClick = { uninstall = true },
+                    selected = doUninstall, enabled = blocker == null, onClick = { uninstall = true },
                     title = "Also uninstall PowerDeck from ${d.name}",
-                    sub = blocker ?: "Deletes PowerDeck and its settings, schedules and agent keys from ${d.name}. Other phones lose it too.",
+                    sub = blocker ?: "Deletes PowerDeck and its settings, schedules and agent keys from ${d.name}. Other phones can't control it any more.",
                 )
             }
         },
         confirmButton = {
             Button(
-                onClick = { onDismiss(); if (uninstall) onUninstall() else onRemove() },
+                onClick = { onDismiss(); if (doUninstall) onUninstall() else onRemove() },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
-            ) { Text(if (uninstall) "Uninstall" else "Remove") }
+            ) { Text(if (doUninstall) "Uninstall" else "Remove") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

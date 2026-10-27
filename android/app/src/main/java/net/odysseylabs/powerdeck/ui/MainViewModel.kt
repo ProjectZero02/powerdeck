@@ -405,7 +405,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setAgents(d: Device, on: Boolean) {
         viewModelScope.launch {
             deck.withHelper(d) { setAgents(on) }.fold(
-                { refreshNow() },
+                {
+                    refreshNow()
+                    // Helpers that relay for an agent remember the switch: have them look again.
+                    val s = _state.value
+                    s.devices.filter { it.id != d.id && it.hasHelper && s.states[it.id] is DeviceState.On }
+                        .forEach { other -> launch { deck.withHelper(other) { peers(refresh = true) } } }
+                },
                 { _messages.send(it.message ?: "Couldn't reach ${d.name}; try again when it's on.") },
             )
         }

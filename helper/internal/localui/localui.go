@@ -368,6 +368,7 @@ func (u *ui) settings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	changedAgents := req.Agents != nil && *req.Agents == u.Store.Settings().NoAgents
 	err := u.Store.UpdateSettings(func(s *store.Settings) {
 		if req.AutoUpdate != nil {
 			s.AutoUpdate = *req.AutoUpdate
@@ -385,6 +386,9 @@ func (u *ui) settings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if changedAgents {
+		u.Store.AddEvent(store.Event{At: time.Now(), Who: "this PC", Action: map[bool]string{true: "allowed AI agents", false: "turned AI agents away"}[*req.Agents], Result: "ok"})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

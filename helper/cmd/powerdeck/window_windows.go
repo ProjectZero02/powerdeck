@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/jchv/go-webview2/pkg/edge"
+	"github.com/jchv/go-webview2/webviewloader"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
@@ -50,6 +51,7 @@ var (
 	procLoadImageW        = user32.NewProc("LoadImageW")
 	procGetDpiForSystem   = user32.NewProc("GetDpiForSystem")
 	procGetSystemMetrics  = user32.NewProc("GetSystemMetrics")
+	procSetWindowPos      = user32.NewProc("SetWindowPos")
 	gdi32                 = windows.NewLazySystemDLL("gdi32.dll")
 	procCreateSolidBrush  = gdi32.NewProc("CreateSolidBrush")
 	dwmapi                = windows.NewLazySystemDLL("dwmapi.dll")
@@ -74,7 +76,10 @@ const (
 	wmGetMinMaxInfo  = 0x0024
 	wmDpiChanged     = 0x02E0
 	wsOverlappedWnd  = 0x00CF0000
+	swHide           = 0
 	swShow           = 5
+	swpNoZOrder      = 0x0004
+	swpNoActivate    = 0x0010
 	swRestore        = 9
 	smCxScreen       = 0
 	smCyScreen       = 1
@@ -147,8 +152,11 @@ func focusExisting() bool {
 
 type window struct {
 	hwnd uintptr
-	web  *edge.Chromium
+	web  *edge.Chromium // set once WebView2 is up
 	dpi  uint32
+	// closing: closed while WebView2 was still starting. The window is only hidden then, as
+	// WebView2 needs it until it's up.
+	closing bool
 }
 
 var win *window
@@ -156,6 +164,9 @@ var win *window
 func runWindow(url string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if v, err := webviewloader.GetInstalledVersion(); err != nil || v == "" {
+		return errors.New("WebView2 isn't installed")
+	}
 
 	inst, _, _ := procGetModuleHandleW.Call(0)
 	dark := darkTheme()
@@ -194,14 +205,20 @@ func runWindow(url string) error {
 	procShowWindow.Call(hwnd, swShow)
 	procUpdateWindow.Call(hwnd)
 
-	w.web = edge.NewChromium()
-	w.web.DataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "PowerDeck", "WebView2")
-	w.web.MessageCallback = w.message
-	if !w.web.Embed(hwnd) {
+	web := edge.NewChromium()
+	web.DataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "PowerDeck", "WebView2")
+	web.MessageCallback = w.message
+	ok := web.Embed(hwnd) // runs the message loop until WebView2 is up
+	if w.closing {
+		procDestroyWindow.Call(hwnd)
+		return nil // closed by the user: no browser either
+	}
+	if !ok {
 		win = nil
 		procDestroyWindow.Call(hwnd)
 		return errors.New("WebView2 isn't available")
 	}
+	w.web = web
 	if c2 := w.web.GetController().GetICoreWebView2Controller2(); c2 != nil {
 		b := bg(dark)
 		_ = c2.PutDefaultBackgroundColor(edge.COREWEBVIEW2_COLOR{A: 255, R: b[0], G: b[1], B: b[2]})
@@ -253,7 +270,11 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 				_ = w.web.NotifyParentWindowPositionChanged()
 			}
 		case wmDpiChanged:
+			// Moved to a screen with another scale: take the size Windows suggests for it.
 			w.dpi = uint32(wp & 0xFFFF)
+			r := *(**windows.Rect)(unsafe.Pointer(&lp))
+			procSetWindowPos.Call(hwnd, 0, uintptr(r.Left), uintptr(r.Top), uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoZOrder|swpNoActivate)
+			return 0
 		case wmGetMinMaxInfo:
 			mmi := *(**minMaxInfo)(unsafe.Pointer(&lp)) // lParam is a pointer (keeps go vet quiet)
 			mmi.MinTrackSize.X, mmi.MinTrackSize.Y = w.scale(560), w.scale(560)
@@ -264,6 +285,11 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 				theme(hwnd, darkTheme())
 			}
 		case wmClose:
+			if w.web == nil {
+				w.closing = true
+				procShowWindow.Call(hwnd, swHide)
+				return 0
+			}
 			procDestroyWindow.Call(hwnd)
 			return 0
 		case wmDestroy:

@@ -6,6 +6,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -238,6 +239,9 @@ func (s *server) with(scope string, h func(http.ResponseWriter, *http.Request, a
 		// An owner relaying for someone (a hub acting for an agent or a schedule) names them.
 		if who := clean(r.Header.Get(peer.ForHeader), 64); who != "" && c.Kind == auth.Owner {
 			c.Name = who + " via " + c.Name
+		}
+		if r.Header.Get(peer.AgentHeader) != "" && c.Kind == auth.Owner {
+			c.Agent = true
 		}
 		if scope != "" && !c.Has(scope) {
 			fail(w, http.StatusForbidden, "scope", "This key isn't allowed to do that.")
@@ -499,17 +503,16 @@ func (s *server) uninstall(w http.ResponseWriter, r *http.Request, c auth.Caller
 		fail(w, http.StatusConflict, "pending", "A shutdown or restart is counting down. Cancel it first.")
 		return
 	}
+	// Uninstall only starts the work (it waits a moment), so the answer still reaches the phone and
+	// a failure to start is reported to it.
+	if err := s.Uninstall(); err != nil {
+		s.Log.Error("uninstall failed", "err", err)
+		s.logEvent(c.Name, "uninstall PowerDeck", "failed")
+		fail(w, http.StatusInternalServerError, "uninstall_failed", "PowerDeck couldn't start its uninstaller: "+err.Error())
+		return
+	}
 	s.logEvent(c.Name, "uninstalled PowerDeck", "ok")
 	w.WriteHeader(http.StatusAccepted)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-	go func() {
-		time.Sleep(time.Second) // let the answer reach the phone first
-		if err := s.Uninstall(); err != nil {
-			s.Log.Error("uninstall failed", "err", err)
-		}
-	}()
 }
 
 func utcOffsetMinutes(t time.Time) int {
@@ -563,7 +566,7 @@ func (s *server) localPower(ctx context.Context, c auth.Caller, action string, r
 	if !c.MayUse(s.Name) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + s.Name + "."}
 	}
-	if c.IsAutomation() && action != "cancel" {
+	if c.ForAgent() && action != "cancel" {
 		if e := s.agentsAllowed(ctx, s.Name, false); e != nil {
 			return nil, e
 		}
@@ -637,31 +640,39 @@ func (s *server) wake(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		fail(w, http.StatusBadRequest, "bad_request", "Send {\"mac\": \"aa:bb:cc:dd:ee:ff\"}.")
 		return
 	}
+	mac, err := net.ParseMAC(req.MAC)
+	if err != nil || len(mac) != 6 {
+		fail(w, http.StatusBadRequest, "bad_request", "That isn't a MAC address.")
+		return
+	}
 	// A raw MAC could be any device, so keys limited to some devices wake by name (the relay).
 	// Pairing-code keys may: a tagged hub has no owner, and a magic packet only ever turns things on.
 	if c.Key != nil && len(c.Key.Devices) > 0 {
 		fail(w, http.StatusForbidden, "device", "This key can't wake other devices directly.")
 		return
 	}
-	if c.IsAutomation() {
+	if c.ForAgent() {
+		// Compare addresses, not text: aa-bb-… and aabb.cc… name the same card.
 		for _, p := range s.Store.Peers() {
-			if p.NoAgents && strings.EqualFold(p.MAC, req.MAC) {
+			if pm, err := net.ParseMAC(p.MAC); err == nil && p.NoAgents && bytes.Equal(pm, mac) {
 				failErr(w, s.agentsAllowed(r.Context(), p.Name, false))
 				return
 			}
 		}
-		if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(req.MAC), kindWake); e != nil {
+	}
+	if c.IsAutomation() {
+		if e := s.quota.take(c.Key.ID+"/"+mac.String(), kindWake); e != nil {
 			failErr(w, e)
 			return
 		}
 	}
 	n, _ := s.Network()
-	sent, err := s.Wake(req.MAC, n.LAN)
+	sent, err := s.Wake(mac.String(), n.LAN)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "wake_failed", err.Error())
 		return
 	}
-	s.logEvent(c.Name, "wake "+req.MAC, "sent")
+	s.logEvent(c.Name, "wake "+mac.String(), "sent")
 	writeJSON(w, http.StatusOK, map[string]any{"sentOn": sent})
 }
 

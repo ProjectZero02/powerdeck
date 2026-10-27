@@ -64,10 +64,13 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 	if device != s.Name && c.Kind != auth.Owner && !c.IsAutomation() {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can only control " + s.Name + "."}
 	}
-	if c.IsAutomation() && action == "wake" {
+	if c.ForAgent() && action == "wake" {
 		if e := s.agentsAllowed(ctx, device, false); e != nil {
 			return nil, e
 		}
+	}
+	if c.ForAgent() {
+		ctx = peer.ForAgent(ctx) // the device checks its own switch too
 	}
 	if device == s.Name {
 		switch action {
@@ -108,10 +111,12 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 			return nil, &apiError{Status: http.StatusForbidden, Code: "self",
 				Message: "An agent can't shut down or restart the device it runs on."}
 		}
-		if c.IsAutomation() && action != "cancel" {
+		if c.ForAgent() && action != "cancel" {
 			if e := s.agentsAllowed(ctx, device, true); e != nil {
 				return nil, e
 			}
+		}
+		if c.IsAutomation() && action != "cancel" {
 			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindPower); e != nil {
 				return nil, e
 			}

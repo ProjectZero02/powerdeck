@@ -7,6 +7,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageProxy
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
@@ -44,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -114,34 +116,49 @@ fun ScanScreen(onCode: (String) -> Unit, onBack: () -> Unit) {
 private fun Camera(onCode: (String) -> Unit) {
     val ctx = LocalContext.current
     val owner = LocalLifecycleOwner.current
+    val latestOnCode by rememberUpdatedState(onCode)
     var torch by remember { mutableStateOf(false) }
     var hasTorch by remember { mutableStateOf(false) }
+    var noCamera by remember { mutableStateOf(false) }
     var wrong by remember { mutableStateOf(0L) }
     val done = remember { AtomicBoolean(false) }
-    val worker = remember { Executors.newSingleThreadExecutor() }
     val controller = remember {
-        LifecycleCameraController(ctx).apply {
-            setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
-            val main = ContextCompat.getMainExecutor(ctx)
-            val reader = QRCodeReader()
-            setImageAnalysisAnalyzer(worker) { image ->
-                val text = image.use { decodeQr(reader, it) } ?: return@setImageAnalysisAnalyzer
-                main.execute {
-                    when {
-                        AddLink.parse(text) != null -> if (done.compareAndSet(false, true)) onCode(text)
-                        else -> wrong = System.currentTimeMillis()
-                    }
+        LifecycleCameraController(ctx).apply { setEnabledUseCases(CameraController.IMAGE_ANALYSIS) }
+    }
+    DisposableEffect(owner, controller) {
+        val main = ContextCompat.getMainExecutor(ctx)
+        val worker = Executors.newSingleThreadExecutor()
+        val reader = QRCodeReader()
+        controller.setImageAnalysisAnalyzer(worker) { image ->
+            val text = image.use { decodeQr(reader, it) } ?: return@setImageAnalysisAnalyzer
+            main.execute {
+                when {
+                    AddLink.parse(text) != null -> if (done.compareAndSet(false, true)) latestOnCode(text)
+                    else -> wrong = System.currentTimeMillis()
                 }
             }
         }
-    }
-    DisposableEffect(owner) {
         controller.bindToLifecycle(owner)
-        controller.initializationFuture.addListener({ hasTorch = controller.cameraInfo?.hasFlashUnit() == true }, ContextCompat.getMainExecutor(ctx))
+        controller.initializationFuture.addListener({
+            noCamera = runCatching { controller.initializationFuture.get(); !controller.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) }.getOrDefault(true)
+            hasTorch = controller.cameraInfo?.hasFlashUnit() == true
+        }, main)
         onDispose {
+            controller.clearImageAnalysisAnalyzer()
             controller.unbind()
             worker.shutdown()
         }
+    }
+    // The camera turns the light off when the app goes to the background.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (torch) controller.enableTorch(true) }
+    if (noCamera) {
+        Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "This phone's camera isn't available. Go back and type the computer's Tailscale name instead.",
+                style = MaterialTheme.typography.bodyLarge, color = Color.White, textAlign = TextAlign.Center,
+            )
+        }
+        return
     }
     AndroidView(
         factory = { c -> PreviewView(c).apply { scaleType = PreviewView.ScaleType.FILL_CENTER; this.controller = controller } },

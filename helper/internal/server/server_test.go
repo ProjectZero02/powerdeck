@@ -680,6 +680,17 @@ func TestAgentsTurnedAway(t *testing.T) {
 	if code, out := e.do(req{method: "POST", path: "/v2/wake", from: atlas, key: anyKey, body: map[string]any{"mac": "AA:00:00:00:00:03"}}); code != http.StatusForbidden {
 		t.Errorf("raw wake of a device that turned agents away: %d %v", code, out)
 	}
+	if code, out := e.do(req{method: "POST", path: "/v2/wake", from: atlas, key: anyKey, body: map[string]any{"mac": "aa-00-00-00-00-03"}}); code != http.StatusForbidden {
+		t.Errorf("raw wake spelled with dashes: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: atlas, key: anyKey, body: map[string]any{"mac": "not-a-mac"}}); code != http.StatusBadRequest {
+		t.Errorf("raw wake of nonsense: %d", code)
+	}
+	// A hub relaying an agent's request: the agent mark comes along and this helper refuses too.
+	agent := map[string]string{peer.ForHeader: "Atlas", peer.AgentHeader: "1"}
+	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: phone, header: agent}); code != http.StatusForbidden || out["error"] != "agents_off" {
+		t.Errorf("relayed agent while agents are off: %d %v", code, out)
+	}
 }
 
 func TestUninstall(t *testing.T) {

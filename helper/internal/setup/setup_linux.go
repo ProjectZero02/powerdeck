@@ -206,10 +206,16 @@ func PrepareNetwork(e Env) error {
 	return wol.Arm(n.Interface)
 }
 
-// UninstallLater runs `powerdeck-helper uninstall --purge` as its own systemd unit, so it survives
-// the service it stops.
+// CanUninstall: systemd-run is there to run the uninstall outside the service.
+func CanUninstall() bool {
+	_, err := exec.LookPath("systemd-run")
+	return err == nil
+}
+
+// UninstallLater runs `powerdeck-helper uninstall --purge` as its own systemd unit two seconds from
+// now, so it survives the service it stops and the phone gets its answer first.
 func UninstallLater() error {
-	out, err := exec.Command("systemd-run", "--no-block", "--collect", "--unit=powerdeck-uninstall",
+	out, err := exec.Command("systemd-run", "--no-block", "--collect", "--unit=powerdeck-uninstall", "--on-active=2s",
 		BinPath, "uninstall", "--purge").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemd-run: %v: %s", err, strings.TrimSpace(string(out)))

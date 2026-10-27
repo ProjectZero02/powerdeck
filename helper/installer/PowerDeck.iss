@@ -57,6 +57,8 @@ Filename: "{app}\PowerDeck.exe"; Parameters: "open"; Flags: nowait postinstall r
 
 [UninstallRun]
 Filename: "{app}\PowerDeck.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "PowerDeckUninstall"
+; An open PC window or tray icon would keep PowerDeck.exe from being deleted.
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM PowerDeck.exe"; Flags: runhidden waituntilterminated; RunOnceId: "PowerDeckStopWindows"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\PowerDeck"

@@ -206,6 +206,10 @@ AI agents and scripts talk to **one always-on helper** (a "hub", e.g. a home ser
 relays to the other devices, because a PC that's off can't answer for itself: it wakes devices
 through its own LAN and forwards shutdown/restart/status to their helpers. The hub reaches other
 helpers as their owner (same Tailscale user), so this only works between devices of one owner.
+When it relays for an agent it adds `X-PowerDeck-For: <key name>` (shown in the target's history)
+and `X-PowerDeck-Agent: 1`, so the target applies its own `agents` switch too. Both headers are
+honoured from owners only. Helpers before 2.0.3 don't send or check `X-PowerDeck-Agent`; there the
+hub's remembered copy of the switch (refreshed with `GET /v2/peers?refresh=1`) is the only check.
 
 The hub serves MCP (streamable HTTP, stateless JSON-RPC `tools/list` and `tools/call`) with
 `Authorization: Bearer <automation key>` at:

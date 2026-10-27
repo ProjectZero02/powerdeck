@@ -95,6 +95,15 @@ func (e *Error) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Cod
 // log, shutdown message), and only when the caller is an owner.
 const ForHeader = "X-PowerDeck-For"
 
+// AgentHeader marks a relayed request as made for an AI agent, so the device applies its
+// "Allow AI agents" switch itself. It can only take rights away, so helpers trust it from owners.
+const AgentHeader = "X-PowerDeck-Agent"
+
+type agentKey struct{}
+
+// ForAgent marks requests sent with ctx as made for an AI agent (see AgentHeader).
+func ForAgent(ctx context.Context) context.Context { return context.WithValue(ctx, agentKey{}, true) }
+
 // Do sends a pinned request and decodes a JSON answer into out (may be nil). onBehalfOf, when set,
 // is sent as ForHeader.
 func Do(ctx context.Context, addr string, port int, pin, method, path string, body, out any, onBehalfOf string) error {
@@ -112,6 +121,9 @@ func Do(ctx context.Context, addr string, port int, pin, method, path string, bo
 	}
 	if onBehalfOf != "" {
 		req.Header.Set(ForHeader, onBehalfOf)
+	}
+	if ctx.Value(agentKey{}) != nil {
+		req.Header.Set(AgentHeader, "1")
 	}
 	resp, err := client(pin, 15*time.Second, nil).Do(req)
 	if err != nil {

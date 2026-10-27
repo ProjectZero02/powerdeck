@@ -499,17 +499,33 @@ func Checks(e Env) []check.Check {
 // PrepareNetwork is a no-op on Windows: the driver keeps its Wake-on-LAN setting.
 func PrepareNetwork(Env) error { return nil }
 
-// UninstallLater starts PowerDeck's own uninstaller detached from the service (it stops the service
-// on its way out), removing the program, service, firewall rule and data folder.
-func UninstallLater() error {
+// CanUninstall: the uninstaller Inno Setup left next to the program is there.
+func CanUninstall() bool {
+	_, err := uninstaller()
+	return err == nil
+}
+
+func uninstaller() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
 	unins := filepath.Join(filepath.Dir(exe), "unins000.exe")
 	if _, err := os.Stat(unins); err != nil {
-		return errors.New("PowerDeck's uninstaller is missing; uninstall it in Windows Settings → Apps")
+		return "", errors.New("PowerDeck's uninstaller is missing; uninstall it in Windows Settings → Apps")
 	}
+	return unins, nil
+}
+
+// UninstallLater starts PowerDeck's own uninstaller detached from the service (it stops the service
+// on its way out), removing the program, service, firewall rule and data folder.
+func UninstallLater() error {
+	unins, err := uninstaller()
+	if err != nil {
+		return err
+	}
+	// The uninstaller copies itself to a temp folder and restarts before it stops the service, which
+	// leaves time for the answer to reach the phone.
 	cmd := exec.Command(unins, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
 	if err := cmd.Start(); err != nil {
