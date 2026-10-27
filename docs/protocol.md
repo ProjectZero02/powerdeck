@@ -18,7 +18,7 @@ for 60 s per address). A caller is one of:
 
 | Caller | How it's recognised | Allowed |
 |---|---|---|
-| **Owner** | Untagged node owned by the same Tailscale user as this helper's node, not shared in from another tailnet | Everything |
+| **Owner** | Untagged node owned by the same Tailscale user as this helper's node, not shared in from another tailnet, and not this node itself (a program here reaching its own tailnet address is local, like loopback: it needs the local token) | Everything |
 | **Key holder** | Any tailnet caller presenting `Authorization: Bearer <key>` for a key this helper issued | The key's scopes |
 | **Anyone else** | | `GET /v2/hello` only |
 
@@ -83,7 +83,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | POST | `/v2/power/restart` | `power` | same as shutdown |
 | POST | `/v2/power/cancel` | `power` | → `200 {pending:null}` or `409 nothing_pending` |
 | POST | `/v2/wake` | `wake` | `{mac}` → `200 {sentOn:[interface names]}`. Sends a magic packet to the helper's LANs |
-| POST | `/v2/checks/{id}/fix` | `admin` | → `200 {check}` after applying the fix |
+| POST | `/v2/checks/{id}/fix` | owner | → `200 {check}` after applying the fix |
 | GET | `/v2/schedules` | `status` | → `{schedules:[Schedule]}` |
 | POST | `/v2/schedules` | `admin` | `Schedule` without `id` → `{id}`. Wake schedules (another device) are owner-only |
 | DELETE | `/v2/schedules/{id}` | `admin` | → `204` |
@@ -91,7 +91,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | GET | `/v2/keys` | owner | → `{keys:[{id, name, scopes, createdAt, lastUsed}]}` |
 | POST | `/v2/keys` | owner | `{name, scopes, devices?, allowSelf?}` → `{id, key}` (shown once) |
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
-| GET | `/v2/pairing` | `admin` | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
+| GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
 | POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp) |
@@ -107,7 +107,7 @@ before retrying with `force: true`. Callers without the `force` scope can't over
 ```json
 {
   "name": "Workstation", "os": "windows", "version": "2.0.0", "apiVersion": 2,
-  "bootTime": "2026-10-27T06:08:02Z", "uptimeSeconds": 4123,
+  "bootTime": "2026-10-27T06:08:02Z", "uptimeSeconds": 4123, "utcOffsetMinutes": 60,
   "pending": {"action": "shutdown", "at": "2026-10-27T09:10:00Z", "by": "Pixel 9 Pro"},
   "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
   "guests": {"running": 3, "names": ["public", "private", "agent"]},

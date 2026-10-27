@@ -12,6 +12,7 @@ import net.odysseylabs.powerdeck.data.HelperException
 import net.odysseylabs.powerdeck.data.Lan
 import net.odysseylabs.powerdeck.data.Presence
 import net.odysseylabs.powerdeck.data.Updater
+import net.odysseylabs.powerdeck.ui.clockNote
 import okhttp3.OkHttpClient
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
@@ -267,5 +268,14 @@ class UpdaterTest {
         assertFalse(Updater.newer("1.0.0", "1.0.0"))
         assertFalse(Updater.newer("1.0.0", "1.0.1"))
         assertNotNull(Updater.APK)
+    }
+
+    @Test
+    fun scheduleClockNote() {
+        assertEquals(null, clockNote("Server", 60, phoneOffsetMinutes = 60))
+        assertEquals(null, clockNote("Server", null, phoneOffsetMinutes = 60))
+        assertEquals("Times are on Server's clock (UTC+0), 1 h behind your phone.", clockNote("Server", 0, phoneOffsetMinutes = 60))
+        assertEquals("Times are on Server's clock (UTC+5:30), 4 h 30 min ahead of your phone.", clockNote("Server", 330, phoneOffsetMinutes = 60))
+        assertEquals("Times are on Server's clock (UTC−5), 6 h behind your phone.", clockNote("Server", -300, phoneOffsetMinutes = 60))
     }
 }

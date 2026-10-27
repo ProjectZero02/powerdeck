@@ -40,10 +40,12 @@ func TestKeysPersistAndOnlyHashesAreStored(t *testing.T) {
 	if _, ok := s2.Authenticate("no-prefix", now); ok {
 		t.Error("unprefixed key accepted")
 	}
-	if err := s2.BindKey(k.ID, "node-1"); err != nil {
+	if b, err := s2.BindKey(k.ID, "node-1"); err != nil || b != "node-1" {
 		t.Fatal(err)
 	}
-	_ = s2.BindKey(k.ID, "node-2") // first binding wins
+	if b, _ := s2.BindKey(k.ID, "node-2"); b != "node-1" { // first binding wins
+		t.Errorf("rebound to %q", b)
+	}
 	if got, _ := s2.Authenticate(secret, now); got.BoundNode != "node-1" {
 		t.Errorf("bound to %q", got.BoundNode)
 	}
@@ -96,5 +98,34 @@ func TestSchedules(t *testing.T) {
 	}
 	if len(s.Schedules()) != 1 || s.RemoveSchedule(sc.ID) != nil || len(s.Schedules()) != 0 {
 		t.Fatal("schedule round trip")
+	}
+}
+
+func TestOpenRecoversFromBrokenState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.PutPeer(Peer{Name: "pve", Address: "100.101.1.20", Port: 47321, Pin: "p1"})
+	_ = s.PutPeer(Peer{Name: "nas", Address: "100.101.1.21", Port: 47321, Pin: "p2"}) // pve is now in the backup
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"peers": {`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("broken state should fall back: %v", err)
+	}
+	if _, ok := s2.Peer("pve"); !ok {
+		t.Error("backup not used")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state.json.broken")); err != nil {
+		t.Errorf("broken file not kept: %v", err)
+	}
+	// Both unreadable: start fresh instead of refusing to run.
+	_ = os.WriteFile(filepath.Join(dir, "state.json"), []byte("x"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "state.json.bak"), []byte("x"), 0o600)
+	if s3, err := Open(dir); err != nil || !s3.Settings().AutoUpdate {
+		t.Errorf("fresh start: %v", err)
 	}
 }

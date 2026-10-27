@@ -290,7 +290,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     /** Whether the helper answers, with one retry so a dropped packet doesn't read as "off". */
     private suspend fun answers(d: Device): Boolean {
         repeat(2) { i ->
-            if (runCatching { client(d)!!.hello() }.isSuccess) return true
+            val r = runCatching { client(d)!!.hello() }
+            // A changed identity still means something is running there: never press its button.
+            if (r.isSuccess || r.exceptionOrNull() is HelperException.WrongDevice) return true
             if (i == 0) delay(1500)
         }
         return false

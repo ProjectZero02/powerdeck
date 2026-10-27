@@ -1,10 +1,11 @@
 #!/bin/sh
 # PowerDeck helper installer for Linux (systemd): servers, Raspberry Pi, NAS, desktops.
 #
-#   curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh
 #
-# Uninstall:          ... | sudo sh -s -- --uninstall      (add --purge to delete keys and settings)
-# Specific version:   ... | sudo POWERDECK_VERSION=2.0.0 sh
+# Run it as root, or as a user with sudo (it asks for your password and re-runs itself as root).
+# Uninstall:          ... | sh -s -- --uninstall      (add --purge to delete keys and settings)
+# Specific version:   ... | POWERDECK_VERSION=2.0.0 sh
 #
 # It downloads the helper for this CPU, checks it against the release's SHA256SUMS.txt and its
 # Ed25519 signature, installs it as a systemd service and shows the QR code that adds this device
@@ -32,7 +33,17 @@ for a in "$@"; do
   esac
 done
 
-[ "$(id -u)" -eq 0 ] || die "run this as root: curl -fsSL ... | sudo sh"
+if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null 2>&1 || die "run this as root (for example after su -)"
+  say "PowerDeck installs a system service, so it needs root. sudo may ask for your password."
+  case "$0" in
+    *.sh) exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh "$0" "$@" ;; # run from a saved file
+  esac
+  # Piped from curl: this copy of the script was read from stdin, so fetch it again as root.
+  SELF="https://github.com/$REPO/releases/latest/download/install.sh"
+  [ -z "${POWERDECK_VERSION:-}" ] || SELF="https://github.com/$REPO/releases/download/v${POWERDECK_VERSION#v}/install.sh"
+  exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh -c 'curl -fsSL "$0" | sh -s -- "$@"' "$SELF" "$@"
+fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
   [ -x /usr/local/bin/powerdeck-helper ] || die "PowerDeck isn't installed"

@@ -125,6 +125,12 @@ func Run(ctx context.Context, o Options) error {
 	pm := pairing.NewManager(now)
 	pc := power.NewController(o.System, now)
 	upd := update.NewManager(o.DataDir, log)
+	upd.Busy = func() string {
+		if pc.Pending() != nil {
+			return "a shutdown or restart is counting down"
+		}
+		return ""
+	}
 	network := cachedNetwork()
 	env := setup.Env{TS: ts, Store: st, Network: network, Now: now}
 	checkList := func() []check.Check { return setup.Checks(env) }
@@ -145,7 +151,7 @@ func Run(ctx context.Context, o Options) error {
 			}
 			return ""
 		},
-		Network: network, Checks: runChecks, Fix: fix, Guests: guests.Running, Wake: wol.Send,
+		Network: network, Checks: runChecks, Fix: fix, Guests: guests.Cached(15*time.Second, guests.Running), Wake: wol.Send,
 		PairLink: func() (string, string) {
 			ip, _ := netinfo.TailnetIPv4()
 			code := pm.Current().Value

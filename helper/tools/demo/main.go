@@ -58,7 +58,7 @@ func main() {
 				{ID: "wired", Level: check.OK, Title: "Wired network", Detail: "Ethernet · d8:5e:d3:12:34:56"},
 				{ID: "wol_nic", Level: check.OK, Title: "Wake-on-LAN on Ethernet", Detail: "d8:5e:d3:12:34:56"},
 				{ID: "fast_startup", Level: check.OK, Title: "Fast Startup off"},
-				{ID: "bios", Level: check.Info, Title: "BIOS: Wake-on-LAN on, ErP/EuP off", Detail: "These are BIOS settings PowerDeck can't see. Run Test wake in the app once to confirm."},
+				{ID: "bios", Level: check.Info, Title: "BIOS: Wake-on-LAN on, ErP/EuP off", Detail: "These are BIOS settings PowerDeck can't see. Turn it off, then tap Turn on in the app once to confirm."},
 				{ID: "updates", Level: check.OK, Title: "Automatic updates on"},
 			}
 		},

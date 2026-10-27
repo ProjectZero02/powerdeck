@@ -76,7 +76,7 @@ import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.Peer
 
 const val INSTALL_WINDOWS = "irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.ps1 | iex"
-const val INSTALL_LINUX = "curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sudo sh"
+const val INSTALL_LINUX = "curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh"
 
 data class AddActions(
     val back: (() -> Unit)? = null,

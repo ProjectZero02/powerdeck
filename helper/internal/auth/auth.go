@@ -86,8 +86,9 @@ func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer strin
 				return Caller{Kind: Nobody}, ErrBadKey
 			}
 			if k.BoundNode == "" {
-				_ = a.Store.BindKey(k.ID, id.NodeID)
-				k.BoundNode = id.NodeID
+				// Two first uses can race; whichever node the store bound wins.
+				bound, _ := a.Store.BindKey(k.ID, id.NodeID) // "" if it was revoked meanwhile
+				k.BoundNode = bound
 			}
 			if k.BoundNode != id.NodeID {
 				return Caller{Kind: Nobody}, ErrBadKey
@@ -111,13 +112,18 @@ func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer strin
 	return Caller{Kind: Nobody, NodeID: id.NodeID}, nil
 }
 
-// isOwner: an untagged node, not shared in, owned by the same user as this (untagged) device.
+// isOwner: an untagged node, not shared in, owned by the same user as this (untagged) device. This
+// device itself doesn't count: a program here reaching our own tailnet address is as local as one
+// on loopback, so it needs the local token too.
 func (a *Authenticator) isOwner(ctx context.Context, id tailscale.Identity) bool {
 	if id.Tagged || id.Shared || id.UserID == 0 {
 		return false
 	}
 	st, err := a.TS.Status(ctx)
 	if err != nil || len(st.Self.Tags) > 0 || st.Self.UserID == 0 {
+		return false
+	}
+	if id.NodeID == "" || id.NodeID == st.Self.ID {
 		return false
 	}
 	return st.Self.UserID == id.UserID

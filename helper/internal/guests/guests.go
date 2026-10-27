@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,24 @@ func Running(ctx context.Context) *Info {
 		info.add(ParsePCT(string(out)))
 	}
 	return info
+}
+
+// Cached wraps list so it runs at most once per ttl, and once at a time: qm and pct take about a
+// second each, and every phone polls status every few seconds.
+func Cached(ttl time.Duration, list func(context.Context) *Info) func(context.Context) *Info {
+	var (
+		mu   sync.Mutex
+		last *Info
+		at   time.Time
+	)
+	return func(ctx context.Context) *Info {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) > ttl {
+			last, at = list(context.WithoutCancel(ctx)), time.Now() // a dropped request mustn't cache "none running"
+		}
+		return last
+	}
 }
 
 func (i *Info) add(names []string) {

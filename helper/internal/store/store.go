@@ -126,34 +126,67 @@ type Store struct {
 
 // Open loads (or creates) state.json in dir.
 func Open(dir string) (*Store, error) {
-	s := &Store{path: filepath.Join(dir, "state.json"), st: state{Settings: Settings{AutoUpdate: true}}}
-	b, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		s.st.Peers = map[string]Peer{}
-		return s, s.saveLocked()
+	s := &Store{path: filepath.Join(dir, "state.json")}
+	err := s.load(s.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Unreadable (e.g. cut short by a power loss): keep it aside and fall back to the last good
+		// copy, or start fresh, rather than leave the device unreachable.
+		_ = os.Rename(s.path, s.path+".broken")
 	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(b, &s.st); err != nil {
-		return nil, err
+	if err != nil && s.load(s.path+".bak") != nil {
+		s.st = state{Settings: Settings{AutoUpdate: true}}
 	}
 	if s.st.Peers == nil {
 		s.st.Peers = map[string]Peer{}
 	}
+	if err != nil {
+		return s, s.saveLocked()
+	}
 	return s, nil
 }
 
+func (s *Store) load(path string) error {
+	s.st = state{Settings: Settings{AutoUpdate: true}}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &s.st)
+}
+
+// saveLocked writes the state durably: a synced temp file renamed over the old one, which is kept
+// as state.json.bak in case the new one is lost to a power cut.
 func (s *Store) saveLocked() error {
 	b, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if cur, err := os.ReadFile(s.path); err == nil && json.Valid(cur) {
+		_ = os.WriteFile(s.path+".bak", cur, 0o600)
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	if d, err := os.Open(filepath.Dir(s.path)); err == nil { // make the rename durable (Linux)
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 // HashKey is the stored form of a key.
@@ -215,19 +248,19 @@ func (s *Store) Authenticate(secret string, now time.Time) (Key, bool) {
 }
 
 // BindKey records the tailnet node an automation key is used from, the first time.
-func (s *Store) BindKey(id, node string) error {
+func (s *Store) BindKey(id, node string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.st.Keys {
 		if s.st.Keys[i].ID == id {
 			if s.st.Keys[i].BoundNode == "" {
 				s.st.Keys[i].BoundNode = node
-				return s.saveLocked()
+				return node, s.saveLocked()
 			}
-			return nil
+			return s.st.Keys[i].BoundNode, nil
 		}
 	}
-	return ErrNotFound
+	return "", ErrNotFound
 }
 
 // RemoveKey revokes a key.

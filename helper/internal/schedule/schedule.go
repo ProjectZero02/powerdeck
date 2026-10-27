@@ -22,16 +22,19 @@ func Due(sc store.Schedule, now time.Time) bool {
 	return false
 }
 
-// Loop checks every 20 seconds and runs each due schedule once per minute.
+// Loop checks every 20 seconds and runs each due schedule once per minute. Nothing runs in the minute
+// the helper started: a restart (an update, a crash) right after a schedule fired, or after someone
+// cancelled it, mustn't run it again.
 func Loop(ctx context.Context, list func() []store.Schedule, run func(context.Context, store.Schedule), now func() time.Time) {
 	done := map[string]string{} // schedule ID -> minute it last ran
+	started := now().Format("2006-01-02T15:04")
 	t := time.NewTicker(20 * time.Second)
 	defer t.Stop()
 	for {
 		n := now()
 		minute := n.Format("2006-01-02T15:04")
 		for _, sc := range list() {
-			if Due(sc, n) && done[sc.ID] != minute {
+			if Due(sc, n) && done[sc.ID] != minute && minute != started {
 				done[sc.ID] = minute
 				go run(ctx, sc)
 			}

@@ -74,6 +74,7 @@ import net.odysseylabs.powerdeck.data.Check
 import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
+import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.Schedule
@@ -241,6 +242,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                             add(if (s.days.size == 7) "Every day" else s.days.joinToString(" ") { it.replaceFirstChar(Char::uppercase) })
                             if (s.action != "wake" && s.skipIfInUse) add("skipped while in use")
                             if (host.id != d.id) add("kept by ${host.name}")
+                            else if (clockNote(d.name, status?.utcOffsetMinutes) != null) add("${d.name}'s time")
                         }.joinToString(" · "),
                         trailing = { IconButton(onClick = { a.removeSchedule(host, s) }) { Icon(Icons.Rounded.Delete, contentDescription = "Remove") } },
                     )
@@ -332,7 +334,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             dismissButton = { TextButton(onClick = { confirmForce = false }) { Text("Cancel") } },
         )
     }
-    if (scheduling) ScheduleDialog(d, onSave = { act, t, days, skip -> scheduling = false; a.addSchedule(act, t, days, skip) }, onDismiss = { scheduling = false })
+    if (scheduling) ScheduleDialog(d, status, onSave = { act, t, days, skip -> scheduling = false; a.addSchedule(act, t, days, skip) }, onDismiss = { scheduling = false })
     if (addingKey) KeyDialog(d, state.devices, onCreate = { n, p, devs -> a.addKey(n, p, devs); addingKey = false }, onDismiss = { addingKey = false })
     detail.newKey?.let { NewKeyDialog(d, it, a.clearNewKey) }
     linkKvm?.let { p -> KvmDialog(p, state.devices, onLink = a.linkKvm, onDismiss = { linkKvm = null }, fixedDevice = d) }
@@ -346,7 +348,7 @@ private fun EventRow(e: Event, d: Device) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun ScheduleDialog(d: Device, onSave: (String, String, List<String>, Boolean) -> Unit, onDismiss: () -> Unit) {
+private fun ScheduleDialog(d: Device, status: HelperStatus?, onSave: (String, String, List<String>, Boolean) -> Unit, onDismiss: () -> Unit) {
     var action by rememberSaveable { mutableStateOf("shutdown") }
     var days by rememberSaveable { mutableStateOf(DAYS) }
     var skip by rememberSaveable { mutableStateOf(true) }
@@ -364,6 +366,10 @@ private fun ScheduleDialog(d: Device, onSave: (String, String, List<String>, Boo
                 }
                 Spacer(Modifier.height(12.dp))
                 TimePicker(time)
+                clockNote(d.name, status?.utcOffsetMinutes)?.takeIf { action != "wake" }?.let { // wakes run on the sender's clock
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                    Spacer(Modifier.height(8.dp))
+                }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     DAYS.forEach { day ->
                         FilterChip(selected = day in days, onClick = { days = if (day in days) days - day else DAYS.filter { it in days || it == day } },
@@ -374,6 +380,10 @@ private fun ScheduleDialog(d: Device, onSave: (String, String, List<String>, Boo
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Skip if someone is using it", Modifier.weight(1f))
                         Switch(checked = skip, onCheckedChange = { skip = it })
+                    }
+                    if (status?.guestsRunning != null) {
+                        Text("Running VMs don't count as in use; they're shut down cleanly first.", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
                     Text("Sent by another always-on device with the helper on the same network.", style = MaterialTheme.typography.bodySmall,
@@ -386,6 +396,16 @@ private fun ScheduleDialog(d: Device, onSave: (String, String, List<String>, Boo
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+/** Schedules run on the device's clock; say so when it differs from the phone's. */
+internal fun clockNote(name: String, offsetMinutes: Int?, phoneOffsetMinutes: Int = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000): String? {
+    if (offsetMinutes == null || offsetMinutes == phoneOffsetMinutes) return null
+    fun span(m: Int) = if (m % 60 == 0) "${m / 60} h" else "${m / 60} h ${m % 60} min"
+    val o = kotlin.math.abs(offsetMinutes)
+    val zone = "UTC" + (if (offsetMinutes < 0) "−" else "+") + (o / 60) + (if (o % 60 != 0) ":%02d".format(o % 60) else "")
+    val diff = phoneOffsetMinutes - offsetMinutes
+    return "Times are on $name's clock ($zone), ${span(kotlin.math.abs(diff))} ${if (diff > 0) "behind" else "ahead of"} your phone."
 }
 
 @Composable

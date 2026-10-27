@@ -244,6 +244,15 @@ func TestOwnerIsTrustedByTailscaleIdentity(t *testing.T) {
 	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: "127.0.0.1:1", key: "pdl_local"}); code != 200 {
 		t.Errorf("loopback with token: %d", code)
 	}
+	// Any program on this device can reach its own tailnet address; that's local too, not the owner.
+	for _, path := range []string{"/v2/status", "/v2/keys", "/v2/pairing"} {
+		if code, _ := e.do(req{method: "GET", path: path, from: selfAddr}); code != http.StatusUnauthorized {
+			t.Errorf("own tailnet address %s: %d", path, code)
+		}
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/power/shutdown", from: selfAddr, body: map[string]any{}}); code != http.StatusUnauthorized {
+		t.Errorf("own tailnet address shut down: %d", code)
+	}
 }
 
 func TestPairingCodeForAnotherAccount(t *testing.T) {
@@ -275,6 +284,12 @@ func TestPairingCodeForAnotherAccount(t *testing.T) {
 	}
 	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: friend, key: key}); code != http.StatusForbidden {
 		t.Errorf("paired key listed keys: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/pairing", from: friend, key: key}); code != http.StatusForbidden {
+		t.Errorf("paired key read a fresh pairing code: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/checks/wol/fix", from: friend, key: key}); code != http.StatusForbidden {
+		t.Errorf("paired key changed system settings: %d", code)
 	}
 	if code, _ := e.do(req{method: "POST", path: "/v2/schedules", from: friend, key: key, body: map[string]any{"action": "wake", "target": "workstation", "time": "07:00"}}); code != http.StatusForbidden {
 		t.Errorf("paired key scheduled a wake: %d", code)

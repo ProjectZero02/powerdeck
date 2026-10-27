@@ -91,6 +91,9 @@ type Manager struct {
 	dataDir string
 	log     *slog.Logger
 	run     func(path string) error // starts the installer; OS-specific
+	// Busy, when set, says why the helper mustn't restart right now (e.g. a shutdown countdown it
+	// would lose); checked again just before installing, since the download can take minutes.
+	Busy func() string
 }
 
 func NewManager(dataDir string, log *slog.Logger) *Manager {
@@ -227,6 +230,11 @@ func (m *Manager) install(ctx context.Context, rel *Release, avail bool) error {
 	path := filepath.Join(dir, rel.Version+"-"+InstallerAsset)
 	if err := os.WriteFile(path, exe, 0o600); err != nil {
 		return err
+	}
+	if m.Busy != nil {
+		if why := m.Busy(); why != "" {
+			return errors.New("not installing now: " + why)
+		}
 	}
 	m.log.Info("update verified, starting installer", "version", rel.Version)
 	return m.run(path)

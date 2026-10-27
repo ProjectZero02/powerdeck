@@ -94,7 +94,7 @@ func batteryCheck(e Env) check.Check {
 func biosCheck() check.Check {
 	return check.Check{ID: "bios", Run: func(context.Context) check.Result {
 		return check.Result{Level: check.Info, Title: "BIOS: Wake-on-LAN on, ErP/EuP off",
-			Detail: "These are BIOS settings PowerDeck can't see (ASUS: ErP Ready Disabled, Power On By PCI-E Enabled). Run Test wake in the app once to confirm."}
+			Detail: "These are BIOS settings PowerDeck can't see (ASUS: ErP Ready Disabled, Power On By PCI-E Enabled). Turn it off, then tap Turn on in the app once to confirm."}
 	}}
 }
 

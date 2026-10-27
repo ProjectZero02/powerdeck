@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.1
+
+Fixes from a final security and reliability review.
+
+- **Security:** a program on a computer running the helper could act as its owner by calling the computer's own Tailscale address. It now needs the local token, like any other local program. A key from a pairing code can no longer read new pairing codes or change system settings.
+- **Easier Linux install:** the one-liner is now `curl … | sh`. It works in a root shell (Proxmox has no `sudo`) and as any user with sudo.
+- **Reliability:** settings are saved durably with a backup copy, so a power cut can't leave the helper unable to start. A schedule can't run twice if the helper restarts in the same minute. An update waits until no shutdown is counting down.
+- **Proxmox:** the list of running VMs is cached for 15 seconds instead of being read on every status check.
+- **Schedules** say when the computer's clock is in a different time zone from your phone's.
+- **NanoKVM:** a computer whose helper answers with a changed identity counts as on, so its button is never pressed.
+- **Windows:** the data folder takes ownership of anything already in it at install.
+
 ## 2.0.0
 
 PowerDeck now controls any number of computers.

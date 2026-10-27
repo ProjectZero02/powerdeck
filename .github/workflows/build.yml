@@ -319,7 +319,7 @@ jobs:
           ### Install
           - **Phone (Android):** download \`PowerDeck.apk\` on your phone and open it.
           - **Windows:** run \`PowerDeck-Setup.exe\`, or in PowerShell: \`irm https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.ps1 | iex\`
-          - **Linux (systemd):** \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sudo sh\`
+          - **Linux (systemd):** \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sh\` (as root, or any user with sudo)
 
           Verify a download: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`
           EOF

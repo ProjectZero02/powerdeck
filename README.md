@@ -37,7 +37,7 @@
 | | Paste this | |
 |---|---|---|
 | **Windows** | `irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.ps1 \| iex` | in **PowerShell** |
-| **Linux / Proxmox** | `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh \| sudo sh` | in a **terminal** |
+| **Linux / Proxmox** | `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh \| sh` | in a **terminal** (as root, or any user with sudo) |
 
 Both installers check the download against the release's checksums (on Linux, its Ed25519 signature too), set everything up and show a **QR code**. On Windows it opens in a window; on Linux it's printed in the terminal (`powerdeck-helper qr` shows it again). They also tell you about anything they can't fix themselves, such as a BIOS setting. Prefer a regular installer on Windows? Download [PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe).
 
@@ -48,6 +48,9 @@ Download [**PowerDeck.apk**](https://github.com/ProjectZero02/powerdeck/releases
 **3. Scan the code**
 
 Tap **Scan the helper's code**. Your other computers and NanoKVMs then appear under **Found on your tailnet**: tap **Add** on each one. A NanoKVM asks for its password and which computer's power button it's wired to.
+
+> [!NOTE]
+> A NanoKVM shows up only once it's on Tailscale too: turn Tailscale on in its web settings and sign it in to the same account. Keep its web page on plain HTTP (the default); Tailscale already encrypts the connection.
 
 That's it. Try **Turn on** once while the computer is off to confirm Wake-on-LAN works.
 
@@ -186,7 +189,7 @@ That's Tailscale key expiry. In the Tailscale admin console, **Disable key expir
 <summary><b>Uninstalling</b></summary>
 
 - **Windows:** Settings → Apps → PowerDeck → Uninstall.
-- **Linux:** `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sudo sh -s -- --uninstall` (add `--purge` to delete its data too).
+- **Linux:** `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh -s -- --uninstall` (add `--purge` to delete its data too).
 - **Phone:** uninstall the app as usual.
 </details>
 

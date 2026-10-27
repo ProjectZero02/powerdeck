@@ -88,12 +88,12 @@ func New(d Deps) *API {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v2/hello", s.hello)
 	mux.HandleFunc("POST /v2/pair", s.pair)
-	mux.HandleFunc("GET /v2/pairing", s.with(store.ScopeAdmin, s.pairing))
+	mux.HandleFunc("GET /v2/pairing", s.with(store.ScopeAdmin, s.ownersOnly(s.pairing))) // codes mint keys
 	mux.HandleFunc("GET /v2/status", s.with(store.ScopeStatus, s.status))
 	mux.HandleFunc("GET /v2/peers", s.with(store.ScopeStatus, s.peers))
 	mux.HandleFunc("POST /v2/power/{action}", s.with(store.ScopePower, s.power))
 	mux.HandleFunc("POST /v2/wake", s.with(store.ScopeWake, s.wake))
-	mux.HandleFunc("POST /v2/checks/{id}/fix", s.with(store.ScopeAdmin, s.fix))
+	mux.HandleFunc("POST /v2/checks/{id}/fix", s.with(store.ScopeAdmin, s.ownersOnly(s.fix))) // changes system settings
 	mux.HandleFunc("GET /v2/events", s.with(store.ScopeStatus, s.events))
 	// Keys are the owner's: a key from a pairing code mustn't mint wider keys or revoke others.
 	mux.HandleFunc("GET /v2/keys", s.with(store.ScopeAdmin, s.ownersOnly(s.listKeys)))
@@ -329,8 +329,9 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	body := map[string]any{
 		"name": s.Name, "os": s.OS, "version": version.Version, "apiVersion": version.APIVersion,
 		"uptimeSeconds": int64(up.Seconds()), "pending": s.Power.Pending(),
-		"caps": []string{"shutdown", "restart"},
-		"you":  map[string]any{"kind": c.Kind, "name": c.Name, "scopes": c.Scopes},
+		"utcOffsetMinutes": utcOffsetMinutes(s.Now()), // schedules run on this device's clock
+		"caps":             []string{"shutdown", "restart"},
+		"you":              map[string]any{"kind": c.Kind, "name": c.Name, "scopes": c.Scopes},
 	}
 	if !boot.IsZero() {
 		body["bootTime"] = boot.UTC().Truncate(time.Second)
@@ -354,6 +355,11 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 		body["checks"] = s.cachedChecks(ctx)
 	}
 	return body
+}
+
+func utcOffsetMinutes(t time.Time) int {
+	_, off := t.Local().Zone()
+	return off / 60
 }
 
 func (s *server) status(w http.ResponseWriter, r *http.Request, c auth.Caller) {

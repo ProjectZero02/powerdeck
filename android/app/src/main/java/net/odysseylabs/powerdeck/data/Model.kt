@@ -124,6 +124,8 @@ data class HelperStatus(
     val updatesPending: Boolean,
     val checks: List<Check>,
     val youName: String?,
+    /** The helper's clock, which its schedules run on. */
+    val utcOffsetMinutes: Int? = null,
 ) {
     companion object {
         fun pendingFrom(p: JSONObject?) = p?.let { Pending(it.optString("action"), Instant.parse(it.optString("at")), it.optString("by")) }
@@ -146,6 +148,7 @@ data class HelperStatus(
                 updatesPending = o.optBoolean("updatesPending"),
                 checks = o.optJSONArray("checks")?.let { a -> (0 until a.length()).map { Check.from(a.getJSONObject(it)) } } ?: emptyList(),
                 youName = o.optJSONObject("you")?.optStringOrNull("name"),
+                utcOffsetMinutes = if (o.has("utcOffsetMinutes")) o.optInt("utcOffsetMinutes") else null,
             )
         }
     }

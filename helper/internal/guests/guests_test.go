@@ -1,9 +1,19 @@
 package guests
 
 import (
+	"context"
 	"slices"
 	"testing"
+	"time"
 )
+
+func TestCached(t *testing.T) {
+	calls := 0
+	f := Cached(time.Hour, func(context.Context) *Info { calls++; return &Info{Running: calls} })
+	if f(context.Background()).Running != 1 || f(context.Background()).Running != 1 || calls != 1 {
+		t.Errorf("not cached: %d calls", calls)
+	}
+}
 
 func TestParse(t *testing.T) {
 	qm := `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID

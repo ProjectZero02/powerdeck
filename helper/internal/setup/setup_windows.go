@@ -114,10 +114,16 @@ func Uninstall(purge bool) error {
 }
 
 // secureDataDir creates the data folder readable by SYSTEM and Administrators only: it holds the
-// TLS private key and the paired-device list.
+// TLS private key, the local token and the paired-device list. If someone else created the folder
+// first (any user can create folders in ProgramData), they'd still own it and anything they put in
+// it, so ownership and permissions are reset on everything inside too, and links are removed.
 func secureDataDir() error {
 	dir := DataDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
 		return err
 	}
 	sd, err := windows.SecurityDescriptorFromString("D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
@@ -128,8 +134,26 @@ func secureDataDir() error {
 	if err != nil {
 		return err
 	}
-	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		admins, nil, dacl, nil); err != nil {
+		return err
+	}
+	inherit, err := windows.ACLFromEntries(nil, nil) // no entries of its own: just what the folder passes down
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return err
+		}
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 { // symlinks and junctions
+			return os.Remove(path)
+		}
+		return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
+			admins, nil, inherit, nil)
+	})
 }
 
 func installService(exePath string) error {
