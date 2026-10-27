@@ -1,17 +1,21 @@
 package net.odysseylabs.powerdeck
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
-import net.odysseylabs.powerdeck.data.KvmAddress
-import net.odysseylabs.powerdeck.data.KvmException
-import net.odysseylabs.powerdeck.data.NanoKvmClient
-import net.odysseylabs.powerdeck.data.NanoKvmCrypto
 import net.odysseylabs.powerdeck.data.AddLink
 import net.odysseylabs.powerdeck.data.HelperClient
 import net.odysseylabs.powerdeck.data.HelperException
+import net.odysseylabs.powerdeck.data.KvmAddress
+import net.odysseylabs.powerdeck.data.KvmException
 import net.odysseylabs.powerdeck.data.Lan
+import net.odysseylabs.powerdeck.data.NanoKvmClient
+import net.odysseylabs.powerdeck.data.NanoKvmCrypto
 import net.odysseylabs.powerdeck.data.Presence
+import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Updater
 import net.odysseylabs.powerdeck.ui.clockNote
 import okhttp3.OkHttpClient
@@ -19,8 +23,10 @@ import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import org.json.JSONObject
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -30,6 +36,8 @@ import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.concurrent.TimeUnit
+import kotlin.io.path.createTempDirectory
 
 class NanoKvmCryptoTest {
     private class FixedSalt(private val salt: ByteArray) : SecureRandom() {
@@ -333,6 +341,51 @@ class UpdaterTest {
         assertFalse(Updater.newer("1.0.0", "1.0.0"))
         assertFalse(Updater.newer("1.0.0", "1.0.1"))
         assertNotNull(Updater.APK)
+    }
+
+    private val apk = ByteArray(512 * 1024).also { SecureRandom().nextBytes(it) }
+    private val apkSha = MessageDigest.getInstance("SHA-256").digest(apk).joinToString("") { "%02x".format(it) }
+    private fun apkResponse(body: ByteArray = apk) =
+        MockResponse.Builder().body(okio.Buffer().write(body)).throttleBody(16 * 1024, 5, TimeUnit.MILLISECONDS).build()
+    private fun release(server: MockWebServer) = Release("9.9.9", server.url("/PowerDeck.apk").toString(), apkSha, "")
+    private fun tempDir() = createTempDirectory("updates").toFile()
+
+    @Test fun downloadIsChecked() = MockWebServer().use { server ->
+        server.enqueue(apkResponse())
+        server.start()
+        val dir = tempDir()
+        val f = Updater.download(release(server), dir)
+        assertArrayEquals(apk, f.readBytes())
+        assertEquals(listOf(f), dir.listFiles()!!.toList())
+    }
+
+    @Test fun damagedDownloadIsTriedAgain() = MockWebServer().use { server ->
+        server.enqueue(apkResponse(apk.copyOf().also { it[1000] = (it[1000] + 1).toByte() }))
+        server.enqueue(apkResponse())
+        server.start()
+        val dir = tempDir()
+        assertArrayEquals(apk, Updater.download(release(server), dir).readBytes())
+        assertEquals(2, server.requestCount)
+        assertEquals("the damaged copy is gone", 1, dir.listFiles()!!.size)
+    }
+
+    @Test fun damagedTwiceFails() = MockWebServer().use { server ->
+        repeat(2) { server.enqueue(apkResponse(apk.copyOf(apk.size - 1))) }
+        server.start()
+        val dir = tempDir()
+        val e = assertThrows(IllegalStateException::class.java) { Updater.download(release(server), dir) }
+        assertTrue(e.message!!.contains("checksum"))
+        assertEquals(0, dir.listFiles()!!.size)
+    }
+
+    // Two taps on Update used to download into the same file at once and fail the checksum.
+    @Test fun downloadsAtOnceDontMix() = MockWebServer().use { server ->
+        repeat(2) { server.enqueue(apkResponse()) }
+        server.start()
+        val dir = tempDir()
+        val files = runBlocking { List(2) { async(Dispatchers.IO) { Updater.download(release(server), dir) } }.awaitAll() }
+        assertNotEquals(files[0], files[1])
+        files.forEach { assertArrayEquals(apk, it.readBytes()) }
     }
 
     @Test

@@ -16,6 +16,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -70,15 +71,39 @@ object Updater {
 
     /** Downloads, verifies and hands the APK to the system installer (which asks the user to confirm). */
     suspend fun install(ctx: Context, release: Release) = withContext(Dispatchers.IO) {
-        val file = File(ctx.cacheDir, "update.apk")
-        http.newCall(Request.Builder().url(release.apkUrl).build()).execute().use { r ->
-            check(r.isSuccessful) { "Download failed (HTTP ${r.code})" }
-            file.outputStream().use { out -> r.body.byteStream().copyTo(out) }
+        val file = download(release, ctx.cacheDir)
+        try {
+            commit(ctx, file)
+        } finally {
+            file.delete()
         }
-        release.sha256?.let { want ->
-            val got = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
-            check(got.equals(want, ignoreCase = true)) { "The download is corrupt (checksum mismatch)" }
+    }
+
+    /**
+     * Downloads the APK into a file of its own in [dir], so two downloads can't overwrite each other,
+     * checking the published SHA-256 as it arrives. A download that doesn't match is tried once more.
+     */
+    internal fun download(release: Release, dir: File, client: OkHttpClient = http): File {
+        repeat(2) {
+            val file = File.createTempFile("update-", ".apk", dir)
+            var ok = false
+            try {
+                val md = MessageDigest.getInstance("SHA-256")
+                client.newCall(Request.Builder().url(release.apkUrl).build()).execute().use { r ->
+                    check(r.isSuccessful) { "Download failed (HTTP ${r.code})" }
+                    DigestInputStream(r.body.byteStream(), md).use { input -> file.outputStream().use { input.copyTo(it) } }
+                }
+                val got = md.digest().joinToString("") { "%02x".format(it) }
+                ok = release.sha256 == null || got.equals(release.sha256, ignoreCase = true)
+                if (ok) return file
+            } finally {
+                if (!ok) file.delete()
+            }
         }
+        error("The download was damaged twice (checksum mismatch). Tap Update to try again.")
+    }
+
+    private fun commit(ctx: Context, file: File) {
         val installer = ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(ctx.packageName)
@@ -95,7 +120,6 @@ object Updater {
             )
             s.commit(pi.intentSender)
         }
-        file.delete()
     }
 }
 

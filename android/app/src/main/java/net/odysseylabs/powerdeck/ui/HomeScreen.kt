@@ -104,7 +104,12 @@ fun HomeScreen(state: UiState, a: HomeActions, snackbar: SnackbarHostState, show
                 }
             }
             state.update?.let { r ->
-                item { Banner(Icons.Rounded.SystemUpdate, "Update available", "PowerDeck ${r.version} is ready to install.", "Update", a.update) }
+                val downloading = state.appCheck == AppCheck.Downloading
+                item {
+                    Banner(Icons.Rounded.SystemUpdate, "Update available",
+                        if (downloading) "Downloading PowerDeck ${r.version}…" else "PowerDeck ${r.version} is ready to install.",
+                        if (downloading) null else "Update", a.update)
+                }
             }
             items(state.devices, key = { it.id }) { d ->
                 DeviceCard(d, state.states[d.id], d.id in state.busy, state.tailnet, state.settings.confirmShutdown, now, a)

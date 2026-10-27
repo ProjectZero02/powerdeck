@@ -46,7 +46,7 @@ data class UiState(
     val settings: Settings = Settings(),
     val tiles: List<String?> = emptyList(),
     val update: Release? = null,
-    /** The phone app's update check from Settings: null before any, then checking, then done. */
+    /** The phone app's update: null before any check, then checking, done, or downloading. */
     val appCheck: AppCheck? = null,
     val add: AddStep = AddStep.Idle,
     val found: List<Peer>? = null,
@@ -64,7 +64,7 @@ sealed interface AddStep {
     data class Failed(val message: String) : AddStep
 }
 
-enum class AppCheck { Checking, UpToDate, Failed }
+enum class AppCheck { Checking, UpToDate, Failed, Downloading }
 
 /** Someone is using the device: ask before forcing. */
 data class ForcePrompt(val device: Device, val restart: Boolean, val ask: Ask)
@@ -548,7 +548,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun checkUpdate() {
-        if (_state.value.appCheck == AppCheck.Checking) return
+        if (_state.value.appCheck == AppCheck.Checking || _state.value.appCheck == AppCheck.Downloading) return
         _state.update { it.copy(appCheck = AppCheck.Checking) }
         viewModelScope.launch {
             val r = runCatching { Updater.available() }.getOrElse {
@@ -563,15 +563,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun installUpdate() {
         val r = _state.value.update ?: return
+        if (_state.value.appCheck == AppCheck.Downloading) return // one download at a time
         val ctx = getApplication<Application>()
         if (!Updater.canInstall(ctx)) {
             ctx.startActivity(Updater.allowInstallsIntent(ctx))
             say("Allow PowerDeck to install updates, then tap Update again.")
             return
         }
+        _state.update { it.copy(appCheck = AppCheck.Downloading) }
         viewModelScope.launch {
-            _messages.send("Downloading PowerDeck ${r.version}…")
             runCatching { Updater.install(ctx, r) }.onFailure { _messages.send(it.message ?: "Update failed.") }
+            _state.update { it.copy(appCheck = null) }
         }
     }
 }
