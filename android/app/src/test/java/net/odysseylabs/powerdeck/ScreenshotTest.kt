@@ -241,7 +241,7 @@ class ScreenshotTest {
     @Test fun deviceOwnersAndUpdate() {
         val st = all.states["pc"] as DeviceState.On
         val update = HelperUpdate(true, "2.1.0", false, true, autoAt = Instant.parse("2026-10-30T12:00:00Z"))
-        val state = all.copy(states = all.states + ("pc" to DeviceState.On(st.status!!.copy(update = update))))
+        val state = all.copy(states = all.states + ("pc" to DeviceState.On(st.status!!.copy(update = update, peerKeys = emptyList()))))
         shot("device-owners") {
             DeviceScreen(pc, state, Detail(events = emptyList(), owners = listOf(
                 net.odysseylabs.powerdeck.data.OwnerInfo("n1", "Pixel 9 Pro", "2026-10-27T07:00:00Z", you = true),

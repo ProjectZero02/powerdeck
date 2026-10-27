@@ -5,6 +5,8 @@ package netinfo
 import (
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 )
 
 var (
@@ -24,33 +26,64 @@ func AllowedRemote(a netip.Addr) bool {
 	return a.IsLoopback() || IsTailnet(a)
 }
 
-// TailnetAddrs returns this device's Tailscale addresses (IPv4 and IPv6).
+// TailnetAddrs returns this device's Tailscale addresses (IPv4 and IPv6). Only Tailscale's own
+// interface counts: an ISP's carrier-grade NAT also hands out 100.64.0.0/10 addresses, on the LAN card.
 func TailnetAddrs() []netip.Addr {
-	addrs, err := net.InterfaceAddrs()
+	ifs, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	var out []netip.Addr
-	for _, a := range addrs {
-		if p, err := netip.ParsePrefix(a.String()); err == nil && IsTailnet(p.Addr()) {
-			out = append(out, p.Addr().Unmap())
+	var all []Iface
+	for _, ifc := range ifs {
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
 		}
+		x := Iface{Name: ifc.Name}
+		for _, a := range addrs {
+			if p, err := netip.ParsePrefix(a.String()); err == nil {
+				x.Addrs = append(x.Addrs, p.Addr().Unmap())
+			}
+		}
+		all = append(all, x)
 	}
-	return out
+	return tailnetAddrsOf(all)
 }
 
 // TailnetIPv4 returns this device's Tailscale IPv4 address.
 func TailnetIPv4() (netip.Addr, bool) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return netip.Addr{}, false
-	}
-	for _, a := range addrs {
-		if p, err := netip.ParsePrefix(a.String()); err == nil && p.Addr().Is4() && tailnetV4.Contains(p.Addr()) {
-			return p.Addr(), true
+	for _, a := range TailnetAddrs() {
+		if a.Is4() {
+			return a, true
 		}
 	}
 	return netip.Addr{}, false
+}
+
+// Iface is one network interface's name and addresses.
+type Iface struct {
+	Name  string
+	Addrs []netip.Addr
+}
+
+// tailnetAddrsOf picks the Tailscale addresses: those on an interface named for Tailscale
+// ("tailscale0" on Linux, "Tailscale" on Windows) or one that also carries a Tailscale IPv6
+// address (macOS utun, a renamed interface).
+func tailnetAddrsOf(ifs []Iface) []netip.Addr {
+	var out []netip.Addr
+	for _, ifc := range ifs {
+		ts := strings.Contains(strings.ToLower(ifc.Name), "tailscale") ||
+			slices.ContainsFunc(ifc.Addrs, tailnetV6.Contains)
+		if !ts {
+			continue
+		}
+		for _, a := range ifc.Addrs {
+			if IsTailnet(a) {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
 }
 
 // Network is the card that carries this device's LAN traffic, which Wake-on-LAN must target.

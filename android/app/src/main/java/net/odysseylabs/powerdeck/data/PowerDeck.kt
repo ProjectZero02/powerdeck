@@ -23,6 +23,9 @@ sealed interface AddResult {
     data class Failed(val message: String) : AddResult
 }
 
+/** How long before linking two helpers is tried again (it failed, or the key was later refused). */
+private const val LINK_RETRY_MS = 5 * 60_000L
+
 /** All device logic. Screens, the widget, tiles and the background worker call into this. */
 class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     private val http = OkHttpClient.Builder()
@@ -250,7 +253,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     // ---- Linking helpers ----------------------------------------------------------------------
 
     private val linkLock = Mutex()
-    private val linkTried = mutableSetOf<String>() // "a>b" pairs tried since the app started
+    private val linkTried = mutableMapOf<String, Long>() // "a>b" -> last attempt; tried again after LINK_RETRY_MS
 
     /**
      * Keeps the owner's helpers able to reach each other, after a refresh: each one gets a peer key
@@ -268,7 +271,12 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             if (owned.none { it.first.id == a.id }) continue
             for (p in peers.filter { it.isHelper && it.name !in sa.peerKeys!! }) {
                 val b = owned.firstOrNull { it.first.id != a.id && it.first.pin == p.pin }?.first ?: continue
-                if (!linkLock.withLock { linkTried.add("${a.id}>${b.id}") }) continue
+                val pairId = "${a.id}>${b.id}"
+                val now = System.currentTimeMillis()
+                val due = linkLock.withLock {
+                    (linkTried[pairId]?.let { now - it >= LINK_RETRY_MS } ?: true).also { if (it) linkTried[pairId] = now }
+                }
+                if (!due) continue
                 runCatching {
                     val key = client(b)!!.addPeerKey(sa.name.ifBlank { a.name })
                     client(a)!!.setPeerKey(p.name, key)

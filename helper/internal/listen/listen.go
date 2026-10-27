@@ -88,7 +88,7 @@ func (m *Multi) sync() error {
 		delete(m.warn, a)
 		m.bound[a] = ln
 		m.log.Debug("listening", "addr", ln.Addr())
-		go m.accept(ln)
+		go m.accept(a, ln)
 	}
 	for a, ln := range m.bound {
 		if !slices.Contains(want, a) {
@@ -106,7 +106,17 @@ func (m *Multi) sync() error {
 	return nil
 }
 
-func (m *Multi) accept(ln net.Listener) {
+// accept forwards connections until ln fails. If it fails on its own (not closed by sync or
+// Close), the address is forgotten so the next sync binds it again.
+func (m *Multi) accept(a netip.Addr, ln net.Listener) {
+	defer func() {
+		m.mu.Lock()
+		if m.bound[a] == ln {
+			_ = ln.Close()
+			delete(m.bound, a)
+		}
+		m.mu.Unlock()
+	}()
 	for {
 		c, err := ln.Accept()
 		if err != nil {

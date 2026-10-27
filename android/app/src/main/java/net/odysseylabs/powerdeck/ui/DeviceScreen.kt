@@ -238,7 +238,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         },
                         icon = { Icon(Icons.Rounded.SystemUpdateAlt, null, tint = MaterialTheme.colorScheme.primary) },
                         trailing = if (u.installing) null else ({ TextButton(onClick = a.updateHelper, enabled = !busy && status.pending == null) { Text("Update") } }))
-                    if (u.auto && !u.installing) {
+                    if (u.auto && !u.installing && status.peerKeys != null) { // pausing needs a 2.1 helper
                         TextButton(onClick = { a.pauseUpdates(u.pausedUntil == null) }, enabled = !busy, modifier = Modifier.padding(start = 8.dp)) {
                             Text(if (u.pausedUntil == null) "Pause automatic updates for 7 days" else "Resume automatic updates")
                         }

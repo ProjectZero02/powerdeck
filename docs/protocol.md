@@ -12,7 +12,9 @@ PowerDeck has three kinds of participants, all on the same [Tailscale](https://t
 
 Helpers listen on TCP **47321** (HTTPS, TLS 1.3, self-signed certificate) and the agent port
 **47323** on **loopback and this device's Tailscale addresses only** (never `0.0.0.0`), and answer
-only tailnet source addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and loopback. Tailscale may
+only tailnet source addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and loopback. Tailscale addresses
+are taken from Tailscale's own interface only (named for Tailscale, or carrying a `fd7a:115c:a1e0::`
+address), because an ISP's carrier-grade NAT hands out `100.64.0.0/10` addresses too. Tailscale may
 start after the helper or change address; the bound set is checked again every 10 s. `run --api ADDR`
 / `--mcp ADDR` (development) bind exactly the given address instead.
 
@@ -100,7 +102,8 @@ meets **one** helper, then asks it for the rest:
    KVM's password and which device's power button it's wired to, and links it by its Tailscale
    name (see [Phone → NanoKVM](#phone--nanokvm)).
 4. **Linking helpers**: after each refresh the app gives every pair of helpers it owns peer keys
-   for each other (see [Keys](#keys)), once per pair.
+   for each other (see [Keys](#keys)), at most once per pair every 5 minutes. A helper whose peer
+   key is refused (`401`) forgets it, so the next refresh links the pair again.
 
 ## Helper API
 
@@ -135,7 +138,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{owner:true, status}` (same account: now an owner device) or `{key, status}` (another account) |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
-| POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp) |
+| POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp). `502 peer_refused` when that device doesn't accept this helper (no or a revoked peer key) |
 | POST | `/mcp` | owner or automation key | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
 
 `delaySeconds` defaults to 60 (0–600). Without `force`, shutdown/restart is refused with

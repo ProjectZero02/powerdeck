@@ -496,6 +496,11 @@ func TestRelayErrors(t *testing.T) {
 	if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: phone}); code != http.StatusConflict || out["error"] != "in_use" {
 		t.Errorf("relayed in_use: %d %v", code, out)
 	}
+	// The device refusing this helper is a gateway problem, not the phone's key failing.
+	e.peerErr = &peer.Error{Status: 401, Code: "unauthorized", Message: "This key isn't valid here any more."}
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: phone}); code != http.StatusBadGateway || out["error"] != "peer_refused" {
+		t.Errorf("relayed 401: %d %v", code, out)
+	}
 }
 
 func TestOnBehalfOfOnlyFromOwners(t *testing.T) {

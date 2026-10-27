@@ -187,8 +187,13 @@ func fleetError(device string, err error) *apiError {
 	switch {
 	case errors.As(err, &pe):
 		e := &apiError{Status: pe.Status, Code: pe.Code, Message: device + ": " + pe.Message}
-		if pe.Code == "in_use" || pe.Code == "pending" {
+		switch {
+		case pe.Code == "in_use" || pe.Code == "pending":
 			e.Status = http.StatusConflict
+		case pe.Status == http.StatusUnauthorized || pe.Status == http.StatusForbidden:
+			// The device refused this helper, not the caller: don't look like the caller's key failed.
+			return &apiError{Status: http.StatusBadGateway, Code: "peer_refused",
+				Message: device + " doesn't accept this helper. Open the PowerDeck app once to link them again."}
 		}
 		return e
 	case errors.Is(err, fleet.ErrUnknownDevice):

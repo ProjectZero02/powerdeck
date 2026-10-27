@@ -116,3 +116,40 @@ func waitFor(t *testing.T, ok func() bool, what string) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// A listener that fails on its own (not closed by us) is bound again on the next check.
+func TestRebindsFailedListener(t *testing.T) {
+	a := netip.MustParseAddr("127.0.0.1")
+	port := freePort(t)
+	m, err := New(port, func() []netip.Addr { return []netip.Addr{a} }, 20*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	go func() {
+		for {
+			c, err := m.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	m.mu.Lock()
+	old := m.bound[a]
+	m.mu.Unlock()
+	_ = old.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		m.mu.Lock()
+		ln := m.bound[a]
+		m.mu.Unlock()
+		if ln != nil && ln != old && dial(port, "127.0.0.1") == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("not bound again after the listener failed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

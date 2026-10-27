@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +85,12 @@ func (f *Fleet) Scan(ctx context.Context) error {
 
 func (f *Fleet) remember(ctx context.Context, p discovery.Peer) {
 	rec := store.Peer{Name: p.Name, Device: p.Device, DNSName: p.DNSName, Address: p.Address, Port: p.Port, Pin: p.Pin, OS: p.OS, LastSeen: f.Now()}
-	if old, ok := f.Store.Peer(p.Name); ok && old.Pin != "" && old.Pin != p.Pin {
+	old, known := f.Store.Peer(p.Name)
+	if known && old.Pin == p.Pin {
+		// Ask with the key the target gave us; a helper with owner devices answers 401 without it.
+		rec.Key = old.Key
+	}
+	if known && old.Pin != "" && old.Pin != p.Pin {
 		// A new certificate is expected after a reinstall. Accept it only from the same tailnet node
 		// (WireGuard vouches for that); a different node taking over the name is ignored.
 		if old.DNSName == "" || !strings.EqualFold(old.DNSName, p.DNSName) {
@@ -101,18 +107,20 @@ func (f *Fleet) remember(ctx context.Context, p discovery.Peer) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	if err := f.Call(cctx, rec, "GET", "/v2/status", nil, &st, ""); err == nil {
+	err := f.Call(cctx, rec, "GET", "/v2/status", nil, &st, "")
+	if err == nil {
 		rec.MAC, rec.LAN = st.Network.MAC, st.Network.LAN
 		rec.NoAgents = st.Agents != nil && !st.Agents.Allowed
 	} else {
 		f.Log.Info("peer status unavailable", "peer", p.Name, "err", err)
-		if old, ok := f.Store.Peer(p.Name); ok {
+		if known {
 			rec.NoAgents = old.NoAgents
 		}
 	}
 	if err := f.Store.PutPeer(rec); err != nil {
 		f.Log.Warn("remember peer", "peer", p.Name, "err", err)
 	}
+	f.keyRefused(rec, err)
 }
 
 // Loop rescans every interval until ctx ends. kick triggers an early scan.
@@ -175,7 +183,22 @@ func (f *Fleet) Forward(ctx context.Context, name, method, path string, body, ou
 	if err != nil && !errors.As(err, &pe) {
 		return ErrOffline
 	}
+	f.keyRefused(p, err)
 	return err
+}
+
+// keyRefused forgets a peer key the target no longer accepts (it was removed there, or the target
+// was reset). Sending it again would only get this helper throttled; without it the app sees the
+// pair as unlinked and creates a new key.
+func (f *Fleet) keyRefused(p store.Peer, err error) {
+	var pe *peer.Error
+	if p.Key == "" || !errors.As(err, &pe) || pe.Status != http.StatusUnauthorized {
+		return
+	}
+	f.Log.Warn("peer refused our key; forgetting it until the app links the pair again", "peer", p.Name)
+	if err := f.Store.SetPeerKey(p.Name, ""); err != nil {
+		f.Log.Warn("forget peer key", "peer", p.Name, "err", err)
+	}
 }
 
 // Names lists remembered helpers.
