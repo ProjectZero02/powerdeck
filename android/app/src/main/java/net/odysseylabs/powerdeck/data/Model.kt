@@ -180,11 +180,19 @@ data class Agents(val allowed: Boolean, val keys: List<AgentKey>) {
 
 data class AgentKey(val name: String, val devices: List<String>)
 
-/** A helper's self-update state: it checks every 6 hours and, when [auto] is on, installs on its own. */
-data class HelperUpdate(val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean, val error: String? = null) {
+/**
+ * A helper's self-update state: it checks every 6 hours and, when [auto] is on, installs a release on
+ * its own at [autoAt] (3 days after it was published, or when a pause ends).
+ */
+data class HelperUpdate(
+    val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean, val error: String? = null,
+    val autoAt: Instant? = null, val pausedUntil: Instant? = null,
+) {
     companion object {
+        private fun JSONObject.instant(k: String) = optStringOrNull(k)?.let { runCatching { Instant.parse(it) }.getOrNull() }
         fun from(o: JSONObject) = HelperUpdate(o.optBoolean("available"), o.optStringOrNull("latest")?.ifEmpty { null },
-            o.optBoolean("installing"), o.optBoolean("auto", true), o.optStringOrNull("error")?.ifEmpty { null })
+            o.optBoolean("installing"), o.optBoolean("auto", true), o.optStringOrNull("error")?.ifEmpty { null },
+            o.instant("autoAt"), o.instant("pausedUntil"))
     }
 }
 

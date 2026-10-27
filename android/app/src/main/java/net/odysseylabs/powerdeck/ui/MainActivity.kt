@@ -201,6 +201,8 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     agents = { route = "agents:${d.id}" },
                     hint = hint,
                     updateHelper = { vm.updateHelper(d) },
+                    pauseUpdates = { vm.pauseUpdates(d, it) },
+                    removeOwner = { vm.removeOwner(d, it) },
                 ),
                 snackbar,
             )
