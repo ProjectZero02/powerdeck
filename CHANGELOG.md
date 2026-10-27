@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.2
+
+- **Phone app updates.** Tapping **Update** more than once (or on both the home screen and in Settings) started downloads that overwrote each other, and the update then failed with "The download is corrupt (checksum mismatch)". Only one download runs now, its button shows it's downloading, each download goes to a file of its own, and a damaged download is retried once. If your phone shows that error on the way to this version, tap **Update** once and wait, or install `PowerDeck.apk` from the release page.
+
 ## 2.2.1
 
 - **PC window over Remote Desktop.** An administrator of the PC can now open the PowerDeck window over Remote Desktop without running it as administrator. Standard accounts in another session are still refused, and the message now says what to do.

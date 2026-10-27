@@ -168,6 +168,7 @@ fun SettingsScreen(
             SettingRow(
                 "PowerDeck ${BuildConfig.VERSION_NAME} on this phone",
                 when {
+                    update != null && appCheck == AppCheck.Downloading -> "Downloading PowerDeck ${update.version}…"
                     update != null -> "PowerDeck ${update.version} is ready. Tap to install"
                     appCheck == AppCheck.Checking -> "Checking for an update…"
                     appCheck == AppCheck.UpToDate -> "Up to date. Tap to check again"
@@ -176,7 +177,7 @@ fun SettingsScreen(
                 },
                 onClick = if (update != null) a.installUpdate else a.checkUpdate,
                 trailing = when {
-                    appCheck == AppCheck.Checking -> { { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) } }
+                    appCheck == AppCheck.Checking || appCheck == AppCheck.Downloading -> { { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) } }
                     update != null -> { { FilledTonalButton(onClick = a.installUpdate) { Text("Update") } } }
                     else -> null
                 },
