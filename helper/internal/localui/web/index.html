@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="pd-key" content="{{.Key}}">
+<title>PowerDeck</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="/static/icon.svg" alt="" class="logo">
+    <div>
+      <h1>PowerDeck</h1>
+      <p class="sub" id="pcname">This PC</p>
+    </div>
+  </div>
+  <span class="pill ok" id="running">Running · v{{.Version}}</span>
+</header>
+
+<main>
+  <section>
+    <h2>Add this PC to your phone</h2>
+    <div class="cards">
+      <article class="card">
+        <div class="step">1</div>
+        <h3>Get the app</h3>
+        <img class="qr" id="qr-app" alt="QR code linking to the PowerDeck Android app">
+        <p>Point your phone's camera at this code to download <b>PowerDeck for Android</b>.</p>
+        <a class="link" id="app-link" target="_blank" rel="noopener">Download link</a>
+      </article>
+      <article class="card">
+        <div class="step">2</div>
+        <h3>Add this PC</h3>
+        <img class="qr" id="qr-add" alt="QR code that adds this PC to PowerDeck">
+        <p>In PowerDeck tap <b>Add devices</b> and scan this. Your other PowerDeck devices show up too.</p>
+        <p class="error" id="link-error" hidden></p>
+        <p class="muted">Phone on a different Tailscale account? Enter <b class="code" id="pair-code">····-····</b>
+          <span id="pair-expiry"></span>. <button class="text" id="renew">New code</button></p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Setup checks</h2>
+    <ul class="checks" id="checks"></ul>
+  </section>
+
+  <section>
+    <h2>Access</h2>
+    <p class="muted intro">Phones signed in to the same Tailscale account as this PC have access automatically. These are the extra ones:</p>
+    <ul class="list" id="keys"></ul>
+    <p class="muted" id="no-keys" hidden>None. Only your own devices can control this PC.</p>
+    <div class="actions"><button class="secondary" id="agent-open">Connect an AI agent…</button></div>
+    <div class="panel" id="agent" hidden>
+      <h3>Connect an AI agent</h3>
+      <p class="muted">The agent gets a key that only works from the first Tailscale device that uses it. Shutdowns always show a one-minute warning and are refused while someone is using the device.</p>
+      <label class="field">Name <input id="agent-name" maxlength="64" placeholder="e.g. Lyra"></label>
+      <fieldset class="field"><legend>It may</legend>
+        <label><input type="checkbox" value="status" checked disabled> see status</label>
+        <label><input type="checkbox" value="wake" class="scope" checked> turn devices on</label>
+        <label><input type="checkbox" value="power" class="scope"> shut down and restart</label>
+      </fieldset>
+      <fieldset class="field" id="agent-devices"><legend>Devices</legend></fieldset>
+      <div class="actions"><button id="agent-create">Create key</button><button class="secondary" id="agent-cancel">Cancel</button></div>
+      <div id="agent-result" hidden>
+        <p><b>Copy this now.</b> It won't be shown again.</p>
+        <pre id="agent-config"></pre>
+        <div class="actions"><button class="secondary" id="agent-copy">Copy</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div>
+      <h2>This PC</h2>
+      <dl class="facts">
+        <dt>Tailscale address</dt><dd id="f-ip">—</dd>
+        <dt>Network card</dt><dd id="f-nic">—</dd>
+        <dt>Other PowerDeck devices</dt><dd id="f-peers">—</dd>
+      </dl>
+    </div>
+    <div>
+      <h2>Recent activity</h2>
+      <ul class="events" id="events"></ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Updates</h2>
+    <div class="update">
+      <p id="update-text">Checking…</p>
+      <label class="switch"><input type="checkbox" id="autoupdate"> <span>Install updates automatically</span></label>
+      <div class="actions">
+        <button class="secondary" id="check">Check now</button>
+        <button id="install" hidden>Install update</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>PowerDeck runs in the background as a Windows service. You can close this window.</footer>
+</body>
+</html>

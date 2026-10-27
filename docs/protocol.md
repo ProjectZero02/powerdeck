@@ -1,58 +1,243 @@
-# PowerDeck protocol (v1)
+# PowerDeck protocol (v2)
 
-## Pairing QR code
+PowerDeck has three kinds of participants, all on the same [Tailscale](https://tailscale.com) network:
 
-The PC window shows a link like this one (shown here wrapped):
-
-```
-powerdeck://pair?v=1&n=Gaming-PC&h=100.101.1.10&p=47321&f=<pin>&c=<code>
-                 &m=d8:5e:d3:12:34:56&k=100.101.1.20&x=100.101.1.30:8006
-```
-
-| Key | Meaning |
+| Participant | Role |
 |---|---|
-| `v` | Protocol version (`1`) |
-| `n` | PC name, for display |
-| `h`, `p` | PC's Tailscale IPv4 address and API port |
-| `f` | base64url SHA-256 of the PC's TLS certificate (DER). The phone pins this |
-| `c` | One-time pairing code: 26 lowercase base32 characters (128 bits). Valid for 10 minutes, consumed on use, discarded after 5 wrong guesses |
-| `m` | MAC address of the PC's wired network card (for Wake-on-LAN). Optional |
-| `k` | NanoKVM address found on the tailnet. Optional |
-| `x` | Proxmox `host:port` found on the tailnet. Optional |
+| **Helper** (`powerdeck-helper`, Windows or Linux) | Shuts down / restarts its own machine, reports status and setup checks, sends Wake-on-LAN to its LAN, finds other PowerDeck devices on the tailnet |
+| **Phone app** | Lists devices, sends commands, picks a waker for each device |
+| **KVM** (NanoKVM, PiKVM) | Presses a server's power button and reads its power LED. Used through its own web API; nothing is installed on it |
 
-The PC finds `k` and `x` by asking `tailscale status` for online Linux peers. It then looks for the NanoKVM page title on port 80 and the Proxmox page on port 8006.
+## Identity and trust
 
-## Phone → PC API
+Helpers listen on TCP **47321** (HTTPS, TLS 1.3, self-signed certificate) and answer only tailnet
+source addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and loopback.
 
-The API is HTTPS on port 47321, TLS 1.3 only. The phone accepts only the pinned certificate.
-The PC refuses any source address outside `100.64.0.0/10`, `fd7a:115c:a1e0::/48` and loopback.
-After 10 failed attempts (bad token or bad pairing code) from one address within 10 minutes, that address is blocked for 10 minutes.
+On every request the helper asks its local Tailscale who the caller is (`tailscale whois`, cached
+for 60 s per address). A caller is one of:
 
-| Method | Path | Auth | Body → Response |
+| Caller | How it's recognised | Allowed |
+|---|---|---|
+| **Owner** | Untagged node owned by the same Tailscale user as this helper's node, not shared in from another tailnet | Everything |
+| **Key holder** | Any tailnet caller presenting `Authorization: Bearer <key>` for a key this helper issued | The key's scopes |
+| **Anyone else** | | `GET /v2/hello` only |
+
+Keys are created in two ways:
+
+- **Pairing code** (for phones on another Tailscale account, or when the helper's node is tagged so
+  it has no owner): the helper shows an 8-character code (`XXXX-XXXX`, Crockford base32, 40 bits,
+  single use, 10 minutes, 5 wrong guesses and it's gone). `POST /v2/pair` exchanges it for a key
+  with all scopes.
+- **Automation keys** (for AI agents and scripts): created by an owner, either from the phone app
+  (`POST /v2/keys`) or on the device (`powerdeck-helper key add NAME --scopes …`).
+
+Key scopes: `status`, `wake`, `power` (shutdown/restart/cancel), `force` (shut down even while someone
+is using the machine), `admin` (keys, settings, fixes). A pairing-code key gets all of them; an
+automation key gets what it was created with (default `status,wake`) and can't hold `force` or
+`admin`. The helper stores only the SHA-256 of each key. Keys are 32 random bytes, base64url,
+prefixed `pdk_`.
+
+An automation key is **bound to the tailnet node that first uses it**: from then on the helper
+accepts it only from that node (checked with `whois`), so a leaked key is useless elsewhere.
+It can also be limited to named devices (see [Agents](#agents-mcp)).
+
+Ten failed attempts (bad key or code) from one address within 10 minutes block that address for 10 minutes.
+
+### Certificates
+
+The phone pins each helper's certificate (base64url SHA-256 of the DER) the first time it adds it:
+from the QR code, from the introducing helper's peer list, or on first contact when the user typed
+the device's name. Tailscale already authenticates the address (WireGuard), so pinning on first
+contact is safe; the pin then stops a later look-alike.
+
+## Adding devices
+
+The phone can't list tailnet devices itself (Android apps can't read Tailscale's peer list). It
+meets **one** helper, then asks it for the rest:
+
+1. **Introduction**: scan the QR code a helper shows (Windows window, or printed by the Linux
+   installer / `powerdeck-helper qr`), or type the device's Tailscale name (MagicDNS), e.g. `za-worldo`.
+   QR link: `powerdeck://add?v=2&n=<name>&h=<tailnet IPv4>&p=47321&f=<cert pin>[&c=<pairing code>]`.
+2. **Find**: `GET /v2/peers` on that helper returns every PowerDeck helper and KVM it found on the
+   tailnet. The phone offers them as "Found on your tailnet" and the user ticks the ones to add.
+3. **Per device**: the phone calls `GET /v2/status` on each new helper (owner trust needs no
+   pairing). For a KVM it asks for the KVM's password and which device's power button it's wired to.
+
+## Helper API
+
+All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
+
+| Method | Path | Scope | Body → Response |
 |---|---|---|---|
-| GET | `/v1/info` | none | → `{app, name, version, apiVersion}` |
-| POST | `/v1/pair` | pairing code | `{code, deviceName, deviceModel}` → `{deviceId, token, pc: <status>}` |
-| GET | `/v1/status` | token | → `{name, version, apiVersion, uptimeSeconds, bootTime, pending, mac, nanokvm?, proxmox?}` |
-| POST | `/v1/power/shutdown` | token | `{delaySeconds?}` (default 30, max 600) → `202 {pending}` or `409` |
-| POST | `/v1/power/restart` | token | same as shutdown |
-| POST | `/v1/power/cancel` | token | → `200` or `409` (nothing pending) |
-| DELETE | `/v1/device` | token | → `204`. The phone unpairs itself |
+| GET | `/v2/hello` | none | → `{app:"PowerDeck", apiVersion:2, version, name, os}` |
+| GET | `/v2/status` | `status` | → [Status](#status) |
+| GET | `/v2/peers` | `status` | → `{checkedAt, peers:[Peer]}`; `?refresh=1` rescans first (≤ 10 s) |
+| POST | `/v2/power/shutdown` | `power` | `{delaySeconds?, force?, installUpdates?}` → `202 {pending}`, `409 in_use {presence}`, `409 pending {pending}` |
+| POST | `/v2/power/restart` | `power` | same as shutdown |
+| POST | `/v2/power/cancel` | `power` | → `200 {pending:null}` or `409 nothing_pending` |
+| POST | `/v2/wake` | `wake` | `{mac}` → `200 {sentOn:[interface names]}`. Sends a magic packet to the helper's LANs |
+| POST | `/v2/checks/{id}/fix` | `admin` | → `200 {check}` after applying the fix |
+| GET | `/v2/schedules` | `status` | → `{schedules:[Schedule]}` |
+| POST | `/v2/schedules` | `admin` | `Schedule` without `id` → `{id}` |
+| DELETE | `/v2/schedules/{id}` | `admin` | → `204` |
+| GET | `/v2/events` | `status` | → `{events:[{at, who, action, result}]}` (last 200) |
+| GET | `/v2/keys` | `admin` | → `{keys:[{id, name, scopes, createdAt, lastUsed}]}` |
+| POST | `/v2/keys` | `admin` | `{name, scopes}` → `{id, key}` (shown once) |
+| DELETE | `/v2/keys/{id}` | `admin` | → `204` |
+| GET | `/v2/pairing` | `admin` | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
+| POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
+| DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
+| POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp) |
+| POST | `/mcp` | key holder | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
 
-`token` is sent as `Authorization: Bearer <token>`: 32 random bytes, base64url. The PC stores only its SHA-256.
-Errors look like `{"error": "<code>", "message": "<human text>"}`.
+`delaySeconds` defaults to 60 (0–600). Without `force`, shutdown/restart is refused with
+`409 in_use` when someone is actively using the machine (input in the last 5 minutes, or a
+full-screen app on Windows; an active SSH/console session on Linux). The phone shows who and asks
+before retrying with `force: true`. Callers without the `force` scope can't override it.
+
+### Status
+
+```json
+{
+  "name": "Za-Worldo", "os": "windows", "version": "2.0.0", "apiVersion": 2,
+  "bootTime": "2026-10-27T06:08:02Z", "uptimeSeconds": 4123,
+  "pending": {"action": "shutdown", "at": "2026-10-27T09:10:00Z", "by": "OPPO Find X9 Ultra"},
+  "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
+  "guests": {"running": 3, "names": ["public", "private", "agent"]},
+  "network": {"mac": "c8:7f:54:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
+  "caps": ["shutdown", "restart", "wake"],
+  "checks": [Check],
+  "you": {"kind": "owner", "name": "OPPO Find X9 Ultra", "scopes": ["status", "wake", "power", "force", "admin"]}
+}
+```
+
+`guests` appears on Proxmox hosts. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
+
+### Check
+
+```json
+{"id": "fast_startup", "level": "ok|warn|error|info", "title": "Fast Startup off",
+ "detail": "Needed so a shutdown is a real power-off the network card can wake from.", "fixable": true}
+```
+
+| id | Platform | Meaning |
+|---|---|---|
+| `tailscale` | all | Tailscale running and signed in |
+| `key_expiry` | all | This device's Tailscale key never expires (warns with the date otherwise; fixed in the Tailscale admin console) |
+| `unattended` | Windows | Tailscale "Run unattended" on, so it's reachable at the sign-in screen (fixable) |
+| `firewall` | Windows | Firewall rule for the helper, tailnet only (fixable) |
+| `wol_nic` | all | Wake-on-LAN armed on the wired card (fixable; on Linux re-applied at every start) |
+| `wired` | all | A wired card exists (Wi-Fi can't wake from shutdown) |
+| `fast_startup` | Windows | Fast Startup off (fixable). PowerDeck's own shutdowns are always full shutdowns; this affects the Start menu's |
+| `bios` | all | Reminder: BIOS Wake-on-LAN on, ErP/EuP off (`info`; confirmed by a successful test wake) |
+| `ac_restore` | Linux | Reminder: BIOS "Restore on AC power loss" on, so a server comes back after a power cut (`info`) |
+| `battery` | all | On battery / laptop: wake is unlikely (`warn`) |
+| `updates` | all | Automatic updates on |
+
+### Peer
+
+```json
+{"kind": "helper|nanokvm|pikvm", "name": "pve", "dnsName": "pve.example.ts.net",
+ "address": "100.101.1.30", "port": 47321, "os": "linux", "online": true,
+ "pin": "<cert pin, helpers only>", "version": "2.0.0"}
+```
+
+## Power paths
+
+Every device can have up to three ways to be controlled, and the phone (or a hub) uses the safest one available:
+
+| Path | On | Off / restart | Status |
+|---|---|---|---|
+| **Helper** on the device | | Clean shutdown/restart (primary) | Primary |
+| **KVM** wired to the device's power button and LED (any number of devices, one KVM each) | Short press, **only while the LED says off** (primary when present) | Short press = the OS's own clean shutdown (fallback when the helper doesn't answer); 12 s press = force off (hidden, emergency) | Power LED (fallback) |
+| **Wake-on-LAN** sent by a waker on the device's LAN | Magic packet (primary without a KVM, fallback with one) | | |
+
+A KVM is linked to a device when it's added ("Which device's power button is this NanoKVM wired
+to?"). The LED check is repeated just before every press, so a press can never turn a running
+machine off by mistake.
+
+### Wakers
+
+Tailscale can't carry Wake-on-LAN broadcasts, so something already on, on the same LAN, sends them.
+For each device the phone remembers its MAC and LAN subnets (from its last status) and tries, in order:
+
+1. a helper whose `network.lan` overlaps the device's (`POST /v2/wake`);
+2. a KVM on that LAN (NanoKVM `POST /api/network/wol`);
+3. the phone itself, if it's on that LAN (UDP broadcast).
+
+The magic packet is sent 3 times, to the subnet broadcast and to 255.255.255.255. Afterwards the
+phone polls until the device's helper (or the KVM's LED) says it's on, and reports how long it took.
+
+## Schedules
+
+```json
+{"id": "a1b2", "action": "shutdown|restart|wake", "target": "Za-Worldo", "time": "01:00",
+ "days": ["mon","tue","wed","thu","fri","sat","sun"], "skipIfInUse": true, "enabled": true}
+```
+
+`time` is local time on the helper that stores the schedule. Shutdown and restart schedules live on
+the device's own helper (`target` is that helper). Wake schedules live on a helper that's on the
+target's LAN and powered on at that time (typically a server); `target` names a known peer.
+`skipIfInUse` (default on) skips a shutdown/restart when someone is using the device, and the skip
+is logged. Each run is an event in the log.
+
+## Notifications
+
+The phone checks each device's `/v2/events` in the background (Android allows about every 15
+minutes) and notifies about things the user didn't do from this phone: an agent or schedule acting,
+a device going offline unexpectedly. Actions started on the phone show live progress instead.
+
+## Agents (MCP)
+
+AI agents and scripts talk to **one always-on helper** (a "hub", e.g. a home server). The hub
+relays to the other devices, because a PC that's off can't answer for itself: it wakes devices
+through its own LAN and forwards shutdown/restart/status to their helpers. The hub reaches other
+helpers as their owner (same Tailscale user), so this only works between devices of one owner.
+
+The hub serves MCP (streamable HTTP, stateless JSON-RPC `tools/list` and `tools/call`) with
+`Authorization: Bearer <automation key>` at:
+
+- `http://<hub tailnet address>:47323/mcp`: plain HTTP for agent tools that can't use a self-signed
+  certificate. Tailscale encrypts it end to end; this port serves only `/mcp` and only answers
+  tailnet addresses.
+- `https://<hub>:47321/mcp`: the same, on the pinned HTTPS port.
+
+| Tool | Annotations | Does |
+|---|---|---|
+| `list_devices` | read-only | Devices the key may use, with on/off state |
+| `get_status` | read-only | One device's status (on/off, uptime, someone using it, pending action) |
+| `power_on` | | Wake a device |
+| `power_off` | destructive | Shut down or restart (`{device, restart?}`); always the visible 60 s countdown |
+| `cancel` | | Cancel a pending shutdown/restart |
+
+Rules the helper enforces for automation keys, whatever the agent asks:
+
+- Only the devices and scopes on the key. Shutdown/restart need the `power` scope, granted per key.
+- Refused while someone is using the device (`in_use`); there's no `force` for keys.
+- One shutdown/restart per device per 10 minutes, at most 6 wakes per device per hour.
+- Never the device the agent itself runs on (the helper on that device refuses, since the caller
+  shares its IP's node), unless the owner ticks "allow" for that key.
+- Every action is in the device's event log with the key's name, so the phone shows "Lyra shut down Za-Worldo".
 
 ## Phone → NanoKVM
 
-The phone uses the NanoKVM's own web API (firmware 2.x), over Tailscale:
+The NanoKVM's own web API (firmware 2.x), over Tailscale only:
 
-- `POST /api/auth/login` with `{username, password}`. The password uses the NanoKVM UI's encoding: `encodeURIComponent(CryptoJS.AES.encrypt(pw, "nanokvm-sipeed-2024"))`. The token comes back in `data.token` or in the `nano-kvm-token` cookie.
-- `GET /api/vm/gpio` returns `data.pwr`, the state of the server's power LED.
-- `POST /api/vm/gpio` with `{type: "power", duration: 800}` presses the power button briefly.
-- `POST /api/network/wol` with `{mac}` sends a magic packet from the NanoKVM's LAN.
+On `401` the phone logs in again once and retries.
+
+- `POST /api/auth/login` `{username, password}` with the password encoded as the NanoKVM UI does:
+  `encodeURIComponent(CryptoJS.AES.encrypt(pw, "nanokvm-sipeed-2024"))`. That key is public, so the
+  password is only as private as the channel; Tailscale encrypts it. Token: `data.token` or the
+  `nano-kvm-token` cookie.
+- `GET /api/vm/gpio` → `data.pwr` (power LED).
+- `POST /api/vm/gpio` `{type:"power", duration:800}` short press; `duration:12000` force off.
+- `POST /api/network/wol` `{mac}`.
 
 ## Updates
 
-GitHub's `releases/latest` is the source of truth.
+GitHub `releases/latest` is the source of truth. Every release has `SHA256SUMS.txt` and an Ed25519
+signature (`.sig`, base64) for each helper download, checked against the public key built into the helper.
 
-- **Windows** downloads `PowerDeck-Setup.exe` and `PowerDeck-Setup.exe.sig`, then checks the base64 Ed25519 signature against the public key built into the app. Only then does it run the installer with `/VERYSILENT`.
-- **Android** downloads `PowerDeck.apk` and checks its SHA-256 against the release asset digest. It then installs through `PackageInstaller`; Android enforces the signing key.
+- **Windows** downloads `PowerDeck-Setup.exe` + `.sig`, verifies, runs it with `/VERYSILENT`.
+- **Linux** downloads `powerdeck-helper-linux-<arch>` + `.sig`, verifies, replaces itself and restarts its service.
+- **Android** downloads `PowerDeck.apk`, checks its SHA-256 against the release asset digest, installs via `PackageInstaller`; Android enforces the signing key.

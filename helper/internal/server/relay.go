@@ -1,0 +1,237 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/projectzero02/powerdeck/helper/internal/auth"
+	"github.com/projectzero02/powerdeck/helper/internal/discovery"
+	"github.com/projectzero02/powerdeck/helper/internal/fleet"
+	"github.com/projectzero02/powerdeck/helper/internal/peer"
+	"github.com/projectzero02/powerdeck/helper/internal/store"
+)
+
+type discoveryPeer = discovery.Peer
+
+var actionScope = map[string]string{
+	"status": store.ScopeStatus, "wake": store.ScopeWake,
+	"shutdown": store.ScopePower, "restart": store.ScopePower, "cancel": store.ScopePower,
+}
+
+func (s *server) relay(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	res, e := s.act(r.Context(), c, r.PathValue("name"), r.PathValue("action"))
+	if e != nil {
+		failErr(w, e)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// act runs one device action for a caller: on this device, or relayed to another helper. It's
+// shared by the REST relay, MCP and schedules, so the same rules apply everywhere.
+func (s *server) act(ctx context.Context, c auth.Caller, device, action string) (map[string]any, *apiError) {
+	scope, ok := actionScope[action]
+	if !ok {
+		return nil, &apiError{Status: http.StatusNotFound, Code: "not_found", Message: "Unknown action " + action + "."}
+	}
+	if !c.Has(scope) {
+		return nil, &apiError{Status: http.StatusForbidden, Code: "scope", Message: "This key isn't allowed to " + action + "."}
+	}
+	if device == "" || fleet.IsSelf(device, s.Name) {
+		device = s.Name
+	}
+	if !c.MayUse(device) {
+		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + device + "."}
+	}
+	if device == s.Name {
+		switch action {
+		case "status":
+			return s.statusBody(ctx, c), nil
+		case "wake":
+			return map[string]any{"online": true, "message": device + " is already on."}, nil
+		default:
+			return s.localPower(ctx, c, action, powerRequest{})
+		}
+	}
+	switch action {
+	case "wake":
+		if c.IsAutomation() {
+			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindWake); e != nil {
+				return nil, e
+			}
+		}
+		sent, err := s.Fleet.Wake(device)
+		if err != nil {
+			return nil, fleetError(device, err)
+		}
+		s.logEvent(c.Name, "wake "+device, "sent")
+		return map[string]any{"sentOn": sent, "message": "Wake signal sent to " + device + ". It usually takes 30–90 seconds."}, nil
+	case "status":
+		var st map[string]any
+		if err := s.Fleet.Forward(ctx, device, "GET", "/v2/status", nil, &st, c.Name); err != nil {
+			if errors.Is(err, fleet.ErrOffline) {
+				p, _ := s.Fleet.Peer(device)
+				return map[string]any{"name": device, "online": false, "lastSeen": p.LastSeen}, nil
+			}
+			return nil, fleetError(device, err)
+		}
+		st["online"] = true
+		return st, nil
+	default:
+		if c.IsAutomation() && !c.Key.AllowSelf && c.Node != "" && strings.EqualFold(c.Node, device) {
+			return nil, &apiError{Status: http.StatusForbidden, Code: "self",
+				Message: "An agent can't shut down or restart the device it runs on."}
+		}
+		if c.IsAutomation() && action != "cancel" {
+			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindPower); e != nil {
+				return nil, e
+			}
+		}
+		var res map[string]any
+		err := s.Fleet.Forward(ctx, device, "POST", "/v2/power/"+action, map[string]any{"delaySeconds": 60}, &res, c.Name)
+		if err != nil {
+			return nil, fleetError(device, err)
+		}
+		s.logEvent(c.Name, action+" "+device, "scheduled")
+		return res, nil
+	}
+}
+
+func fleetError(device string, err error) *apiError {
+	var pe *peer.Error
+	switch {
+	case errors.As(err, &pe):
+		e := &apiError{Status: pe.Status, Code: pe.Code, Message: device + ": " + pe.Message}
+		if pe.Code == "in_use" || pe.Code == "pending" {
+			e.Status = http.StatusConflict
+		}
+		return e
+	case errors.Is(err, fleet.ErrUnknownDevice):
+		return &apiError{Status: http.StatusNotFound, Code: "unknown_device", Message: "This helper doesn't know a device called " + device + "."}
+	case errors.Is(err, fleet.ErrOffline):
+		return &apiError{Status: http.StatusBadGateway, Code: "offline", Message: device + " isn't answering (it may be off)."}
+	case errors.Is(err, fleet.ErrNoWaker), errors.Is(err, fleet.ErrNoMAC):
+		return &apiError{Status: http.StatusUnprocessableEntity, Code: "cant_wake", Message: device + ": " + err.Error()}
+	default:
+		return &apiError{Status: http.StatusBadGateway, Code: "relay_failed", Message: device + ": " + err.Error()}
+	}
+}
+
+// ---- limits ----
+
+// limiter blocks an address for 10 minutes after 10 failures within 10 minutes.
+type limiter struct {
+	mu   sync.Mutex
+	now  func() time.Time
+	hits map[string][]time.Time
+}
+
+const (
+	limitWindow   = 10 * time.Minute
+	limitFailures = 10
+)
+
+func newLimiter(now func() time.Time) *limiter {
+	return &limiter{now: now, hits: map[string][]time.Time{}}
+}
+
+func (l *limiter) recent(key string, window time.Duration) []time.Time {
+	cut := l.now().Add(-window)
+	h := l.hits[key]
+	i := 0
+	for i < len(h) && h[i].Before(cut) {
+		i++
+	}
+	h = h[i:]
+	if len(h) == 0 {
+		delete(l.hits, key)
+	} else {
+		l.hits[key] = h
+	}
+	return h
+}
+
+func (l *limiter) fail(ip interface{ String() string }) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k := ip.String()
+	l.hits[k] = append(l.recent(k, limitWindow), l.now())
+}
+
+func (l *limiter) blocked(ip interface{ String() string }) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.recent(ip.String(), limitWindow)) >= limitFailures
+}
+
+// quota limits what an automation key can do per device: one shutdown/restart per 10 minutes and
+// six wakes per hour.
+type quota struct{ l *limiter }
+
+const (
+	kindPower = "power"
+	kindWake  = "wake"
+)
+
+func newQuota(now func() time.Time) *quota { return &quota{l: newLimiter(now)} }
+
+func (q *quota) take(key, kind string) *apiError {
+	window, max := 10*time.Minute, 1
+	if kind == kindWake {
+		window, max = time.Hour, 6
+	}
+	q.l.mu.Lock()
+	defer q.l.mu.Unlock()
+	k := kind + "/" + key
+	if len(q.l.recent(k, window)) >= max {
+		return &apiError{Status: http.StatusTooManyRequests, Code: "cooldown",
+			Message: fmt.Sprintf("Agents can %s a device at most %d time(s) per %s.", kind, max, window)}
+	}
+	q.l.hits[k] = append(q.l.hits[k], q.l.now())
+	return nil
+}
+
+// ---- schedules ----
+
+var hhmm = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
+
+var allDays = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+// ValidateSchedule checks and normalises a schedule (self is this helper's name).
+func ValidateSchedule(sc *store.Schedule, self string) error {
+	sc.Action = strings.ToLower(sc.Action)
+	switch sc.Action {
+	case "shutdown", "restart":
+		sc.Target = self
+	case "wake":
+		if sc.Target == "" || fleet.IsSelf(sc.Target, self) {
+			return errors.New("a wake schedule needs another device as its target")
+		}
+	default:
+		return errors.New("action must be shutdown, restart or wake")
+	}
+	if !hhmm.MatchString(sc.Time) {
+		return errors.New("time must be HH:MM (24-hour)")
+	}
+	if len(sc.Days) == 0 {
+		sc.Days = allDays
+	}
+	for i, d := range sc.Days {
+		d = strings.ToLower(d)
+		if len(d) > 3 {
+			d = d[:3]
+		}
+		if !slices.Contains(allDays, d) {
+			return errors.New("unknown day " + sc.Days[i])
+		}
+		sc.Days[i] = d
+	}
+	return nil
+}
