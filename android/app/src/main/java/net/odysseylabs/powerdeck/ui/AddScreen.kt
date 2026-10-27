@@ -10,6 +10,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.text.style.TextOverflow
+import net.odysseylabs.powerdeck.data.Settings
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -97,7 +102,9 @@ data class AddActions(
     val addPeer: (Peer) -> Unit = {},
     val submitCode: (String) -> Unit = {},
     val dismiss: () -> Unit = {},
-    val confirmLink: () -> Unit = {},
+    val confirmLink: (name: String) -> Unit = {},
+    val setHold: (Boolean) -> Unit = {},
+    val setCountdown: (Int) -> Unit = {},
     val find: () -> Unit = {},
     val install: () -> Unit = {},
     val linkKvm: (deviceId: String?, newName: String, peer: Peer, user: String, password: String, done: (Boolean) -> Unit) -> Unit = { _, _, _, _, _, _ -> },
@@ -227,14 +234,57 @@ fun AddScreen(state: UiState, a: AddActions, snackbar: SnackbarHostState) {
     }
 
     if (step is AddStep.NeedsCode) CodeDialog(step.name, onSubmit = a.submitCode, onDismiss = a.dismiss)
-    if (step is AddStep.Confirm) AlertDialog(
-        onDismissRequest = a.dismiss,
-        title = { Text("Add ${step.info.name}?") },
-        text = { Text("A link asked PowerDeck to add ${step.info.name} (${step.info.host}). Add it only if it's one of your devices.") },
-        confirmButton = { Button(onClick = a.confirmLink) { Text("Add") } },
-        dismissButton = { TextButton(onClick = a.dismiss) { Text("Cancel") } },
-    )
+    if (step is AddStep.Review) AddSheet(step, first, state.settings, a)
     kvmFor?.let { p -> KvmDialog(p, state.devices, onLink = a.linkKvm, onDismiss = { kvmFor = null }) }
+}
+
+/** "Add My PC": name it for this phone. The first time, also how its buttons behave. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddSheet(step: AddStep.Review, first: Boolean, settings: Settings, a: AddActions) {
+    var name by rememberSaveable(step.info.host) { mutableStateOf(step.info.name) }
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = a.dismiss, sheetState = sheet) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = Margin).padding(bottom = 24.dp).imePadding(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconTile(Icons.Rounded.DesktopWindows)
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Add ${name.ifBlank { step.info.name }}", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(step.info.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (step.external) {
+                Text("A link from another app asked PowerDeck to add this. Add it only if it's one of your devices.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it.take(40) },
+                label = { Text("Name") },
+                supportingText = { Text("Only on this phone. You can change it later.") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+            )
+            if (first) {
+                SectionTitle("Buttons")
+                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                    ButtonSettings(settings, a.setHold, a.setCountdown)
+                }
+                Text("These apply to every device. Change them any time in Settings.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton(onClick = a.dismiss) { Text("Cancel") }
+                Button(onClick = { a.confirmLink(name.trim()) }, enabled = name.isNotBlank()) { Text("Add") }
+            }
+        }
+    }
 }
 
 /** Radar while the helpers look around the tailnet; "Search again" once they've found nothing new. */

@@ -65,6 +65,9 @@ import net.odysseylabs.powerdeck.data.DeviceState
 import java.time.Duration
 import java.time.Instant
 
+/** "Hold for 3 s to activate": how long Shut down and Restart have to be held. */
+const val HOLD_MILLIS = 3000
+
 fun Device.icon(): ImageVector = when (kind) {
     Device.Kind.Pc -> Icons.Rounded.DesktopWindows
     Device.Kind.Server -> Icons.Rounded.Dns
@@ -77,6 +80,9 @@ fun Device.kindName(): String = when {
     os == "linux" -> "Linux"
     else -> "Device"
 }
+
+/** "in 45 seconds", "in 2 minutes". */
+fun inTime(seconds: Int): String = if (seconds < 90) "in $seconds second${if (seconds == 1) "" else "s"}" else "in ${(seconds + 30) / 60} minutes"
 
 fun uptime(seconds: Long): String {
     val h = seconds / 3600
@@ -180,7 +186,7 @@ fun HoldButton(
     danger: Boolean,
     enabled: Boolean,
     modifier: Modifier = Modifier,
-    holdMillis: Int = 900,
+    holdMillis: Int = HOLD_MILLIS,
     hold: Boolean = true,
     tonal: Boolean = false,
     onHint: () -> Unit = {},

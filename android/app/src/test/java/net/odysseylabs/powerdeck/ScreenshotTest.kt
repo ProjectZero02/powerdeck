@@ -68,6 +68,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
 import net.odysseylabs.powerdeck.data.AgentKey
+import net.odysseylabs.powerdeck.data.AddInfo
 import net.odysseylabs.powerdeck.data.Agents
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.ui.AddScreen
@@ -167,6 +168,21 @@ class ScreenshotTest {
             ),
             AddActions(back = {}), SnackbarHostState(),
         )
+    }
+
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test fun addSheet() {
+        compose.setContent {
+            PowerDeckTheme(dynamic = false) {
+                WithStatusBar {
+                    AddScreen(UiState(loaded = true, add = AddStep.Review(AddInfo("Gaming-PC", "gaming-pc.tail1234.ts.net", 47321, "x", null), external = false)),
+                        AddActions(), SnackbarHostState())
+                }
+            }
+        }
+        compose.onNodeWithText("Countdown to action").assertExists()
+        compose.onNodeWithText("Add Gaming-PC").assertExists()
+        captureScreenRoboImage("build/outputs/roborazzi/add-sheet.png") // the sheet is its own window
     }
 
     @Test fun addSearching() = shot("add-searching") {

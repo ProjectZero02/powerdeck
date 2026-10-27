@@ -42,6 +42,8 @@ import net.odysseylabs.powerdeck.data.Pending
 import net.odysseylabs.powerdeck.data.PowerDeck
 import net.odysseylabs.powerdeck.data.Ask
 import net.odysseylabs.powerdeck.deck
+import kotlinx.coroutines.flow.map
+import androidx.compose.runtime.collectAsState
 
 /**
  * The small dialog the widget, tiles and shortcuts open: checks the device, then turns it on straight
@@ -114,6 +116,7 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
         Shortcuts.refreshAll(ctx)
     }
 
+    val countdown by remember { deck.store.settings.map { it.countdownSeconds } }.collectAsState(60)
     val s = step
     val d = device
     val name = d?.name ?: "PowerDeck"
@@ -131,7 +134,7 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
                     when {
                         s.pending != null -> "A ${if (s.pending.action == "restart") "restart" else "shutdown"} is counting down."
                         d?.guests == true -> "It's on. Shut it down? Its VMs stop cleanly first, then it powers off."
-                        else -> "It's on. Shut it down? Apps close in 60 seconds, and you can cancel until then."
+                        else -> if (countdown == 0) "It's on. Shut it down now?" else "It's on. Shut it down? Apps close ${inTime(countdown)}, and you can cancel until then."
                     },
                 )
                 QuickStep.AskOn -> Text("It's off. Turn it on?")

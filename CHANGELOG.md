@@ -9,6 +9,8 @@ A proper Windows window, a scanner that works everywhere, and simpler controls.
 - **Add devices:** a radar while PowerDeck searches your tailnet, **Search again** when nothing new turns up, and the scan button at the bottom. Type a **Tailscale name or IP**. Install commands moved to GitHub behind an **Install** link.
 - **Device cards** have a **⋮** menu: Rename, Settings, Add to home screen, Delete. **Delete** asks whether to remove the device from this phone only or also uninstall PowerDeck from it.
 - **AI agents:** one switch per device, **Allow AI agents to use this device**. Off, agents can still see whether it's on but can't turn it on or off, on that device or through a hub. Until an agent is connected the switch is a **Set up** button that explains how.
+- **Add sheet:** scanning a code opens **Add <computer>**, where you can rename it before adding. The first time, it also asks how the buttons behave.
+- **Button settings** (in Settings, and in the first Add sheet): **Hold for 3 s to activate** for Shut down and Restart, and **Countdown to action** in seconds (0–600, default 60). Shortcuts, tiles and the widget use the same countdown.
 - **Setup checks** on a device page fold away, and stay folded once everything passes.
 
 ## 2.0.2

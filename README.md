@@ -54,7 +54,7 @@ Download [**PowerDeck.apk**](https://github.com/ProjectZero02/powerdeck/releases
 
 **3. Scan the code**
 
-Tap **Scan the helper's code** and allow the camera. Your other computers and NanoKVMs then appear under **Found on your tailnet**: tap **Add** on each one. A NanoKVM asks for its password and which computer's power button it's wired to.
+Tap **Scan the helper's code** and allow the camera, then name the computer and tap **Add**. Your other computers and NanoKVMs then appear under **Found on your tailnet**: tap **Add** on each one. A NanoKVM asks for its password and which computer's power button it's wired to.
 
 > [!NOTE]
 > A NanoKVM shows up only once it's on Tailscale too: turn Tailscale on in its web settings and sign it in to the same account. Keep its web page on plain HTTP (the default); Tailscale already encrypts the connection.
@@ -85,7 +85,7 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 
 ## Features
 
-- **On · Off · Restart.** Clean shutdowns with a 60-second countdown you can cancel. On Windows, **Update and shut down** when updates are waiting.
+- **On · Off · Restart.** Clean shutdowns with a countdown you can cancel (60 seconds by default; set it, and whether buttons need a 3-second hold, in Settings). On Windows, **Update and shut down** when updates are waiting.
 - **Turn on from anywhere.** Wake-on-LAN, sent by any PowerDeck computer on the same home network (an always-on server is ideal), or by a NanoKVM, or by your phone when it's at home.
 - **NanoKVM.** Wire a [NanoKVM](https://github.com/sipeed/NanoKVM) to any computer's power button to turn it on even where Wake-on-LAN can't, and as a fallback for shutting down. Nothing is installed on the KVM.
 - **Someone using it?** Shutdowns and restarts ask first when someone is active or a game is full-screen, and say who.

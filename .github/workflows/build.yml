@@ -209,6 +209,26 @@ jobs:
           $r = Invoke-WebRequest http://127.0.0.1:47322/api/state -SkipHttpErrorCheck
           if ($r.StatusCode -ne 403) { throw "PC window API without key: $($r.StatusCode)" }
 
+      - name: "End-to-end: PC window opens in PowerDeck, not a browser"
+        run: |
+          Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force
+          Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern System.IntPtr FindWindow(string c, string t);'
+          Start-Process "$env:ProgramFiles\PowerDeck\PowerDeck.exe" -ArgumentList open
+          for ($i = 0; $i -lt 30 -and [W.U]::FindWindow('PowerDeckWindow', 'PowerDeck') -eq [IntPtr]::Zero; $i++) { Start-Sleep 1 }
+          if ([W.U]::FindWindow('PowerDeckWindow', 'PowerDeck') -eq [IntPtr]::Zero) { throw "no PowerDeck window" }
+          for ($i = 0; $i -lt 30 -and -not (Get-Process msedgewebview2 -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          if (-not (Get-Process msedgewebview2 -ErrorAction SilentlyContinue)) { throw "WebView2 didn't start" }
+          Start-Sleep 5
+          if (Get-Process msedge -ErrorAction SilentlyContinue) { throw "a browser opened" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$env:GITHUB_WORKSPACE\pc-window-windows.png")
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with: { name: pc-window-windows, path: pc-window-windows.png, if-no-files-found: warn }
+
       - name: "End-to-end: upgrade in place (reinstall over itself)"
         run: |
           $p = Start-Process dist\PowerDeck-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru

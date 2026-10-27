@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -15,10 +16,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+const val MAX_COUNTDOWN = 600
+
 data class Settings(
     val confirmShutdown: Boolean = true,
     val autoTailscale: Boolean = true,
     val notifications: Boolean = true,
+    /** How long a shutdown or restart from this phone counts down (the helper allows 0–600). */
+    val countdownSeconds: Int = 60,
 )
 
 /** Last known power state of a device, for the widget and tiles (no network round trip). */
@@ -39,6 +44,7 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
         val confirm = booleanPreferencesKey("opt.confirmShutdown")
         val autoTs = booleanPreferencesKey("opt.autoTailscale")
         val notify = booleanPreferencesKey("opt.notifications")
+        val countdown = intPreferencesKey("opt.countdownSeconds")
         val appUpdate = stringPreferencesKey("app.update") // {"checkedAt": millis, "told": version}
         fun key(id: String) = stringPreferencesKey("secret.key.$id")
         fun kvm(id: String) = stringPreferencesKey("secret.kvm.$id")
@@ -53,7 +59,7 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
     val devices: Flow<List<Device>> = ctx.dataStore.data.map(::parse).distinctUntilChanged()
 
     val settings: Flow<Settings> = ctx.dataStore.data.map { p ->
-        Settings(p[K.confirm] ?: true, p[K.autoTs] ?: true, p[K.notify] ?: true)
+        Settings(p[K.confirm] ?: true, p[K.autoTs] ?: true, p[K.notify] ?: true, (p[K.countdown] ?: 60).coerceIn(0, MAX_COUNTDOWN))
     }.distinctUntilChanged()
 
     val snapshots: Flow<Map<String, Snapshot>> = ctx.dataStore.data.map { p ->
@@ -177,6 +183,7 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
     suspend fun setConfirmShutdown(on: Boolean) = ctx.dataStore.edit { it[K.confirm] = on }
     suspend fun setAutoTailscale(on: Boolean) = ctx.dataStore.edit { it[K.autoTs] = on }
     suspend fun setNotifications(on: Boolean) = ctx.dataStore.edit { it[K.notify] = on }
+    suspend fun setCountdown(seconds: Int) = ctx.dataStore.edit { it[K.countdown] = seconds.coerceIn(0, MAX_COUNTDOWN) }
 
     companion object {
         const val TILE_SLOTS = 4

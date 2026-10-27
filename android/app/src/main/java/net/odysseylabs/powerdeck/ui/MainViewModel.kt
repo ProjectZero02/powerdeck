@@ -56,7 +56,8 @@ sealed interface AddStep {
     data class Working(val what: String) : AddStep
     data class NeedsCode(val name: String, val retry: suspend (String) -> AddResult) : AddStep
     /** An add link opened from outside the app (a web page, a chat): ask before adding. */
-    data class Confirm(val info: AddInfo) : AddStep
+    /** A scanned code or a link: name it, then add. [external] links came from another app. */
+    data class Review(val info: AddInfo, val external: Boolean) : AddStep
     data class Failed(val message: String) : AddStep
 }
 
@@ -179,6 +180,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Adding -------------------------------------------------------------------------------
 
+    /** The name chosen in the Add sheet, applied once the device is in (also after a pairing code). */
+    private var wantedName: String? = null
+
     private fun runAdd(what: String, block: suspend () -> AddResult) {
         if (_state.value.add is AddStep.Working) return
         viewModelScope.launch {
@@ -190,24 +194,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun handle(r: AddResult) {
         when (r) {
             is AddResult.Added -> {
+                val name = wantedName?.trim()?.take(40)?.ifBlank { null }
+                wantedName = null
+                if (name != null && name != r.device.name) deck.store.update(r.device.id) { it.copy(name = name) }
                 _state.update { it.copy(add = AddStep.Idle, found = it.found?.filterNot { p -> p.address == r.device.host }) }
-                _messages.send("Added ${r.device.name}")
+                _messages.send("Added ${name ?: r.device.name}")
                 EventsWorker.schedule(getApplication())
                 refreshNow()
                 find(refresh = true)
             }
             is AddResult.NeedsCode -> _state.update { it.copy(add = AddStep.NeedsCode(r.name, r.retry)) }
-            is AddResult.Failed -> _state.update { it.copy(add = AddStep.Failed(r.message)) }
+            is AddResult.Failed -> {
+                wantedName = null
+                _state.update { it.copy(add = AddStep.Failed(r.message)) }
+            }
         }
     }
 
-    /** From a scanned QR code or a powerdeck://add link. */
+    /** From a scanned QR code: shows the Add sheet. */
     fun addLink(text: String) {
         val info = AddLink.parse(text) ?: run {
             _state.update { it.copy(add = AddStep.Failed("That isn't a PowerDeck code. Scan the code the helper shows.")) }
             return
         }
-        runAdd(info.name) { deck.addFromLink(info) }
+        _state.update { it.copy(add = AddStep.Review(info, external = false)) }
     }
 
     /** A powerdeck://add link from another app: confirm first, it could come from anywhere. */
@@ -216,12 +226,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(add = AddStep.Failed("That link isn't a valid PowerDeck code.")) }
             return
         }
-        _state.update { it.copy(add = AddStep.Confirm(info)) }
+        _state.update { it.copy(add = AddStep.Review(info, external = true)) }
     }
 
-    fun confirmLink() {
-        val step = _state.value.add as? AddStep.Confirm ?: return
-        runAdd(step.info.name) { deck.addFromLink(step.info) }
+    /** Adds the reviewed device, called [name] on this phone. */
+    fun confirmLink(name: String) {
+        val step = _state.value.add as? AddStep.Review ?: return
+        wantedName = name
+        runAdd(name.ifBlank { step.info.name }) { deck.addFromLink(step.info) }
     }
 
     fun addByName(text: String) {
@@ -229,17 +241,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(add = AddStep.Failed("Type the device's Tailscale name, like my-pc, or its 100.x address.")) }
             return
         }
+        wantedName = null
         runAdd(host) { deck.addByName(host) }
     }
 
-    fun addPeer(p: Peer) = runAdd(p.name) { deck.addPeer(p) }
+    fun addPeer(p: Peer) {
+        wantedName = null
+        runAdd(p.name) { deck.addPeer(p) }
+    }
 
     fun submitCode(code: String) {
         val step = _state.value.add as? AddStep.NeedsCode ?: return
         runAdd(step.name) { step.retry(code) }
     }
 
-    fun resetAdd() = _state.update { it.copy(add = AddStep.Idle) }
+    fun resetAdd() {
+        if (_state.value.add !is AddStep.Working) wantedName = null
+        _state.update { it.copy(add = AddStep.Idle) }
+    }
 
     fun find(refresh: Boolean) {
         if (_state.value.finding || _state.value.devices.none { it.hasHelper }) return
@@ -400,6 +419,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Settings -----------------------------------------------------------------------------
 
     fun setConfirmShutdown(on: Boolean) = viewModelScope.launch { deck.store.setConfirmShutdown(on) }
+    fun setCountdown(seconds: Int) = viewModelScope.launch { deck.store.setCountdown(seconds) }
     fun setAutoTailscale(on: Boolean) = viewModelScope.launch { deck.store.setAutoTailscale(on) }
     fun setNotifications(on: Boolean) = viewModelScope.launch {
         deck.store.setNotifications(on)

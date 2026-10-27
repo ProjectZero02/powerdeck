@@ -126,6 +126,8 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     submitCode = vm::submitCode,
                     dismiss = vm::resetAdd,
                     confirmLink = vm::confirmLink,
+                    setHold = { vm.setConfirmShutdown(it) },
+                    setCountdown = { vm.setCountdown(it) },
                     find = { vm.find(refresh = true) },
                     install = { activity.open(INSTALL_GUIDE) },
                     linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
@@ -139,7 +141,8 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                 state.settings,
                 SettingsActions(
                     back = { route = "home" },
-                    setConfirm = vm::setConfirmShutdown,
+                    setConfirm = { vm.setConfirmShutdown(it) },
+                    setCountdown = { vm.setCountdown(it) },
                     setAutoTailscale = vm::setAutoTailscale,
                     setNotifications = { on -> vm.setNotifications(on); if (on) activity.askNotifications() },
                     addWidget = { Shortcuts.pinWidget(ctx) },

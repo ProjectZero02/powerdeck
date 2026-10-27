@@ -3,6 +3,7 @@ package net.odysseylabs.powerdeck.data
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -345,7 +346,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
         val pressKvm = pressKvm && !(d.hasHelper && answers(d)?.isSuccess == true)
         if (d.hasHelper && !pressKvm) {
             try {
-                val p = client(d)!!.power(verb, 60, force, installUpdates)
+                val p = client(d)!!.power(verb, store.settings.first().countdownSeconds, force, installUpdates)
                 store.saveSnapshot(d.id, if (restart) Power.On else Power.Off)
                 return@guarded Outcome(true, "${d.name} ${if (restart) "restarts" else "shuts down"} ${countdown(p)}. You can cancel until then.")
             } catch (e: HelperException.Api) {

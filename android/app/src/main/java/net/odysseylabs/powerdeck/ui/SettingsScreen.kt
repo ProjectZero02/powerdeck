@@ -31,6 +31,7 @@ import net.odysseylabs.powerdeck.data.Settings
 data class SettingsActions(
     val back: () -> Unit = {},
     val setConfirm: (Boolean) -> Unit = {},
+    val setCountdown: (Int) -> Unit = {},
     val setAutoTailscale: (Boolean) -> Unit = {},
     val setNotifications: (Boolean) -> Unit = {},
     val addWidget: () -> Unit = {},
@@ -67,10 +68,10 @@ fun SettingsScreen(settings: Settings, a: SettingsActions, helpers: List<Pair<De
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
+            Header("Buttons")
+            ButtonSettings(settings, a.setConfirm, a.setCountdown)
+
             Header("Behaviour")
-            SettingRow("Hold to shut down", "Press and hold Shut down and Restart", trailing = {
-                Switch(checked = settings.confirmShutdown, onCheckedChange = a.setConfirm)
-            })
             SettingRow("Turn on Tailscale automatically", "When you press a button", trailing = {
                 Switch(checked = settings.autoTailscale, onCheckedChange = a.setAutoTailscale)
             })
