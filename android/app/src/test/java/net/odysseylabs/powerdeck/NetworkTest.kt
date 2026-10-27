@@ -277,5 +277,6 @@ class UpdaterTest {
         assertEquals("Times are on Server's clock (UTC+0), 1 h behind your phone.", clockNote("Server", 0, phoneOffsetMinutes = 60))
         assertEquals("Times are on Server's clock (UTC+5:30), 4 h 30 min ahead of your phone.", clockNote("Server", 330, phoneOffsetMinutes = 60))
         assertEquals("Times are on Server's clock (UTC−5), 6 h behind your phone.", clockNote("Server", -300, phoneOffsetMinutes = 60))
+        assertEquals("Times are on Server's clock (UTC+1:30), 30 min ahead of your phone.", clockNote("Server", 90, phoneOffsetMinutes = 60))
     }
 }

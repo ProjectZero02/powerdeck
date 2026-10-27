@@ -90,7 +90,7 @@ fun SettingsScreen(settings: Settings, a: SettingsActions, helpers: List<Pair<De
             SettingRow("Update devices automatically", "Each computer checks every 6 hours and installs signed updates, never during a shutdown countdown", trailing = {
                 Switch(checked = helpers.isEmpty() || helpers.all { it.second.auto }, onCheckedChange = a.setDevicesAutoUpdate, enabled = helpers.isNotEmpty())
             })
-            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME} on this phone", "Check for an app update (it's checked daily too)", onClick = a.checkUpdate)
+            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME} on this phone", "Tap to check for an app update. With notifications on, you're told about new ones", onClick = a.checkUpdate)
             HorizontalDivider()
 
             Header("Shortcuts")

@@ -7,11 +7,13 @@ Fixes from a final security and reliability review, and updates you control from
 - **Updates from the app:** Settings → **Update devices now** updates every computer at once, and **Update devices automatically** turns self-updates on or off everywhere. A device page shows when its update is ready, with an **Update** button. The app notifies you once when a new version of itself is out.
 - **Security:** a program on a computer running the helper could act as its owner by calling the computer's own Tailscale address. It now needs the local token, like any other local program. A key from a pairing code can no longer read new pairing codes or change system settings.
 - **Easier Linux install:** the one-liner is now `curl … | sh`. It works in a root shell (Proxmox has no `sudo`) and as any user with sudo.
-- **Reliability:** settings are saved durably with a backup copy, so a power cut can't leave the helper unable to start. A schedule can't run twice if the helper restarts in the same minute. An update waits until no shutdown is counting down.
+- **Reliability:** settings are saved durably with a backup copy, so a power cut can't leave the helper unable to start. A deliberately deleted settings file stays deleted (only a damaged one is restored from the backup). A schedule can't run twice if the helper restarts in the same minute. An update waits until no shutdown is counting down, and no new countdown can start while it restarts the helper. An update that never finishes is reported after 10 minutes instead of showing "Updating" forever.
 - **Proxmox:** the list of running VMs is cached for 15 seconds instead of being read on every status check.
 - **Schedules** say when the computer's clock is in a different time zone from your phone's.
 - **NanoKVM:** a computer whose helper answers with a changed identity counts as on, so its button is never pressed.
-- **Windows:** the data folder takes ownership of anything already in it at install.
+- **Windows:** at install, a data folder that another user created (or a link to somewhere else) is moved aside and replaced, and anything inside it that can't be taken over is removed.
+- **Linux installer:** when run as a normal user it downloads itself again for sudo with curl or wget, and stops with a clear message if that download fails.
+- **App messages:** updating every device says what went wrong on each one (a countdown, no connection), and names any device with an older helper that will update itself.
 
 ## 2.0.0
 

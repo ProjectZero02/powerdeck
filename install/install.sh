@@ -23,6 +23,10 @@ MCowBQYDK2VwAyEACJxP8WfqitXsZh9tobWk/cyQbfMMVkk2+iLCHWYkucs=
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\033[31mPowerDeck: %s\033[0m\n' "$*" >&2; exit 1; }
+fetch() {
+  if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 -o "$2" "$1"
+  else wget -q -O "$2" "$1"; fi
+}
 
 UNINSTALL=0; PURGE=""
 for a in "$@"; do
@@ -39,10 +43,12 @@ if [ "$(id -u)" -ne 0 ]; then
   case "$0" in
     *.sh) exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh "$0" "$@" ;; # run from a saved file
   esac
-  # Piped from curl: this copy of the script was read from stdin, so fetch it again as root.
+  # Piped from curl: this copy of the script was read from stdin, so download it again and run that.
   SELF="https://github.com/$REPO/releases/latest/download/install.sh"
   [ -z "${POWERDECK_VERSION:-}" ] || SELF="https://github.com/$REPO/releases/download/v${POWERDECK_VERSION#v}/install.sh"
-  exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh -c 'curl -fsSL "$0" | sh -s -- "$@"' "$SELF" "$@"
+  ME=$(mktemp "${TMPDIR:-/var/tmp}/powerdeck-install.XXXXXX")
+  fetch "$SELF" "$ME" && [ "$(head -c 9 "$ME")" = "#!/bin/sh" ] || { rm -f "$ME"; die "download failed: $SELF"; }
+  exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh -c 'sh "$0" "$@"; s=$?; rm -f "$0"; exit $s' "$ME" "$@"
 fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
@@ -72,10 +78,6 @@ ASSET="powerdeck-helper-linux-$ARCH.gz"
 
 TMP=$(mktemp -d "${TMPDIR:-/var/tmp}/powerdeck.XXXXXX") # not /tmp, which may be noexec
 trap 'rm -rf "$TMP"' EXIT INT TERM
-fetch() {
-  if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 -o "$2" "$1"
-  else wget -q -O "$2" "$1"; fi
-}
 
 say "Downloading PowerDeck for linux/$ARCH…"
 fetch "$BASE/$ASSET" "$TMP/$ASSET" || die "download failed: $BASE/$ASSET"

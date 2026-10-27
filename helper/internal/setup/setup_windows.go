@@ -119,6 +119,9 @@ func Uninstall(purge bool) error {
 // it, so ownership and permissions are reset on everything inside too, and links are removed.
 func secureDataDir() error {
 	dir := DataDir()
+	if err := setAsideUntrusted(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -157,10 +160,51 @@ func secureDataDir() error {
 		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 { // symlinks and junctions
 			return os.Remove(path)
 		}
-		return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		if windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
 			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
-			admins, nil, inherit, nil)
+			admins, nil, inherit, nil) != nil {
+			// Something we can't take over isn't ours: drop it rather than trust it.
+			if err := os.RemoveAll(path); err != nil {
+				return fmt.Errorf("%s: can't secure or remove it: %w", path, err)
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		}
+		return nil
 	})
+}
+
+// setAsideUntrusted moves the data folder out of the way when it isn't one an
+// installer made: a link or junction, a file, or a folder owned by someone other
+// than SYSTEM or Administrators (any user can create folders in ProgramData).
+// Its keys and state can't be trusted, so the helper starts fresh.
+func setAsideUntrusted(dir string) error {
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	trusted := fi.IsDir() && fi.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0
+	if trusted {
+		sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+		if err != nil {
+			return err
+		}
+		owner, _, err := sd.Owner()
+		trusted = err == nil && owner != nil &&
+			(owner.IsWellKnown(windows.WinLocalSystemSid) || owner.IsWellKnown(windows.WinBuiltinAdministratorsSid))
+	}
+	if trusted {
+		return nil
+	}
+	aside := fmt.Sprintf("%s.untrusted-%d", dir, time.Now().Unix())
+	if err := os.Rename(dir, aside); err != nil {
+		return fmt.Errorf("%s isn't safe to use and couldn't be moved aside: %w", dir, err)
+	}
+	return nil
 }
 
 func installService(exePath string) error {

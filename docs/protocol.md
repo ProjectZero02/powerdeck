@@ -79,7 +79,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | GET | `/v2/hello` | none | → `{app:"PowerDeck", apiVersion:2, version, name, os}` |
 | GET | `/v2/status` | `status` | → [Status](#status) |
 | GET | `/v2/peers` | `status` | → `{checkedAt, peers:[Peer]}`; `?refresh=1` rescans first (≤ 10 s) |
-| POST | `/v2/power/shutdown` | `power` | `{delaySeconds?, force?, installUpdates?}` → `202 {pending}`, `409 in_use {presence}`, `409 pending {pending}` |
+| POST | `/v2/power/shutdown` | `power` | `{delaySeconds?, force?, installUpdates?}` → `202 {pending}`, `409 in_use {presence}`, `409 pending {pending}`, `409 updating` while an update restarts the helper |
 | POST | `/v2/power/restart` | `power` | same as shutdown |
 | POST | `/v2/power/cancel` | `power` | → `200 {pending:null}` or `409 nothing_pending` |
 | POST | `/v2/wake` | `wake` | `{mac}` → `200 {sentOn:[interface names]}`. Sends a magic packet to the helper's LANs |
@@ -92,7 +92,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | POST | `/v2/keys` | owner | `{name, scopes, devices?, allowSelf?}` → `{id, key}` (shown once) |
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
 | GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto}`; `?check=1` asks GitHub first |
-| POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown. The helper restarts a few seconds later |
+| POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown, `502 update_check` when GitHub can't be reached. The helper restarts a few seconds later; `installing` clears itself after 10 minutes if it doesn't, with `error` saying so |
 | POST | `/v2/settings` | owner | `{autoUpdate}` → `204`. Automatic updates (default on): check every 6 hours, install when nothing is counting down |
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
@@ -111,7 +111,7 @@ before retrying with `force: true`. Callers without the `force` scope can't over
 {
   "name": "Workstation", "os": "windows", "version": "2.0.0", "apiVersion": 2,
   "bootTime": "2026-10-27T06:08:02Z", "uptimeSeconds": 4123, "utcOffsetMinutes": 60,
-  "update": {"available": true, "latest": "2.0.2", "installing": false, "auto": true},
+  "update": {"available": true, "latest": "2.0.2", "installing": false, "error": "", "auto": true},
   "pending": {"action": "shutdown", "at": "2026-10-27T09:10:00Z", "by": "Pixel 9 Pro"},
   "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
   "guests": {"running": 3, "names": ["public", "private", "agent"]},

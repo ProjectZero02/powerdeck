@@ -40,12 +40,13 @@ object Updater {
 
     val isReleaseBuild get() = !BuildConfig.VERSION_NAME.contains("dev")
 
+    /** The latest release with an APK, or null if it has none; throws when GitHub can't be reached. */
     suspend fun latest(): Release? = withContext(Dispatchers.IO) {
         val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases/latest")
             .header("Accept", "application/vnd.github+json").build()
-        runCatching {
+        run {
             http.newCall(req).execute().use { r ->
-                if (!r.isSuccessful) return@use null
+                if (!r.isSuccessful) throw java.io.IOException("GitHub answered HTTP ${r.code}")
                 val o = JSONObject(r.body.string())
                 val assets = o.getJSONArray("assets")
                 val apk = (0 until assets.length()).map { assets.getJSONObject(it) }.firstOrNull { it.optString("name") == APK } ?: return@use null
@@ -56,7 +57,7 @@ object Updater {
                     notesUrl = o.optString("html_url"),
                 )
             }
-        }.getOrNull()
+        }
     }
 
     /** Update available for this build? */

@@ -45,3 +45,21 @@ func TestReportsExpire(t *testing.T) {
 		t.Error("stale report used")
 	}
 }
+
+func TestNoCountdownDuringUpdate(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := NewController(&DryRun{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, func() time.Time { return now })
+	if why := c.BeginUpdate(); why != "" {
+		t.Fatal(why)
+	}
+	if _, err := c.Do(Shutdown, Options{Delay: time.Minute, By: "x"}); !errors.Is(err, ErrUpdating) {
+		t.Fatalf("got %v, want ErrUpdating", err)
+	}
+	now = now.Add(updateHold + time.Second) // the update never came back
+	if _, err := c.Do(Shutdown, Options{Delay: time.Minute, By: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if why := c.BeginUpdate(); why == "" {
+		t.Error("update claimed the device during a countdown")
+	}
+}

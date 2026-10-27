@@ -366,7 +366,7 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	if s.Update != nil && c.Kind == auth.Owner {
 		u := s.Update.Status() // what the last check found; no network here
 		body["update"] = map[string]any{"available": u.Available, "latest": u.Latest, "installing": u.Installing,
-			"auto": s.Store.Settings().AutoUpdate}
+			"error": u.Error, "auto": s.Store.Settings().AutoUpdate}
 	}
 	if c.Has(store.ScopeAdmin) || c.Kind == auth.Owner {
 		body["checks"] = s.cachedChecks(ctx)
@@ -553,6 +553,8 @@ func (s *server) localPower(ctx context.Context, c auth.Caller, action string, r
 		s.logEvent(c.Name, string(a), "refused: in use")
 		return nil, &apiError{Status: http.StatusConflict, Code: "in_use", Message: "Someone is using this device.",
 			Extra: map[string]any{"presence": s.Power.Presence()}}
+	case errors.Is(err, power.ErrUpdating):
+		return nil, &apiError{Status: http.StatusConflict, Code: "updating", Message: "The helper is installing an update. Try again in a minute."}
 	case errors.Is(err, power.ErrPending):
 		return nil, &apiError{Status: http.StatusConflict, Code: "pending", Message: "A shutdown or restart is already scheduled.",
 			Extra: map[string]any{"pending": s.Power.Pending()}}

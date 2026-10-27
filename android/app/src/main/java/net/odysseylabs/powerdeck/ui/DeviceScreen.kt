@@ -220,7 +220,8 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             status?.update?.takeIf { it.available || it.installing }?.let { u ->
                 Section("Update") {
                     Row2(if (u.installing) "Updating to ${u.latest}…" else "PowerDeck ${u.latest} is ready",
-                        "${d.name} has ${status.version}." + if (u.auto) " It installs on its own within 6 hours." else "",
+                        "${d.name} has ${status.version}." + (if (u.auto) " It installs on its own within 6 hours." else "") +
+                            (u.error?.takeIf { !u.installing }?.let { " Last try: $it." } ?: ""),
                         icon = { Icon(Icons.Rounded.SystemUpdateAlt, null, tint = MaterialTheme.colorScheme.primary) },
                         trailing = if (u.installing) null else ({ TextButton(onClick = a.updateHelper, enabled = !busy && status.pending == null) { Text("Update") } }))
                 }
@@ -412,7 +413,11 @@ private fun ScheduleDialog(d: Device, status: HelperStatus?, onSave: (String, St
 /** Schedules run on the device's clock; say so when it differs from the phone's. */
 internal fun clockNote(name: String, offsetMinutes: Int?, phoneOffsetMinutes: Int = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000): String? {
     if (offsetMinutes == null || offsetMinutes == phoneOffsetMinutes) return null
-    fun span(m: Int) = if (m % 60 == 0) "${m / 60} h" else "${m / 60} h ${m % 60} min"
+    fun span(m: Int) = when {
+        m < 60 -> "$m min"
+        m % 60 == 0 -> "${m / 60} h"
+        else -> "${m / 60} h ${m % 60} min"
+    }
     val o = kotlin.math.abs(offsetMinutes)
     val zone = "UTC" + (if (offsetMinutes < 0) "−" else "+") + (o / 60) + (if (o % 60 != 0) ":%02d".format(o % 60) else "")
     val diff = phoneOffsetMinutes - offsetMinutes

@@ -152,7 +152,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             val target = store.get(deviceId)
             var seen = led
             if (target != null && target.hasHelper) {
-                val on = answers(target)
+                val on = answers(target) != null // a changed identity still counts as running
                 if (on && !led) return Outcome(false, "$name reads ${target.name}'s power light as off, but ${target.name} is on. Check that $name's power-LED cable is connected and wired to ${target.name}.")
                 if (!on && led) return Outcome(false, "$name reads the power light as on, but ${target.name} isn't answering. Check it's wired to ${target.name}, or try again while ${target.name}'s helper is reachable.")
                 seen = on && led
@@ -268,7 +268,11 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     private suspend fun turnOnNow(d: Device): Outcome = guarded {
         // A press on a running computer shuts it down, so press only when every sign says it's off:
         // its helper doesn't answer (asked twice) and the power light reads off.
-        if (d.hasHelper && answers(d)) return@guarded Outcome(true, "${d.name} is already on.")
+        // A changed identity still means something is running there: never press its button.
+        if (d.hasHelper) answers(d)?.let { r ->
+            return@guarded r.exceptionOrNull()?.let { Outcome(false, "${d.name} is on, but ${it.message?.replaceFirstChar(Char::lowercase)}") }
+                ?: Outcome(true, "${d.name} is already on.")
+        }
         if (d.kvm != null && d.kvm.ledSeen) {
             when (ledOn(d)) {
                 true -> return@guarded Outcome(true, "${d.name}'s power light is on: it's on or still starting.")
@@ -288,14 +292,15 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     /** Whether the helper answers, with one retry so a dropped packet doesn't read as "off". */
-    private suspend fun answers(d: Device): Boolean {
+    /** Answered, or answered with a changed identity (still running there), or null: silent twice. */
+    private suspend fun answers(d: Device): Result<Unit>? {
         repeat(2) { i ->
             val r = runCatching { client(d)!!.hello() }
-            // A changed identity still means something is running there: never press its button.
-            if (r.isSuccess || r.exceptionOrNull() is HelperException.WrongDevice) return true
+            if (r.isSuccess) return Result.success(Unit)
+            r.exceptionOrNull().let { if (it is HelperException.WrongDevice) return Result.failure(it) }
             if (i == 0) delay(1500)
         }
-        return false
+        return null
     }
 
     private suspend fun wake(d: Device, mac: String): Outcome {

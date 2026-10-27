@@ -191,12 +191,13 @@ class ScreenshotTest {
                     }
                 }
             }
-            Phone(x = 640.dp, y = 74.dp, dark = false) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
-            Phone(x = 1000.dp, y = 74.dp, dark = true) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
-            Phone(x = 810.dp, y = 44.dp, dark = false) {
+            // The home screen, where people spend their time, is the one in front.
+            Phone(x = 640.dp, y = 74.dp, dark = false) {
                 DeviceScreen(pc, all, Detail(schedules = listOf(pc to Schedule("a", "shutdown", null, "01:00", listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun"), true, true))),
                     DeviceActions(), SnackbarHostState())
             }
+            Phone(x = 1000.dp, y = 74.dp, dark = true) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
+            Phone(x = 810.dp, y = 44.dp, dark = false) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
         }
     }
 

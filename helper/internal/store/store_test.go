@@ -129,3 +129,23 @@ func TestOpenRecoversFromBrokenState(t *testing.T) {
 		t.Errorf("fresh start: %v", err)
 	}
 }
+
+func TestOpenAfterResetStartsFresh(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	_ = s.PutPeer(Peer{Name: "pve", Address: "100.101.1.20", Port: 47321, Pin: "p1"})
+	_ = s.PutPeer(Peer{Name: "nas", Address: "100.101.1.21", Port: 47321, Pin: "p2"})
+	if err := os.Remove(filepath.Join(dir, "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s2.Peer("pve"); ok {
+		t.Error("deleted state came back from the backup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("old backup kept: %v", err)
+	}
+}

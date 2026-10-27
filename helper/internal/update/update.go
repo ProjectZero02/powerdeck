@@ -92,9 +92,16 @@ type Manager struct {
 	log     *slog.Logger
 	run     func(path string) error // starts the installer; OS-specific
 	// Busy, when set, says why the helper mustn't restart right now (e.g. a shutdown countdown it
-	// would lose); checked again just before installing, since the download can take minutes.
-	Busy func() string
+	// would lose), or claims the restart; checked just before installing, since the download can
+	// take minutes. Idle releases the claim when the installer doesn't start.
+	Busy  func() string
+	Idle  func()
+	now   func() time.Time
+	since time.Time // when Installing was set
 }
+
+// installTimeout: an installer that started but never restarted the helper has failed.
+const installTimeout = 10 * time.Minute
 
 func NewManager(dataDir string, log *slog.Logger) *Manager {
 	return &Manager{
@@ -104,6 +111,7 @@ func NewManager(dataDir string, log *slog.Logger) *Manager {
 		dataDir: dataDir,
 		log:     log,
 		run:     runInstaller,
+		now:     time.Now,
 	}
 }
 
@@ -111,6 +119,7 @@ func NewManager(dataDir string, log *slog.Logger) *Manager {
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.expireLocked()
 	return m.status
 }
 
@@ -184,14 +193,22 @@ func (m *Manager) download(ctx context.Context, url string, limit int64) ([]byte
 // Install downloads, verifies and installs the latest release: on Windows the installer stops this
 // service, replaces the files and starts the new version; on Linux the binary is swapped and the
 // service restarted.
+func (m *Manager) expireLocked() {
+	if m.status.Installing && m.now().Sub(m.since) > installTimeout {
+		m.status.Installing = false
+		m.status.Error = "the update didn't finish; the helper is still on " + m.status.Current
+	}
+}
+
 func (m *Manager) Install(ctx context.Context) error {
 	m.mu.Lock()
+	m.expireLocked()
 	rel, avail, busy := m.latest, m.status.Available, m.status.Installing
 	if busy {
 		m.mu.Unlock()
 		return errors.New("an update is already being installed")
 	}
-	m.status.Installing = true
+	m.status.Installing, m.status.Error, m.since = true, "", m.now()
 	m.mu.Unlock()
 	err := m.install(ctx, rel, avail)
 	if err != nil {
@@ -237,5 +254,11 @@ func (m *Manager) install(ctx context.Context, rel *Release, avail bool) error {
 		}
 	}
 	m.log.Info("update verified, starting installer", "version", rel.Version)
-	return m.run(path)
+	if err := m.run(path); err != nil {
+		if m.Idle != nil {
+			m.Idle()
+		}
+		return err
+	}
+	return nil
 }

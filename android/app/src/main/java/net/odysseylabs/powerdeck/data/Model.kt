@@ -158,10 +158,10 @@ data class HelperStatus(
 }
 
 /** A helper's self-update state: it checks every 6 hours and, when [auto] is on, installs on its own. */
-data class HelperUpdate(val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean) {
+data class HelperUpdate(val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean, val error: String? = null) {
     companion object {
         fun from(o: JSONObject) = HelperUpdate(o.optBoolean("available"), o.optStringOrNull("latest")?.ifEmpty { null },
-            o.optBoolean("installing"), o.optBoolean("auto", true))
+            o.optBoolean("installing"), o.optBoolean("auto", true), o.optStringOrNull("error")?.ifEmpty { null })
     }
 }
 

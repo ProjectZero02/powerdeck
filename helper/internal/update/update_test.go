@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/projectzero02/powerdeck/helper/internal/version"
 )
@@ -98,5 +99,19 @@ func TestDevBuildsNeverOfferUpdates(t *testing.T) {
 	st, _ := m.Check(context.Background())
 	if st.Available {
 		t.Fatal("dev builds must not auto-update")
+	}
+}
+
+func TestStuckInstallExpires(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := NewManager(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.now = func() time.Time { return now }
+	m.status.Installing, m.since = true, now // installer launched, helper never restarted
+	if !m.Status().Installing {
+		t.Fatal("expired too early")
+	}
+	now = now.Add(installTimeout + time.Second)
+	if st := m.Status(); st.Installing || st.Error == "" {
+		t.Fatalf("stuck install not expired: %+v", st)
 	}
 }

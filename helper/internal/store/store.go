@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -128,13 +129,21 @@ type Store struct {
 func Open(dir string) (*Store, error) {
 	s := &Store{path: filepath.Join(dir, "state.json")}
 	err := s.load(s.path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		// Unreadable (e.g. cut short by a power loss): keep it aside and fall back to the last good
-		// copy, or start fresh, rather than leave the device unreachable.
-		_ = os.Rename(s.path, s.path+".broken")
-	}
-	if err != nil && s.load(s.path+".bak") != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrNotExist):
+		// Never set up, or deliberately reset: start fresh, and don't let an old backup come back later.
+		_ = os.Remove(s.path + ".bak")
 		s.st = state{Settings: Settings{AutoUpdate: true}}
+	case isCorrupt(err):
+		// Cut short (e.g. by a power loss): keep it aside and fall back to the last good copy, or start
+		// fresh, rather than leave the device unreachable.
+		_ = os.Rename(s.path, s.path+".broken")
+		if s.load(s.path+".bak") != nil {
+			s.st = state{Settings: Settings{AutoUpdate: true}}
+		}
+	default:
+		return nil, err // can't read it (permissions, disk): don't guess
 	}
 	if s.st.Peers == nil {
 		s.st.Peers = map[string]Peer{}
@@ -143,6 +152,12 @@ func Open(dir string) (*Store, error) {
 		return s, s.saveLocked()
 	}
 	return s, nil
+}
+
+func isCorrupt(err error) bool {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	return errors.As(err, &syn) || errors.As(err, &typ) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func (s *Store) load(path string) error {

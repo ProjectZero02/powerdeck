@@ -20,6 +20,7 @@ var (
 	ErrPending        = errors.New("a shutdown or restart is already pending")
 	ErrNothingPending = errors.New("nothing is pending")
 	ErrInUse          = errors.New("someone is using this device")
+	ErrUpdating       = errors.New("the helper is installing an update")
 )
 
 // ActiveWithin is how recent input must be for a user to count as active.
@@ -65,10 +66,35 @@ type Options struct {
 
 // Controller is safe for concurrent use.
 type Controller struct {
-	mu      sync.Mutex
-	sys     System
-	now     func() time.Time
-	pending *Pending
+	mu       sync.Mutex
+	sys      System
+	now      func() time.Time
+	pending  *Pending
+	updating time.Time // set while an update restarts the helper; expires on its own
+}
+
+// updateHold is how long BeginUpdate holds off new shutdowns and restarts if the update never
+// finishes (the new helper starts with a fresh controller anyway).
+const updateHold = 10 * time.Minute
+
+// BeginUpdate claims the device for an update restart: it says why not if a countdown is pending,
+// and otherwise makes Do refuse until EndUpdate or the hold runs out, so no countdown is accepted
+// and then lost to the restart.
+func (c *Controller) BeginUpdate() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pendingLocked() != nil {
+		return "a shutdown or restart is counting down"
+	}
+	c.updating = c.now()
+	return ""
+}
+
+// EndUpdate releases BeginUpdate's claim (the installer didn't start).
+func (c *Controller) EndUpdate() {
+	c.mu.Lock()
+	c.updating = time.Time{}
+	c.mu.Unlock()
 }
 
 func NewController(sys System, now func() time.Time) *Controller {
@@ -95,6 +121,9 @@ func (c *Controller) Do(a Action, o Options) (Pending, error) {
 	defer c.mu.Unlock()
 	if p := c.pendingLocked(); p != nil {
 		return *p, ErrPending
+	}
+	if !c.updating.IsZero() && c.now().Sub(c.updating) < updateHold {
+		return Pending{}, ErrUpdating
 	}
 	verb := "shut down"
 	if a == Restart {

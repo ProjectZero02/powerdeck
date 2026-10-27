@@ -389,32 +389,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun helperUpdates(s: UiState = _state.value): List<Pair<Device, HelperUpdate>> =
         s.devices.mapNotNull { d -> ((s.states[d.id] as? DeviceState.On)?.status?.update)?.let { d to it } }
 
-    fun updateHelper(d: Device) = act(d) { installHelperUpdate(d) }
+    fun updateHelper(d: Device) = act(d) { installHelperUpdate(d).outcome(d) }
 
-    private suspend fun installHelperUpdate(d: Device): Outcome = deck.withHelper(d) { installUpdate() }.fold(
-        { u ->
-            when {
-                u.installing || u.available -> Outcome(true, "${d.name} is updating to ${u.latest ?: "the latest version"}. It's back in about a minute.")
-                else -> Outcome(true, "${d.name} is up to date.")
-            }
-        },
-        { Outcome(false, it.message ?: "${d.name} couldn't update.") },
+    /** What asking one helper to update came to. */
+    private sealed interface HelperUpdateResult {
+        data class Updating(val to: String?) : HelperUpdateResult
+        data object UpToDate : HelperUpdateResult
+        data class Failed(val why: String) : HelperUpdateResult
+    }
+
+    private fun HelperUpdateResult.outcome(d: Device) = when (this) {
+        is HelperUpdateResult.Updating -> Outcome(true, "${d.name} is updating to ${to ?: "the latest version"}. It's back in about a minute.")
+        HelperUpdateResult.UpToDate -> Outcome(true, "${d.name} is up to date.")
+        is HelperUpdateResult.Failed -> Outcome(false, "${d.name}: $why")
+    }
+
+    private suspend fun installHelperUpdate(d: Device): HelperUpdateResult = deck.withHelper(d) { installUpdate() }.fold(
+        { u -> if (u.installing || u.available) HelperUpdateResult.Updating(u.latest) else HelperUpdateResult.UpToDate },
+        { HelperUpdateResult.Failed(it.message ?: "couldn't update.") }, // the helper's own reason: counting down, no update server, ...
     )
+
+    /** Helpers too old to update from the app (before 2.0.1); they update themselves every few hours. */
+    private fun olderHelpers(s: UiState = _state.value): List<Device> =
+        s.devices.filter { d -> (s.states[d.id] as? DeviceState.On)?.status?.let { it.update == null } == true }
 
     fun updateAllHelpers() {
         viewModelScope.launch {
             val list = helperUpdates()
+            val older = olderHelpers().map { it.name }
+            val olderNote = if (older.isEmpty()) "" else " ${older.joinToString(", ")} ${if (older.size == 1) "has" else "have"} an older helper that updates itself within 6 hours."
             if (list.isEmpty()) {
-                _messages.send("Open PowerDeck while your computers are on to update them.")
+                _messages.send(if (older.isEmpty()) "Open PowerDeck while your computers are on to update them." else olderNote.trim())
                 return@launch
             }
             val results = list.map { (d, _) -> async { d to installHelperUpdate(d) } }.awaitAll()
-            val updating = results.filter { (_, o) -> o.ok && o.message.contains("updating") }.map { it.first.name }
-            val failed = results.filter { (_, o) -> !o.ok }.map { it.first.name }
+            val updating = results.filter { it.second is HelperUpdateResult.Updating }.map { it.first.name }
+            val failed = results.mapNotNull { (d, r) -> (r as? HelperUpdateResult.Failed)?.let { "${d.name}: ${it.why}" } }
             _messages.send(buildString {
-                append(if (updating.isEmpty()) "Every device that's on is up to date." else "Updating ${updating.joinToString(", ")}.")
-                if (failed.isNotEmpty()) append(" Couldn't reach ${failed.joinToString(", ")}.")
-            })
+                when {
+                    updating.isNotEmpty() -> append("Updating ${updating.joinToString(", ")}.")
+                    failed.isEmpty() -> append("Every device that's on is up to date.")
+                }
+                failed.forEach { append(if (isEmpty()) it else " $it") }
+                append(olderNote)
+            }.trim())
             fastUntil = System.currentTimeMillis() + 120_000
             refreshNow()
         }
@@ -436,7 +454,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun checkUpdate() {
         viewModelScope.launch {
-            val r = Updater.available()
+            val r = runCatching { Updater.available() }.getOrElse {
+                _messages.send("Couldn't check for updates. Try again when you're online.")
+                return@launch
+            }
             _state.update { it.copy(update = r) }
             _messages.send(if (r != null) "PowerDeck ${r.version} is available." else "PowerDeck is up to date.")
         }

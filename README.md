@@ -34,10 +34,17 @@
 
 **1. Install the helper on each computer**
 
-| | Paste this | |
-|---|---|---|
-| **Windows** | `irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.ps1 \| iex` | in **PowerShell** |
-| **Linux / Proxmox** | `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh \| sh` | in a **terminal** (as root, or any user with sudo) |
+**Windows**: in **PowerShell**
+
+```powershell
+irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.ps1 | iex
+```
+
+**Linux / Proxmox**: in a **terminal**, as root or as any user with sudo
+
+```sh
+curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh
+```
 
 Both installers check the download against the release's checksums (on Linux, its Ed25519 signature too), set everything up and show a **QR code**. On Windows it opens in a window; on Linux it's printed in the terminal (`powerdeck-helper qr` shows it again). They also tell you about anything they can't fix themselves, such as a BIOS setting. Prefer a regular installer on Windows? Download [PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe).
 
@@ -68,60 +75,44 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td align="center" width="25%"><img src="docs/images/home.png" alt="Home: every device with its state and power buttons"><br><sub><b>Every device at a glance</b></sub></td>
-    <td align="center" width="25%"><img src="docs/images/device.png" alt="Device page: setup checks with Fix buttons, schedules"><br><sub><b>Setup checks, schedules, history</b></sub></td>
-    <td align="center" width="25%"><img src="docs/images/add-found.png" alt="Adding devices found on the tailnet"><br><sub><b>Found on your tailnet</b></sub></td>
-    <td align="center" width="25%"><img src="docs/images/home-dark.png" alt="Dark mode"><br><sub><b>Dark mode and Material You</b></sub></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/images/home.png" width="200" alt="Home: every device with its state and power buttons">
+  <img src="docs/images/device.png" width="200" alt="Device page: setup checks with Fix buttons, schedules and history">
+  <img src="docs/images/add-found.png" width="200" alt="Adding the devices found on your tailnet">
+  <img src="docs/images/home-dark.png" width="200" alt="Dark mode">
+</p>
+<p align="center"><sub>Every device at a glance · Setup checks, schedules and history · Found on your tailnet · Dark mode and Material You</sub></p>
 
 ## Features
 
-| | |
-|---|---|
-| **On · Off · Restart** | Clean shutdowns with a 60-second countdown you can cancel. On Windows, **Update and shut down** when updates are waiting. |
-| **Turn on from anywhere** | Wake-on-LAN, sent by any PowerDeck computer on the same home network (an always-on server is ideal), or by a NanoKVM, or by your phone when it's at home. |
-| **NanoKVM** | Wire a [NanoKVM](https://github.com/sipeed/NanoKVM) to any computer's power button to turn it on even where Wake-on-LAN can't, and as a fallback for shutting down. Nothing is installed on the KVM. |
-| **Someone using it?** | Shutdowns and restarts ask first when someone is active or a game is full-screen, and say who. |
-| **Proxmox aware** | Shows running VMs. A shutdown stops them cleanly first. |
-| **Schedules** | Shut down, restart or wake at set times on chosen days, skipped while the computer is in use. |
-| **Setup checks** | Each device reports what's wrong, with a **Fix** button where it can fix it remotely (Wake-on-LAN, Fast Startup, firewall, Tailscale unattended mode). |
-| **Shortcuts** | A home-screen widget with every device, four Quick Settings tiles, home-screen shortcuts per device, and long-press shortcuts on the app icon. |
-| **Notifications** | When a schedule or an agent acts, or a device goes offline. |
-| **History** | Who did what and when, on every device. |
-| **Updates** | Every computer updates itself with signed releases (never during a countdown). Turn that off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out. |
-| **AI agents** | Let an agent or a script check and control your devices over [MCP](https://modelcontextprotocol.io), within limits you set. |
-| **Other people's computers** | A device on another Tailscale account can be added with a one-time 8-character pairing code. |
+- **On · Off · Restart.** Clean shutdowns with a 60-second countdown you can cancel. On Windows, **Update and shut down** when updates are waiting.
+- **Turn on from anywhere.** Wake-on-LAN, sent by any PowerDeck computer on the same home network (an always-on server is ideal), or by a NanoKVM, or by your phone when it's at home.
+- **NanoKVM.** Wire a [NanoKVM](https://github.com/sipeed/NanoKVM) to any computer's power button to turn it on even where Wake-on-LAN can't, and as a fallback for shutting down. Nothing is installed on the KVM.
+- **Someone using it?** Shutdowns and restarts ask first when someone is active or a game is full-screen, and say who.
+- **Proxmox aware.** Shows running VMs. A shutdown stops them cleanly first.
+- **Schedules.** Shut down, restart or wake at set times on chosen days, skipped while the computer is in use.
+- **Setup checks.** Each device reports what's wrong, with a **Fix** button where it can fix it remotely (Wake-on-LAN, Fast Startup, firewall, Tailscale unattended mode).
+- **Shortcuts.** A home-screen widget with every device, four Quick Settings tiles, home-screen shortcuts per device, and long-press shortcuts on the app icon.
+- **Notifications.** When a schedule or an agent acts, or a device goes offline.
+- **History.** Who did what and when, on every device.
+- **Updates.** Every computer updates itself with signed releases (never during a countdown). Turn that off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out.
+- **AI agents.** Let an agent or a script check and control your devices over [MCP](https://modelcontextprotocol.io), within limits you set.
+- **Other people's computers.** A device on another Tailscale account can be added with a one-time 8-character pairing code.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    phone["PowerDeck app<br/>(Android)"]
-    pc["Windows PC<br/>helper"]
-    srv["Linux / Proxmox<br/>helper"]
-    kvm["NanoKVM"]
-    agent["AI agent<br/>(optional)"]
-
-    phone -- "HTTPS over Tailscale<br/>(pinned certificate)" --> pc
-    phone -- "HTTPS over Tailscale" --> srv
-    phone -. "its web API<br/>(password stays on the phone)" .-> kvm
-    srv -- "Wake-on-LAN<br/>(home network)" --> pc
-    kvm -- "power button + LED" --> pc
-    agent -. "MCP, limited key" .-> srv
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.png">
+  <img src="docs/images/how-it-works.png" alt="The app talks to each helper over Tailscale and to the NanoKVM's web API; a helper sends Wake-on-LAN on the home network; the NanoKVM is wired to a power button; an AI agent can use a helper through MCP." width="700">
+</picture>
 
 **The helper** is a small Go service (about 10 MB) on each computer. It answers only Tailscale addresses. It shuts its own computer down or restarts it, sends Wake-on-LAN to computers on its network, and finds the other PowerDeck devices on your tailnet. **The app** talks to each helper directly; there's no server in between. A computer that's off can't answer, so the app asks something that's still on (another helper, a NanoKVM, or the phone itself) to wake it.
 
-| What the helper sets up | Windows | Linux |
-|---|---|---|
-| Runs as | A service that starts before anyone signs in | A systemd service |
-| Network | A firewall rule admitting only Tailscale addresses | Answers only Tailscale addresses and loopback |
-| Wake-on-LAN | Armed on the wired network card; Fast Startup off, so "shut down" is a real power-off | Armed with `ethtool` at every start |
-| Tailscale | Unattended mode, so it's reachable at the sign-in screen | |
-| Updates | Automatic, Ed25519-signature-checked | Automatic, Ed25519-signature-checked |
+What the installer sets up:
+
+- **Windows:** a service that starts before anyone signs in; a firewall rule that admits only Tailscale addresses; Wake-on-LAN on the wired network card, and Fast Startup off so "shut down" is a real power-off; Tailscale's unattended mode, so the PC is reachable at the sign-in screen.
+- **Linux:** a systemd service that answers only Tailscale addresses and loopback; Wake-on-LAN armed with `ethtool` at every start.
+- **Both:** automatic updates, checked against an Ed25519 signature.
 
 Your BIOS also needs Wake-on-LAN enabled. On many boards that's *ErP Ready: Disabled* and *Power On By PCI-E: Enabled*. For a server, also turn on *Restore on AC power loss* so it comes back after a power cut.
 

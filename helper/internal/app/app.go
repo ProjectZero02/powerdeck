@@ -125,12 +125,7 @@ func Run(ctx context.Context, o Options) error {
 	pm := pairing.NewManager(now)
 	pc := power.NewController(o.System, now)
 	upd := update.NewManager(o.DataDir, log)
-	upd.Busy = func() string {
-		if pc.Pending() != nil {
-			return "a shutdown or restart is counting down"
-		}
-		return ""
-	}
+	upd.Busy, upd.Idle = pc.BeginUpdate, pc.EndUpdate
 	network := cachedNetwork()
 	env := setup.Env{TS: ts, Store: st, Network: network, Now: now}
 	checkList := func() []check.Check { return setup.Checks(env) }
