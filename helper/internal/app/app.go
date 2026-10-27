@@ -24,6 +24,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/discovery"
 	"github.com/projectzero02/powerdeck/helper/internal/fleet"
 	"github.com/projectzero02/powerdeck/helper/internal/guests"
+	"github.com/projectzero02/powerdeck/helper/internal/listen"
 	"github.com/projectzero02/powerdeck/helper/internal/localui"
 	"github.com/projectzero02/powerdeck/helper/internal/netinfo"
 	"github.com/projectzero02/powerdeck/helper/internal/pairing"
@@ -54,8 +55,8 @@ const LocalTokenFile = "local.token"
 // Options configure a run.
 type Options struct {
 	DataDir string
-	APIAddr string // default ":47321"
-	MCPAddr string // default ":47323"
+	APIAddr string // default: port 47321 on loopback and the Tailscale addresses
+	MCPAddr string // default: port 47323 on loopback and the Tailscale addresses
 	UIAddr  string // default UIAddr; "-" disables the PC window (Linux)
 	System  power.System
 	Reports *power.Reports
@@ -103,12 +104,6 @@ func writeLocalToken(dir string) (string, error) {
 
 // Run serves the helper until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
-	if o.APIAddr == "" {
-		o.APIAddr = ":" + strconv.Itoa(APIPort)
-	}
-	if o.MCPAddr == "" {
-		o.MCPAddr = ":" + strconv.Itoa(MCPPort)
-	}
 	if o.UIAddr == "" {
 		o.UIAddr = UIAddr
 	}
@@ -184,8 +179,16 @@ func Run(ctx context.Context, o Options) error {
 		srv   *http.Server
 	}
 	var ls []listener
-	listen := func(addr, what string, s *http.Server, tlsOn bool) error {
-		ln, err := net.Listen("tcp", addr)
+	// The API and agent ports listen on loopback and the Tailscale addresses only, following them
+	// as Tailscale comes and goes; an explicit address (development, tests) is used as given.
+	bind := func(addr, what string, s *http.Server, tlsOn bool, port int) error {
+		var ln net.Listener
+		var err error
+		if addr == "" && port != 0 {
+			ln, err = listen.New(port, listen.Addrs, 10*time.Second, log)
+		} else {
+			ln, err = net.Listen("tcp", addr)
+		}
 		if err != nil {
 			return fmt.Errorf("%s port: %w", what, err)
 		}
@@ -201,10 +204,10 @@ func Run(ctx context.Context, o Options) error {
 			l.ln.Close()
 		}
 	}
-	if err := listen(o.APIAddr, "API", apiSrv, true); err != nil {
+	if err := bind(o.APIAddr, "API", apiSrv, true, APIPort); err != nil {
 		return err
 	}
-	if err := listen(o.MCPAddr, "agent (MCP)", mcpSrv, false); err != nil {
+	if err := bind(o.MCPAddr, "agent (MCP)", mcpSrv, false, MCPPort); err != nil {
 		closeAll()
 		return err
 	}
@@ -218,7 +221,7 @@ func Run(ctx context.Context, o Options) error {
 			closeAll()
 			return err
 		}
-		if err := listen(o.UIAddr, "PC window", srv(o.UIAddr, uiHandler), false); err != nil {
+		if err := bind(o.UIAddr, "PC window", srv(o.UIAddr, uiHandler), false, 0); err != nil {
 			closeAll()
 			return err
 		}

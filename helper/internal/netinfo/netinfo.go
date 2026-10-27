@@ -24,6 +24,21 @@ func AllowedRemote(a netip.Addr) bool {
 	return a.IsLoopback() || IsTailnet(a)
 }
 
+// TailnetAddrs returns this device's Tailscale addresses (IPv4 and IPv6).
+func TailnetAddrs() []netip.Addr {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, a := range addrs {
+		if p, err := netip.ParsePrefix(a.String()); err == nil && IsTailnet(p.Addr()) {
+			out = append(out, p.Addr().Unmap())
+		}
+	}
+	return out
+}
+
 // TailnetIPv4 returns this device's Tailscale IPv4 address.
 func TailnetIPv4() (netip.Addr, bool) {
 	addrs, err := net.InterfaceAddrs()
