@@ -222,6 +222,7 @@ func (u *ui) state(w http.ResponseWriter, r *http.Request) {
 		"events":       u.Store.Events(),
 		"checks":       checks,
 		"update":       u.Update.Status(),
+		"updateAt":     u.autoAt(),
 		"settings":     u.Store.Settings(),
 	}
 	if linkErr != nil {
@@ -318,6 +319,16 @@ func (u *ui) addKey(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": k.ID, "key": secret})
 }
 
+// autoAt is when an available update installs on its own (nil: it won't).
+func (u *ui) autoAt() *time.Time {
+	st, set := u.Update.Status(), u.Store.Settings()
+	if !st.Available || !set.AutoUpdate {
+		return nil
+	}
+	at := update.AutoInstallAt(st.Published, st.FirstSeen, set.UpdatesPausedUntil)
+	return &at
+}
+
 func (u *ui) removeOwner(w http.ResponseWriter, r *http.Request) {
 	if err := u.Store.RemoveOwner(r.PathValue("node")); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -373,6 +384,7 @@ func (u *ui) settings(w http.ResponseWriter, r *http.Request) {
 		Agents     *bool `json:"agents"`
 		Tray       *bool `json:"tray"`
 		SetupDone  *bool `json:"setupDone"`
+		Pause      *bool `json:"pauseUpdates"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -391,6 +403,12 @@ func (u *ui) settings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SetupDone != nil {
 			s.SetupDone = *req.SetupDone
+		}
+		if req.Pause != nil {
+			s.UpdatesPausedUntil = time.Time{}
+			if *req.Pause {
+				s.UpdatesPausedUntil = time.Now().Add(update.PauseFor).UTC()
+			}
 		}
 	})
 	if err != nil {

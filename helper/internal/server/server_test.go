@@ -85,6 +85,7 @@ func (f *fakeUpdater) Check(context.Context) (update.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.st.Latest, f.st.Available = "2.1.0", true
+	f.st.Published, f.st.FirstSeen = testStart.Add(-24*time.Hour), testStart
 	return f.st, nil
 }
 func (f *fakeUpdater) Install(context.Context) error { close(f.installed); return nil }
@@ -909,5 +910,35 @@ func TestAddOwnerByName(t *testing.T) {
 	}
 	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: laptop}); code != 200 {
 		t.Errorf("added owner can't manage: %d", code)
+	}
+}
+
+func TestUpdateStagingAndPause(t *testing.T) {
+	e := newEnv(t)
+	_, out := e.do(req{method: "GET", path: "/v2/update?check=1", from: phone})
+	if at, _ := time.Parse(time.RFC3339, out["autoAt"].(string)); !at.Equal(testStart.Add(48*time.Hour)) || out["pausedUntil"] != nil {
+		t.Fatalf("staged install time: %v", out)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/settings", from: atlas, key: e.agentKey([]string{"status", "wake", "power"}), body: map[string]any{"pauseUpdates": true}}); code != http.StatusForbidden {
+		t.Errorf("agent pausing updates: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"pauseUpdates": true}}); code != http.StatusNoContent {
+		t.Fatalf("pause: %d", code)
+	}
+	week := testStart.Add(7 * 24 * time.Hour)
+	if !e.st.Settings().UpdatesPausedUntil.Equal(week) {
+		t.Errorf("paused until %v", e.st.Settings().UpdatesPausedUntil)
+	}
+	_, out = e.do(req{method: "GET", path: "/v2/update", from: phone})
+	if at, _ := time.Parse(time.RFC3339, out["autoAt"].(string)); !at.Equal(week) || out["pausedUntil"] == nil {
+		t.Errorf("paused: %v", out)
+	}
+	_, _ = e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"pauseUpdates": false}})
+	if !e.st.Settings().UpdatesPausedUntil.IsZero() {
+		t.Error("resume didn't clear the pause")
+	}
+	_, _ = e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"autoUpdate": false}})
+	if _, out = e.do(req{method: "GET", path: "/v2/update", from: phone}); out["autoAt"] != nil {
+		t.Errorf("auto off but autoAt: %v", out)
 	}
 }

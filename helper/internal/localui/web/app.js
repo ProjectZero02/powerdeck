@@ -159,8 +159,17 @@ function renderEvents(events) {
   }
 }
 
-function renderUpdate(u) {
+function renderUpdate(u, settings, at) {
   if (!u) return;
+  const paused = settings.updatesPausedUntil && Date.parse(settings.updatesPausedUntil) > Date.now();
+  const day = (t) => new Date(t).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  $("auto-switch").checked = !!settings.autoUpdate;
+  let sub = settings.autoUpdate ? "New releases install 3 days after they're published" : "Off: install updates yourself";
+  if (paused) sub = `Paused until ${day(settings.updatesPausedUntil)}`;
+  else if (at) sub = `PowerDeck ${u.latest} installs on its own ${day(at)}`;
+  $("auto-sub").textContent = sub;
+  $("pause").textContent = paused ? "Resume" : "Pause for 7 days";
+  $("pause").hidden = !settings.autoUpdate;
   let text = `PowerDeck ${u.current}`;
   if (u.installing) text = `Installing PowerDeck ${u.latest}… this window reconnects in a moment.`;
   else if (u.available) text = `PowerDeck ${u.latest} is available.`;
@@ -242,7 +251,7 @@ async function refresh() {
   renderOwners(s.owners || [], !!s.ownersLegacy);
   renderKeys(s.keys || []);
   renderEvents(s.events || []);
-  renderUpdate(s.update);
+  renderUpdate(s.update, settings, s.updateAt);
 
   const agentsOn = !settings.noAgents;
   $("agents-switch").checked = agentsOn;
@@ -313,6 +322,11 @@ $$(".tray-switch").forEach((t) => { t.onchange = (e) => setting({ tray: e.target
 $("check").onclick = async (e) => {
   e.target.disabled = true;
   try { await api("/api/update/check", { method: "POST" }); } finally { e.target.disabled = false; refresh(); }
+};
+$("auto-switch").onchange = (e) => setting({ autoUpdate: e.target.checked }).then(refresh);
+$("pause").onclick = () => {
+  const paused = state && state.settings && Date.parse(state.settings.updatesPausedUntil || 0) > Date.now();
+  setting({ pauseUpdates: !paused }).then(refresh);
 };
 $("install").onclick = async () => { await api("/api/update/install", { method: "POST" }); refresh(); };
 link($("agent-guide"), GUIDE);

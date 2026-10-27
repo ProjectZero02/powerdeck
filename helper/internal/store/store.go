@@ -137,7 +137,7 @@ type Settings struct {
 	// SetupDone records that the PC window's first-run setup was finished or skipped.
 	SetupDone bool `json:"setupDone,omitempty"`
 	// UpdatesPausedUntil holds automatic updates back until then.
-	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitempty"`
+	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitzero"`
 }
 
 type state struct {

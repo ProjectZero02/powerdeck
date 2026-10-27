@@ -266,7 +266,8 @@ func Run(ctx context.Context, o Options) error {
 }
 
 // updateLoop checks for updates shortly after start and every 6 hours, and installs them when
-// automatic updates are on and nothing is scheduled.
+// automatic updates are on, the release has been out for update.Staging, updates aren't paused and
+// nothing is scheduled.
 func updateLoop(ctx context.Context, upd *update.Manager, st *store.Store, pc *power.Controller, log *slog.Logger) {
 	if !version.IsRelease() {
 		return
@@ -286,7 +287,15 @@ func updateLoop(ctx context.Context, upd *update.Manager, st *store.Store, pc *p
 			log.Warn("update check failed", "err", err)
 			continue
 		}
-		if s.Available && st.Settings().AutoUpdate && pc.Pending() == nil {
+		set := st.Settings()
+		if at := update.AutoInstallAt(s.Published, s.FirstSeen, set.UpdatesPausedUntil); s.Available && set.AutoUpdate && time.Now().Before(at) {
+			log.Info("update waits", "version", s.Latest, "until", at.Format(time.RFC3339))
+			if d := time.Until(at) + time.Minute; d < wait {
+				wait = d
+			}
+			continue
+		}
+		if s.Available && set.AutoUpdate && pc.Pending() == nil {
 			log.Info("installing update", "version", s.Latest)
 			ictx, icancel := context.WithTimeout(ctx, 10*time.Minute)
 			if err := upd.Install(ictx); err != nil {

@@ -501,8 +501,8 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	}
 	if s.Update != nil && c.Kind == auth.Owner {
 		u := s.Update.Status() // what the last check found; no network here
-		body["update"] = map[string]any{"available": u.Available, "latest": u.Latest, "installing": u.Installing,
-			"error": u.Error, "auto": s.Store.Settings().AutoUpdate}
+		body["update"] = s.updateFields(u, map[string]any{"available": u.Available, "latest": u.Latest, "installing": u.Installing,
+			"error": u.Error})
 	}
 	if c.Has(store.ScopeAdmin) || c.Kind == auth.Owner {
 		body["checks"] = s.cachedChecks(ctx)
@@ -536,8 +536,22 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 }
 
 func (s *server) updateBody(u update.Status) map[string]any {
-	return map[string]any{"current": u.Current, "latest": u.Latest, "available": u.Available, "checkedAt": u.CheckedAt,
-		"error": u.Error, "installing": u.Installing, "auto": s.Store.Settings().AutoUpdate}
+	return s.updateFields(u, map[string]any{"current": u.Current, "latest": u.Latest, "available": u.Available, "checkedAt": u.CheckedAt,
+		"error": u.Error, "installing": u.Installing})
+}
+
+// updateFields adds the automatic-update settings: on or off, paused until when, and when an
+// available release will install on its own.
+func (s *server) updateFields(u update.Status, m map[string]any) map[string]any {
+	set := s.Store.Settings()
+	m["auto"] = set.AutoUpdate
+	if set.UpdatesPausedUntil.After(s.Now()) {
+		m["pausedUntil"] = set.UpdatesPausedUntil
+	}
+	if u.Available && set.AutoUpdate {
+		m["autoAt"] = update.AutoInstallAt(u.Published, u.FirstSeen, set.UpdatesPausedUntil)
+	}
+	return m
 }
 
 // updateStatus reports this helper's update state; ?check=1 asks GitHub first.
@@ -594,8 +608,9 @@ func (s *server) updateInstall(w http.ResponseWriter, r *http.Request, c auth.Ca
 
 func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	var req struct {
-		AutoUpdate *bool `json:"autoUpdate"`
-		Agents     *bool `json:"agents"`
+		AutoUpdate   *bool `json:"autoUpdate"`
+		Agents       *bool `json:"agents"`
+		PauseUpdates *bool `json:"pauseUpdates"` // true: hold automatic installs for 7 days; false: resume
 	}
 	if !decode(r, &req) {
 		fail(w, http.StatusBadRequest, "bad_request", "Malformed settings.")
@@ -617,6 +632,17 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Call
 		s.checks = nil // the "automatic updates" check changes
 		s.checksMu.Unlock()
 		s.logEvent(c.Name, map[bool]string{true: "turned automatic updates on", false: "turned automatic updates off"}[*req.AutoUpdate], "ok")
+	}
+	if req.PauseUpdates != nil {
+		until := time.Time{}
+		if *req.PauseUpdates {
+			until = s.Now().Add(update.PauseFor).UTC()
+		}
+		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.UpdatesPausedUntil = until }); err != nil {
+			fail(w, http.StatusInternalServerError, "store", err.Error())
+			return
+		}
+		s.logEvent(c.Name, map[bool]string{true: "paused automatic updates for 7 days", false: "resumed automatic updates"}[*req.PauseUpdates], "ok")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -115,3 +115,46 @@ func TestStuckInstallExpires(t *testing.T) {
 		t.Fatalf("stuck install not expired: %+v", st)
 	}
 }
+
+func TestAutoInstallAt(t *testing.T) {
+	pub := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	seen := pub.Add(30 * time.Hour)
+	cases := []struct {
+		name                   string
+		published, seen, pause time.Time
+		want                   time.Time
+	}{
+		{"three days after publishing", pub, seen, time.Time{}, pub.Add(72 * time.Hour)},
+		{"publish date unknown: from first seen", time.Time{}, seen, time.Time{}, seen.Add(72 * time.Hour)},
+		{"publish date in the future: from first seen", seen.Add(time.Hour), seen, time.Time{}, seen.Add(72 * time.Hour)},
+		{"a pause past that wins", pub, seen, pub.Add(100 * time.Hour), pub.Add(100 * time.Hour)},
+		{"a pause that ended doesn't matter", pub, seen, pub.Add(time.Hour), pub.Add(72 * time.Hour)},
+	}
+	for _, c := range cases {
+		if got := AutoInstallAt(c.published, c.seen, c.pause); !got.Equal(c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCheckReadsPublishDate(t *testing.T) {
+	old := version.Version
+	version.Version = "1.0.0"
+	defer func() { version.Version = old }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.1.0", "published_at": "2026-10-01T12:00:00Z"})
+	}))
+	defer srv.Close()
+	m := NewManager(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.api = srv.URL
+	clock := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return clock }
+	st, err := m.Check(context.Background())
+	if err != nil || !st.Available || !st.Published.Equal(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)) || !st.FirstSeen.Equal(clock) {
+		t.Fatalf("check: %v %+v", err, st)
+	}
+	clock = clock.Add(time.Hour)
+	if st, _ = m.Check(context.Background()); !st.FirstSeen.Equal(clock.Add(-time.Hour)) {
+		t.Errorf("first seen moved on a second check: %v", st.FirstSeen)
+	}
+}

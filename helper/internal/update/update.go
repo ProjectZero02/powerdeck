@@ -30,9 +30,32 @@ const PublicKey = "CJxP8WfqitXsZh9tobWk/cyQbfMMVkk2+iLCHWYkucs="
 
 // Release is the latest published release.
 type Release struct {
-	Version string            `json:"version"`
-	URL     string            `json:"url"`
-	Assets  map[string]string `json:"-"`
+	Version   string            `json:"version"`
+	URL       string            `json:"url"`
+	Published time.Time         `json:"published"`
+	Assets    map[string]string `json:"-"`
+}
+
+// Staging is how long a release must have been public before it installs on its own, so a bad (or
+// forged) release can be pulled before most helpers take it. Installing from the app or the PC
+// window doesn't wait.
+const Staging = 72 * time.Hour
+
+// PauseFor is how long "pause updates" holds automatic installs.
+const PauseFor = 7 * 24 * time.Hour
+
+// AutoInstallAt is when an available release may install on its own: once it has been public for
+// Staging, and not while updates are paused. Zero published (unknown) means it waits the full time
+// from when it was first seen.
+func AutoInstallAt(published, firstSeen, pausedUntil time.Time) time.Time {
+	if published.IsZero() || published.After(firstSeen) {
+		published = firstSeen
+	}
+	at := published.Add(Staging)
+	if pausedUntil.After(at) {
+		at = pausedUntil
+	}
+	return at
 }
 
 // Status is shown in the PC app.
@@ -43,6 +66,8 @@ type Status struct {
 	CheckedAt  time.Time `json:"checkedAt,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Installing bool      `json:"installing"`
+	Published  time.Time `json:"published,omitzero"` // when the latest release was published
+	FirstSeen  time.Time `json:"-"`                  // when this helper first saw it
 }
 
 // Newer reports whether version a is newer than b ("1.10.0" > "1.9.3"). Non-numeric parts compare as 0.
@@ -134,9 +159,13 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 		m.status.Error = err.Error()
 		return m.status, err
 	}
+	if m.status.Latest != rel.Version || m.status.FirstSeen.IsZero() {
+		m.status.FirstSeen = m.now().UTC()
+	}
 	m.latest = rel
 	m.status.Error = ""
 	m.status.Latest = rel.Version
+	m.status.Published = rel.Published
 	m.status.Available = version.IsRelease() && Newer(rel.Version, version.Version)
 	return m.status, nil
 }
@@ -157,9 +186,10 @@ func (m *Manager) fetchLatest(ctx context.Context) (*Release, error) {
 		return nil, fmt.Errorf("GitHub answered %s", resp.Status)
 	}
 	var body struct {
-		TagName string `json:"tag_name"`
-		HTMLURL string `json:"html_url"`
-		Assets  []struct {
+		TagName   string    `json:"tag_name"`
+		HTMLURL   string    `json:"html_url"`
+		Published time.Time `json:"published_at"`
+		Assets    []struct {
 			Name string `json:"name"`
 			URL  string `json:"browser_download_url"`
 		} `json:"assets"`
@@ -167,7 +197,7 @@ func (m *Manager) fetchLatest(ctx context.Context) (*Release, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
 		return nil, err
 	}
-	rel := &Release{Version: strings.TrimPrefix(body.TagName, "v"), URL: body.HTMLURL, Assets: map[string]string{}}
+	rel := &Release{Version: strings.TrimPrefix(body.TagName, "v"), URL: body.HTMLURL, Published: body.Published.UTC(), Assets: map[string]string{}}
 	for _, a := range body.Assets {
 		rel.Assets[a.Name] = a.URL
 	}
