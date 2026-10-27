@@ -101,10 +101,12 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 
 ## How it works
 
+<p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.png">
   <img src="docs/images/how-it-works.png" alt="The app talks to each helper over Tailscale and to the NanoKVM's web API; a helper sends Wake-on-LAN on the home network; the NanoKVM is wired to a power button; an AI agent can use a helper through MCP." width="700">
 </picture>
+</p>
 
 **The helper** is a small Go service (about 10 MB) on each computer. It answers only Tailscale addresses. It shuts its own computer down or restarts it, sends Wake-on-LAN to computers on its network, and finds the other PowerDeck devices on your tailnet. **The app** talks to each helper directly; there's no server in between. A computer that's off can't answer, so the app asks something that's still on (another helper, a NanoKVM, or the phone itself) to wake it.
 

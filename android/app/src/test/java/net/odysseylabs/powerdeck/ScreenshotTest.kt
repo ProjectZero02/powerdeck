@@ -178,11 +178,13 @@ class ScreenshotTest {
         Box(
             Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF15123A), Color(0xFF2B1F7A), Color(0xFF5B4CF0)), start = Offset.Zero, end = Offset.Infinite)),
         ) {
-            Column(Modifier.padding(start = 72.dp, top = 92.dp).width(540.dp)) {
-                Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(84.dp))
-                Spacer(Modifier.height(28.dp))
-                Text("PowerDeck", color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
-                Spacer(Modifier.height(14.dp))
+            Column(Modifier.align(Alignment.CenterStart).padding(start = 72.dp, bottom = 8.dp).width(560.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(76.dp))
+                    Spacer(Modifier.width(20.dp))
+                    Text("PowerDeck", color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
+                }
+                Spacer(Modifier.height(20.dp))
                 Text("Turn your computers on and off from your phone, from anywhere.", color = Color.White.copy(alpha = 0.86f), fontSize = 25.sp, lineHeight = 34.sp)
                 Spacer(Modifier.height(34.dp))
                 listOf(listOf("Windows", "Linux", "Proxmox"), listOf("Wake-on-LAN", "NanoKVM", "Schedules"), listOf("Widget & tiles", "AI agents (MCP)")).forEach { row ->
