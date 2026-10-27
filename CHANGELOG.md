@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.1
+
+- **PC window over Remote Desktop.** An administrator of the PC can now open the PowerDeck window over Remote Desktop without running it as administrator. Standard accounts in another session are still refused, and the message now says what to do.
+- **Wake-on-LAN on Windows.** The check could report Wake-on-LAN as off while it was on, and **Fix** failed with a block of XML ("the driver reports magic-packet wake as <Objs…"): PowerShell's progress messages, such as "Preparing modules for first use", were being read as the answer. PowerDeck now reads only the result, and a real error shows PowerShell's own message. A failed `powercfg` step no longer stops the fix.
+
 ## 2.2.0
 
 KVMs move to an always-on PowerDeck computer, which can now reset a frozen one.

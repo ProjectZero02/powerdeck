@@ -6,6 +6,7 @@ package setup
 // run it again.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -336,7 +337,6 @@ func firewallPresent() bool {
 // enableWake turns on magic-packet wake for the adapter with this MAC. Settings are only written
 // when they differ, so re-running (updates) doesn't restart the adapter.
 const wakeScript = `
-$ErrorActionPreference = 'Stop'
 $mac = $args[0]
 $nic = Get-NetAdapter -Physical | Where-Object { $_.MacAddress -eq $mac } | Select-Object -First 1
 if (-not $nic) { throw "No adapter with MAC $mac" }
@@ -347,34 +347,56 @@ if ($pm.WakeOnMagicPacket -ne 'Enabled' -or $pm.WakeOnPattern -ne 'Disabled') {
 Get-NetAdapterAdvancedProperty -Name $nic.Name |
   Where-Object { $_.DisplayName -match 'Magic Packet|Shutdown Wake|Wake.*power off|Wake.*S5' -and $_.ValidDisplayValues -contains 'Enabled' -and $_.DisplayValue -ne 'Enabled' } |
   ForEach-Object { Set-NetAdapterAdvancedProperty -Name $nic.Name -DisplayName $_.DisplayName -DisplayValue 'Enabled' }
-powercfg.exe /deviceenablewake "$($nic.InterfaceDescription)" 2>&1 | Out-Null
+# Best effort, and Windows PowerShell turns a native program's stderr into an error under 'Stop'.
+try { powercfg.exe /deviceenablewake "$($nic.InterfaceDescription)" 2>&1 | Out-Null } catch {}
 $pm = Get-NetAdapterPowerManagement -Name $nic.Name
 Write-Output ("{0}|{1}" -f $pm.WakeOnMagicPacket, $nic.InterfaceDescription)
 `
 
 // powershell runs a script block with single-quoted arguments via -EncodedCommand, which sidesteps
-// Windows command-line quoting entirely.
+// Windows command-line quoting entirely. It returns only what the script writes as output: started
+// this way, PowerShell writes its other streams (progress such as "Preparing modules for first use",
+// warnings, errors) to stderr as CLIXML, which mustn't end up in a check's reading or an error message.
+// So progress is off, any error stops the script, and its message comes back as the error.
 func powershell(script string, args ...string) (string, error) {
-	cmd := "& {" + script + "}"
+	cmd := "$global:ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'\ntry { & {" + script + "}"
 	for _, a := range args {
 		cmd += " '" + strings.ReplaceAll(a, "'", "''") + "'"
 	}
+	cmd += " } catch { Write-Output $_.Exception.Message; exit 1 }"
+	var stdout bytes.Buffer
+	c := hidden(powershellExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodeCommand(cmd))
+	c.Stdout = &stdout
+	err := c.Run()
+	out := strings.TrimSpace(stdout.String())
+	if err != nil {
+		if msg := lastLine(out); msg != "" {
+			return "", errors.New(msg)
+		}
+		return "", err
+	}
+	return out, nil
+}
+
+func powershellExe() string {
+	return filepath.Join(os.Getenv("SystemRoot"), `System32\WindowsPowerShell\v1.0\powershell.exe`)
+}
+
+// encodeCommand: -EncodedCommand takes base64 of the UTF-16LE script.
+func encodeCommand(cmd string) string {
 	u := windows.StringToUTF16(cmd)
 	b := make([]byte, 0, len(u)*2)
 	for _, c := range u[:len(u)-1] { // drop the trailing NUL
 		b = append(b, byte(c), byte(c>>8))
 	}
-	enc := base64.StdEncoding.EncodeToString(b)
-	out, err := hidden(filepath.Join(os.Getenv("SystemRoot"), `System32\WindowsPowerShell\v1.0\powershell.exe`),
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func enableWake(mac string) (string, error) {
 	dashed := strings.ToUpper(strings.ReplaceAll(mac, ":", "-"))
 	out, err := powershell(wakeScript, dashed)
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, lastLine(out))
+		return "", err
 	}
 	state, desc, _ := strings.Cut(lastLine(out), "|")
 	if !strings.EqualFold(state, "Enabled") {
@@ -466,7 +488,10 @@ func Checks(e Env) []check.Check {
 					return check.Result{Level: check.Info, Title: "Wake-on-LAN", Detail: "Needs a wired network card."}
 				}
 				out, err := powershell(`(Get-NetAdapterPowerManagement -Name $args[0]).WakeOnMagicPacket`, n.Interface)
-				if err == nil && strings.EqualFold(lastLine(out), "Enabled") {
+				if err != nil {
+					return check.Result{Level: check.Warn, Title: "Couldn't read Wake-on-LAN on " + n.Interface, Detail: err.Error()}
+				}
+				if strings.EqualFold(lastLine(out), "Enabled") {
 					return check.Result{Level: check.OK, Title: "Wake-on-LAN on " + n.Interface, Detail: n.MAC}
 				}
 				return check.Result{Level: check.Warn, Title: "Wake-on-LAN is off on " + n.Interface}

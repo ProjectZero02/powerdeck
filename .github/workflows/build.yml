@@ -152,8 +152,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version-file: helper/go.mod, cache-dependency-path: helper/go.sum }
-      - name: Unit tests for Windows-only code (DPAPI sealing, NanoKVM client)
-        run: go test -count=1 ./internal/secret/ ./internal/nanokvm/...
+      - name: Unit tests for Windows-only code (DPAPI sealing, NanoKVM client, window access, PowerShell)
+        run: go test -count=1 -v -run . ./internal/secret/ ./internal/nanokvm/... ./internal/winsvc/ ./internal/setup/
       - name: Build PowerDeck.exe
         run: |
           go install github.com/tc-hib/go-winres@v0.3.3
