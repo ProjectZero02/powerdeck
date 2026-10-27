@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- In-app updates from GitHub Releases; Android still asks the user to confirm each install. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Tells you when a schedule or an agent acted, or a device went offline. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
         <!-- To see whether Tailscale is installed and ask it to connect. -->
@@ -38,7 +40,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="powerdeck" android:host="pair" />
+                <data android:scheme="powerdeck" android:host="add" />
             </intent-filter>
         </activity>
 
@@ -63,10 +65,10 @@
         </receiver>
 
         <service
-            android:name=".tiles.PcTileService"
+            android:name=".tiles.Tile1Service"
             android:exported="true"
             android:icon="@drawable/ic_power"
-            android:label="@string/tile_pc"
+            android:label="@string/tile_1"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -74,10 +76,32 @@
         </service>
 
         <service
-            android:name=".tiles.ServerTileService"
+            android:name=".tiles.Tile2Service"
             android:exported="true"
             android:icon="@drawable/ic_power"
-            android:label="@string/tile_server"
+            android:label="@string/tile_2"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".tiles.Tile3Service"
+            android:exported="true"
+            android:icon="@drawable/ic_power"
+            android:label="@string/tile_3"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".tiles.Tile4Service"
+            android:exported="true"
+            android:icon="@drawable/ic_power"
+            android:label="@string/tile_4"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

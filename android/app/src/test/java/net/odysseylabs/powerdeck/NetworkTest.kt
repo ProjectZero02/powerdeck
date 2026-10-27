@@ -6,9 +6,11 @@ import mockwebserver3.MockWebServer
 import net.odysseylabs.powerdeck.data.KvmException
 import net.odysseylabs.powerdeck.data.NanoKvmClient
 import net.odysseylabs.powerdeck.data.NanoKvmCrypto
-import net.odysseylabs.powerdeck.data.PairingLink
-import net.odysseylabs.powerdeck.data.PcClient
-import net.odysseylabs.powerdeck.data.PcException
+import net.odysseylabs.powerdeck.data.AddLink
+import net.odysseylabs.powerdeck.data.HelperClient
+import net.odysseylabs.powerdeck.data.HelperException
+import net.odysseylabs.powerdeck.data.Lan
+import net.odysseylabs.powerdeck.data.Presence
 import net.odysseylabs.powerdeck.data.Updater
 import okhttp3.OkHttpClient
 import okhttp3.tls.HandshakeCertificates
@@ -54,38 +56,59 @@ class NanoKvmCryptoTest {
     }
 }
 
-class PairingLinkTest {
+class AddLinkTest {
     private val fp = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { it.toByte() })
-    private val good = "powerdeck://pair?c=abcdefghijklmnopqrstuvwxyz&f=$fp&h=100.101.1.10&k=100.101.1.20" +
-        "&m=d8%3A5e%3Ad3%3A12%3A34%3A56&n=Gaming-PC&p=47321&v=1&x=100.101.1.30%3A8006"
+    private val good = "powerdeck://add?c=7K3Q-M9XD&f=$fp&h=100.101.1.10&n=Gaming-PC&p=47321&v=2"
 
     @Test fun parsesEverything() {
-        val p = PairingLink.parse(good)!!
+        val p = AddLink.parse(good)!!
         assertEquals("Gaming-PC", p.name)
         assertEquals("100.101.1.10", p.host)
         assertEquals(47321, p.port)
-        assertEquals(fp, p.fingerprint)
-        assertEquals("abcdefghijklmnopqrstuvwxyz", p.code)
-        assertEquals("d8:5e:d3:12:34:56", p.mac)
-        assertEquals("100.101.1.20", p.nanoKvm)
-        assertEquals("100.101.1.30:8006", p.proxmox)
+        assertEquals(fp, p.pin)
+        assertEquals("7K3Q-M9XD", p.code)
+        assertNull(AddLink.parse(good.replace("c=7K3Q-M9XD&", ""))!!.code)
     }
 
     @Test fun rejectsBadInput() {
         for (bad in listOf(
-            "https://pair?v=1", good.replace("v=1", "v=2"), good.replace("c=abcdefghijklmnopqrstuvwxyz", "c=short"),
-            good.replace("f=$fp", "f=AAAA"), good.replace("p=47321", "p=99999"), good.replace("powerdeck://pair", "powerdeck://other"),
-            "not a link", "",
-        )) assertNull(bad, PairingLink.parse(bad))
+            "https://add?v=2", good.replace("v=2", "v=1"), good.replace("f=$fp", "f=AAAA"), good.replace("p=47321", "p=99999"),
+            good.replace("powerdeck://add", "powerdeck://pair"), good.replace("h=100.101.1.10", "h=a%20b"), "not a link", "",
+        )) assertNull(bad, AddLink.parse(bad))
     }
 
-    @Test fun dropsInvalidOptionalFields() {
-        val p = PairingLink.parse(good.replace("m=d8%3A5e%3Ad3%3A12%3A34%3A56", "m=zz"))!!
-        assertNull(p.mac)
+    @Test fun normalizesCodesLikeTheHelper() {
+        assertEquals("7K3Q-M9XD", AddLink.normalizeCode("7k3q m9xd"))
+        assertEquals("0111-ABCD", AddLink.normalizeCode("oIL1abcd"))
+        assertNull(AddLink.normalizeCode("7K3Q-M9X"))
+        assertNull(AddLink.normalizeCode("UUUU-UUUU")) // U isn't Crockford
+    }
+
+    @Test fun cleansTypedNames() {
+        assertEquals("za-worldo", AddLink.cleanHost(" za-worldo "))
+        assertEquals("pve.tail1234.ts.net", AddLink.cleanHost("https://pve.tail1234.ts.net:47321/"))
+        assertNull(AddLink.cleanHost("a b"))
     }
 }
 
-class PcClientTest {
+class LanTest {
+    @Test fun overlap() {
+        assertTrue(Lan.overlaps(listOf("192.168.1.0/24"), listOf("192.168.1.0/24")))
+        assertTrue(Lan.overlaps(listOf("10.0.0.0/8"), listOf("10.1.2.0/24")))
+        assertFalse(Lan.overlaps(listOf("192.168.1.0/24"), listOf("192.168.2.0/24")))
+        assertFalse(Lan.overlaps(listOf("pve.local/24"), listOf("192.168.1.0/24")))
+        assertEquals("192.168.1.255", Lan.parse("192.168.1.0/24")!!.broadcast()!!.hostAddress)
+    }
+
+    @Test fun magicPacket() {
+        val p = Lan.magicPacket("d8:5e:d3:12:34:56")!!
+        assertEquals(102, p.size)
+        assertEquals(0xd8.toByte(), p[6])
+        assertNull(Lan.magicPacket("nope"))
+    }
+}
+
+class HelperClientTest {
     private val server = MockWebServer()
     private val cert = HeldCertificate.Builder().commonName("PowerDeck test").addSubjectAlternativeName("localhost").build()
     private val pin = Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(cert.certificate.encoded))
@@ -97,48 +120,85 @@ class PcClientTest {
 
     @After fun tearDown() = server.close()
 
-    private fun client(fp: String = pin, token: String? = "tok") = PcClient(OkHttpClient(), server.hostName, server.port, fp, token)
+    private fun client(fp: String? = pin, key: String? = null, seen: (String) -> Unit = {}) = HelperClient(OkHttpClient(), server.hostName, server.port, fp, key, seen)
 
     private fun json(code: Int, body: String) = MockResponse.Builder().code(code).addHeader("Content-Type", "application/json").body(body).build()
 
-    @Test fun pairsAndReadsContext() = runBlocking {
-        server.enqueue(json(200, """{"deviceId":"d1","token":"secret","pc":{"name":"Gaming-PC","version":"1.0.0","uptimeSeconds":42,
-            "pending":null,"mac":"d8:5e:d3:12:34:56","nanokvm":{"address":"100.101.1.20"},"proxmox":{"address":"100.101.1.30:8006"}}}"""))
-        val r = client(token = null).pair("abc", "Phone", "Model")
-        assertEquals("secret", r.token)
-        assertEquals("100.101.1.20", r.pc.nanoKvm)
-        val req = server.takeRequest()
-        assertEquals("/v1/pair", req.url.encodedPath)
-        assertNull(req.headers["Authorization"])
-        assertEquals("abc", JSONObject(req.body!!.utf8()).getString("code"))
+    private val status = """{"name":"Gaming-PC","os":"windows","version":"2.0.0","apiVersion":2,"uptimeSeconds":42,
+        "presence":{"active":true,"user":"Alex","idleSeconds":30,"fullscreen":true},
+        "network":{"mac":"d8:5e:d3:12:34:56","lan":["192.168.1.0/24"],"wired":true},
+        "checks":[{"id":"fast_startup","level":"warn","title":"Fast Startup is on","fixable":true}],
+        "you":{"kind":"owner","name":"Pixel","scopes":["status"]}}"""
+
+    @Test fun readsStatus() = runBlocking {
+        server.enqueue(json(200, status))
+        val s = client().status()
+        assertEquals("Gaming-PC", s.name)
+        assertEquals("d8:5e:d3:12:34:56", s.mac)
+        assertEquals(listOf("192.168.1.0/24"), s.lan)
+        assertTrue(s.presence!!.active)
+        assertTrue(s.checks.single().problem)
+        assertEquals("Pixel", s.youName)
+        assertNull(server.takeRequest().headers["Authorization"])
+    }
+
+    @Test fun trustsOnFirstUseAndReportsThePin() = runBlocking {
+        server.enqueue(json(200, status))
+        var seen: String? = null
+        client(fp = null) { seen = it }.status()
+        assertEquals(pin, seen)
     }
 
     @Test fun rejectsAnotherCertificate() {
         val otherPin = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32))
-        assertThrows(PcException.WrongPc::class.java) { runBlocking { client(fp = otherPin).status() } }
+        assertThrows(HelperException.WrongDevice::class.java) { runBlocking { client(fp = otherPin).status() } }
     }
 
-    @Test fun sendsTokenAndParsesPending() = runBlocking {
-        server.enqueue(json(202, """{"pending":{"action":"shutdown","at":"2026-10-06T12:00:30Z"}}"""))
-        val p = client().power("shutdown")
+    @Test fun notOwnerThenPair() = runBlocking {
+        server.enqueue(json(401, """{"error":"not_owner","message":"This device belongs to another Tailscale account."}"""))
+        assertThrows(HelperException.NotOwner::class.java) { runBlocking { client().status() } }
+        server.enqueue(json(200, """{"key":"pdk_x","status":$status}"""))
+        val (key, s) = client().pair("7K3Q-M9XD", "Phone")
+        assertEquals("pdk_x", key)
+        assertEquals("Gaming-PC", s.name)
+        server.takeRequest()
+        val req = server.takeRequest()
+        assertEquals("/v2/pair", req.url.encodedPath)
+        assertEquals("7K3Q-M9XD", JSONObject(req.body!!.utf8()).getString("code"))
+    }
+
+    @Test fun sendsKeyAndParsesPending() = runBlocking {
+        server.enqueue(json(202, """{"pending":{"action":"shutdown","at":"2026-10-06T12:01:00Z","by":"Phone"}}"""))
+        val p = client(key = "pdk_k").power("shutdown")
         assertEquals("shutdown", p!!.action)
-        assertEquals("Bearer tok", server.takeRequest().headers["Authorization"])
+        val req = server.takeRequest()
+        assertEquals("Bearer pdk_k", req.headers["Authorization"])
+        val body = JSONObject(req.body!!.utf8())
+        assertEquals(60, body.getInt("delaySeconds"))
+        assertFalse(body.getBoolean("force"))
     }
 
-    @Test fun unauthorizedMeansUnpaired() {
-        server.enqueue(json(401, """{"error":"unauthorized"}"""))
-        assertThrows(PcException.Unpaired::class.java) { runBlocking { client().status() } }
+    @Test fun inUseCarriesPresence() {
+        server.enqueue(json(409, """{"error":"in_use","message":"Someone is using this device.","presence":{"active":true,"user":"Alex","idleSeconds":5}}"""))
+        val e = assertThrows(HelperException.Api::class.java) { runBlocking { client().power("restart") } }
+        assertEquals("in_use", e.code)
+        assertEquals("Alex", Presence.from(e.body.optJSONObject("presence"))!!.user)
     }
 
-    @Test fun conflictIsReported() {
-        server.enqueue(json(409, """{"error":"pending","message":"A shutdown or restart is already scheduled."}"""))
-        val e = assertThrows(PcException.Rejected::class.java) { runBlocking { client().power("restart") } }
-        assertEquals("A shutdown or restart is already scheduled.", e.message)
+    @Test fun peers() = runBlocking {
+        server.enqueue(json(200, """{"checkedAt":"2026-10-06T12:00:00Z","peers":[{"kind":"nanokvm","name":"kvm","address":"100.101.1.20","online":true},
+            {"kind":"helper","name":"pve","address":"100.101.1.30","port":47321,"os":"linux","pin":"$pin"}]}"""))
+        val peers = client().peers(refresh = true)
+        assertTrue(peers[0].isKvm)
+        assertEquals(pin, peers[1].pin)
+        val req = server.takeRequest()
+        assertEquals("/v2/peers", req.url.encodedPath)
+        assertEquals("1", req.url.queryParameter("refresh"))
     }
 
-    @Test fun offPcIsUnreachable() {
+    @Test fun offDeviceIsUnreachable() {
         server.close()
-        assertThrows(PcException.Unreachable::class.java) { runBlocking { client().status() } }
+        assertThrows(HelperException.Unreachable::class.java) { runBlocking { client().status() } }
     }
 }
 

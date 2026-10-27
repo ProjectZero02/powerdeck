@@ -3,16 +3,18 @@ package net.odysseylabs.powerdeck.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.service.quicksettings.TileService
-import android.content.ComponentName
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -29,96 +31,91 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import net.odysseylabs.powerdeck.data.Device
+import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Outcome
-import net.odysseylabs.powerdeck.data.PcState
+import net.odysseylabs.powerdeck.data.Pending
 import net.odysseylabs.powerdeck.data.PowerDeck
-import net.odysseylabs.powerdeck.data.ServerState
+import net.odysseylabs.powerdeck.data.Presence
 import net.odysseylabs.powerdeck.deck
-import net.odysseylabs.powerdeck.tiles.PcTileService
-import net.odysseylabs.powerdeck.tiles.ServerTileService
-import net.odysseylabs.powerdeck.widget.PowerWidget
 
 /**
- * The small dialog the widget and Quick Settings tiles open: checks the device, then turns it on
- * straight away, or asks before shutting it down.
+ * The small dialog the widget, tiles and shortcuts open: checks the device, then turns it on straight
+ * away, or asks before shutting it down.
  */
 class QuickActionActivity : ComponentActivity() {
     companion object {
-        private const val EXTRA_TARGET = "target"
-        fun intent(ctx: Context, target: Target): Intent =
+        private const val EXTRA_DEVICE = "device"
+        fun intent(ctx: Context, deviceId: String): Intent =
             Intent(ctx, QuickActionActivity::class.java)
-                .putExtra(EXTRA_TARGET, target.name)
+                .setAction("net.odysseylabs.powerdeck.QUICK")
+                .putExtra(EXTRA_DEVICE, deviceId)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val target = runCatching { Target.valueOf(intent.getStringExtra(EXTRA_TARGET)!!) }.getOrNull() ?: return finish()
-        setContent { PowerDeckTheme { QuickAction(target, deck, ::finish) } }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        TileService.requestListeningState(this, ComponentName(this, PcTileService::class.java))
-        TileService.requestListeningState(this, ComponentName(this, ServerTileService::class.java))
+        val id = intent.getStringExtra(EXTRA_DEVICE) ?: return finish()
+        setContent { PowerDeckTheme { QuickAction(id, deck, ::finish) } }
     }
 }
 
 private sealed interface QuickStep {
     data object Checking : QuickStep
-    data class AskOff(val restartable: Boolean, val pending: Boolean) : QuickStep
+    data class AskOff(val canRestart: Boolean, val pending: Pending?) : QuickStep
+    data class AskForce(val restart: Boolean, val presence: Presence) : QuickStep
     data object Working : QuickStep
     data class Done(val outcome: Outcome) : QuickStep
 }
 
 @Composable
-private fun QuickAction(target: Target, deck: PowerDeck, close: () -> Unit) {
+private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ctx = LocalContext.current
     var step by remember { mutableStateOf<QuickStep>(QuickStep.Checking) }
-    var name by remember { mutableStateOf(if (target == Target.Pc) "PC" else "Server") }
+    var device by remember { mutableStateOf<Device?>(null) }
 
-    fun perform(block: suspend () -> Outcome) {
+    fun perform(block: suspend () -> Outcome, restart: Boolean = false) {
         step = QuickStep.Working
         scope.launch {
             val outcome = block()
+            if (outcome.inUse != null) {
+                step = QuickStep.AskForce(restart, outcome.inUse)
+                return@launch
+            }
             step = QuickStep.Done(outcome)
-            PowerWidget().updateAll(ctx)
-            delay(if (outcome.ok) 2200 else 6000)
+            Shortcuts.refreshAll(ctx)
+            delay(if (outcome.ok) 2500 else 6000)
             close()
         }
     }
 
     LaunchedEffect(Unit) {
-        val config = deck.store.current()
-        if (target == Target.Pc) name = config.pc?.name ?: "PC"
+        val d = deck.store.get(id) ?: run {
+            step = QuickStep.Done(Outcome(false, "That device was removed from PowerDeck."))
+            return@LaunchedEffect
+        }
+        device = d
         if (!deck.tailnet()) {
             step = QuickStep.Done(Outcome(false, "Tailscale isn't connected. Open Tailscale and connect."))
             return@LaunchedEffect
         }
-        when (target) {
-            Target.Pc -> when (val s = deck.pcState()) {
-                is PcState.On -> if (s.pending == null && !config.confirmShutdown) perform { deck.pcAction("shutdown") } else step = QuickStep.AskOff(true, s.pending != null)
-                PcState.Off -> perform { deck.pcOn() }
-                is PcState.Problem -> step = QuickStep.Done(Outcome(false, s.message))
-                PcState.Checking -> Unit
-            }
-            Target.Server -> when (val s = deck.serverState()) {
-                is ServerState.On -> if (!config.confirmShutdown) perform { deck.serverOff() } else step = QuickStep.AskOff(false, false)
-                ServerState.Off -> perform { deck.serverOn() }
-                ServerState.NotSetUp -> step = QuickStep.Done(Outcome(false, "Open PowerDeck and connect your NanoKVM first."))
-                is ServerState.Problem -> step = QuickStep.Done(Outcome(false, s.message))
-                ServerState.Checking -> Unit
-            }
+        when (val s = deck.state(d)) {
+            is DeviceState.On -> step = QuickStep.AskOff(d.hasHelper, s.status?.pending)
+            DeviceState.Off -> perform({ deck.turnOn(d) })
+            is DeviceState.Problem -> step = QuickStep.Done(Outcome(false, s.message))
+            DeviceState.Checking -> Unit
         }
-        PowerWidget().updateAll(ctx)
+        Shortcuts.refreshAll(ctx)
     }
 
     val s = step
+    val d = device
+    val name = d?.name ?: "PowerDeck"
     AlertDialog(
         onDismissRequest = { if (s !is QuickStep.Working) close() },
         title = { Text(name) },
@@ -131,33 +128,41 @@ private fun QuickAction(target: Target, deck: PowerDeck, close: () -> Unit) {
                 }
                 is QuickStep.AskOff -> Text(
                     when {
-                        s.pending -> "A shutdown is already counting down."
-                        target == Target.Pc -> "It's on. Shut it down? Windows closes all apps in 30 seconds."
-                        else -> "It's on. Shut it down? Proxmox stops every VM cleanly first (1 to 3 minutes)."
+                        s.pending != null -> "A ${if (s.pending.action == "restart") "restart" else "shutdown"} is counting down."
+                        d?.guests == true -> "It's on. Shut it down? Its VMs stop cleanly first, then it powers off."
+                        else -> "It's on. Shut it down? Apps close in 60 seconds, and you can cancel until then."
                     },
                 )
+                is QuickStep.AskForce -> Text(s.presence.describe(name) + " Unsaved work may be lost.")
                 is QuickStep.Done -> Text(s.outcome.message, color = if (s.outcome.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
             }
         },
         confirmButton = {
-            if (s is QuickStep.AskOff) {
-                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (s.pending) {
-                        Button(onClick = { perform { deck.pcAction("cancel") } }) { Text("Cancel shutdown") }
+            if (d != null) when (s) {
+                is QuickStep.AskOff -> Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (s.pending != null) {
+                        Button(onClick = { perform({ deck.cancel(d) }) }) { Text("Cancel it") }
                     } else {
-                        Button(
-                            onClick = { perform { if (target == Target.Pc) deck.pcAction("shutdown") else deck.serverOff() } },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                        ) { Text("Shut down") }
-                        if (s.restartable) TextButton(onClick = { perform { deck.pcAction("restart") } }) { Text("Restart instead") }
+                        HoldButton("Hold to shut down", Icons.Rounded.PowerSettingsNew, danger = true, enabled = true, modifier = Modifier.fillMaxWidth()) {
+                            perform({ deck.powerOff(d, restart = false) })
+                        }
+                        if (s.canRestart) {
+                            HoldButton("Hold to restart", Icons.Rounded.RestartAlt, danger = false, enabled = true, tonal = true, modifier = Modifier.fillMaxWidth()) {
+                                perform({ deck.powerOff(d, restart = true) }, restart = true)
+                            }
+                        }
                     }
                 }
-            } else if (s is QuickStep.Done) {
-                TextButton(onClick = close) { Text("OK") }
+                is QuickStep.AskForce -> Button(
+                    onClick = { perform({ deck.powerOff(d, s.restart, force = true) }) },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text(if (s.restart) "Restart anyway" else "Shut down anyway") }
+                is QuickStep.Done -> TextButton(onClick = close) { Text("OK") }
+                else -> Unit
             }
         },
         dismissButton = {
-            if (s is QuickStep.AskOff) TextButton(onClick = close) { Text("Close") }
+            if (s is QuickStep.AskOff || s is QuickStep.AskForce) TextButton(onClick = close) { Text("Close") }
         },
     )
 }

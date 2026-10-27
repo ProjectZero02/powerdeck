@@ -2,7 +2,9 @@
 <resources>
     <string name="app_name">PowerDeck</string>
     <string name="widget_name">PowerDeck</string>
-    <string name="widget_description">Power state and one-tap buttons for your PC and server</string>
-    <string name="tile_pc">PC</string>
-    <string name="tile_server">Server</string>
+    <string name="widget_description">Every device with its power state; tap one to turn it on or off</string>
+    <string name="tile_1">PowerDeck 1</string>
+    <string name="tile_2">PowerDeck 2</string>
+    <string name="tile_3">PowerDeck 3</string>
+    <string name="tile_4">PowerDeck 4</string>
 </resources>

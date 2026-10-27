@@ -20,6 +20,7 @@ data class Device(
     val hasKey: Boolean = false, // helper on another account: we hold a key for it
     val kvm: KvmLink? = null,
     val guests: Boolean = false, // a Proxmox host (warn about VMs)
+    val me: String? = null,      // what this phone is called in the helper's log
 ) {
     val hasHelper get() = host != null && pin != null
     val kind: Kind get() = when {
@@ -34,7 +35,7 @@ data class Device(
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("host", host).put("port", port).put("pin", pin).put("os", os)
         .put("mac", mac).put("lan", JSONArray(lan)).put("hasKey", hasKey).put("guests", guests)
-        .put("kvm", kvm?.toJson())
+        .put("kvm", kvm?.toJson()).put("me", me)
 
     companion object {
         fun fromJson(o: JSONObject) = Device(
@@ -49,6 +50,7 @@ data class Device(
             hasKey = o.optBoolean("hasKey"),
             guests = o.optBoolean("guests"),
             kvm = o.optJSONObject("kvm")?.let(KvmLink::fromJson),
+            me = o.optStringOrNull("me"),
         )
     }
 }
@@ -143,7 +145,7 @@ data class HelperStatus(
 /** Something a helper found on the tailnet. */
 data class Peer(val kind: String, val name: String, val dnsName: String?, val address: String, val port: Int, val os: String?, val pin: String?) {
     val isHelper get() = kind == "helper"
-    val isKvm get() = kind == "nanokvm" || kind == "pikvm"
+    val isKvm get() = kind == "nanokvm" // PiKVM is detected but its API isn't supported yet
 
     companion object {
         fun from(o: JSONObject) = Peer(o.optString("kind"), o.optString("name"), o.optStringOrNull("dnsName"), o.optString("address"),
@@ -175,5 +177,5 @@ sealed interface DeviceState {
 /** Last known power states, shown by the widget and tiles without a network round trip. */
 enum class Power { On, Off, Unknown }
 
-/** Result of a button press, phrased for the user. */
-data class Outcome(val ok: Boolean, val message: String)
+/** Result of a button press, phrased for the user. `inUse` asks the user before forcing. */
+data class Outcome(val ok: Boolean, val message: String, val inUse: Presence? = null)

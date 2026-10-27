@@ -1,14 +1,23 @@
 package net.odysseylabs.powerdeck.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -16,39 +25,46 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import kotlinx.coroutines.flow.MutableStateFlow
 import net.odysseylabs.powerdeck.data.Tailscale
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
+    /** Screen requested from outside (a shortcut, a notification, an add link). */
+    val route = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        handleLink(intent)
-        setContent { PowerDeckTheme { App(vm) } }
+        if (savedInstanceState == null) handle(intent)
+        setContent { PowerDeckTheme { App(vm, this) } }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleLink(intent)
+        handle(intent)
     }
 
-    /** powerdeck://pair?… links (e.g. sent from the PC) pair directly. */
-    private fun handleLink(intent: Intent?) {
+    private fun handle(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_DEVICE)?.let { route.value = "device:$it" }
         val data = intent?.data ?: return
-        if (data.scheme == "powerdeck") vm.pair(data.toString())
+        if (data.scheme == "powerdeck") {
+            route.value = "add"
+            vm.addLink(data.toString())
+        }
     }
 
     fun scan() {
         val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
         GmsBarcodeScanning.getClient(this, options).startScan()
-            .addOnSuccessListener { code -> code.rawValue?.let(vm::pair) }
+            .addOnSuccessListener { code -> code.rawValue?.let(vm::addLink) }
             .addOnFailureListener { vm.scanFailed(it.message) }
     }
 
@@ -60,86 +76,157 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${Tailscale.PACKAGE}")))
         }
     }
+
+    fun askNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+    }
+
+    fun open(url: String) = startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+
+    companion object {
+        const val EXTRA_DEVICE = "device"
+    }
 }
 
-private enum class Screen { Home, Settings, Kvm }
-
 @Composable
-private fun App(vm: MainViewModel) {
+private fun App(vm: MainViewModel, activity: MainActivity) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
+    val detail by vm.detail.collectAsStateWithLifecycle()
+    val requested by activity.route.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
-    var screen by rememberSaveable { mutableStateOf(Screen.Home) }
-    var kvmSkipped by rememberSaveable { mutableStateOf(false) }
+    var route by rememberSaveable { mutableStateOf("home") }
+    val prefs = remember { ctx.getSharedPreferences("ui", 0) }
     var widgetTip by remember { mutableStateOf(false) }
 
+    LaunchedEffect(requested) {
+        requested?.let { route = it; activity.route.value = null }
+    }
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        widgetTip = !Shortcuts.hasWidget(activity)
+        widgetTip = !prefs.getBoolean("widgetTipDismissed", false) && !Shortcuts.hasWidget(ctx)
         vm.startPolling()
+        vm.find(refresh = false)
     }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopPolling() }
+    // Once the first device is in, ask for notification permission (schedules and agents report through it).
+    LaunchedEffect(state.devices.isNotEmpty()) { if (state.devices.isNotEmpty()) activity.askNotifications() }
 
-    val config = state.config ?: return
-    if (config.pc == null) {
-        WelcomeScreen(state.pairing, onScan = activity::scan, onPaste = vm::pair, onDismissError = vm::clearPairingError)
-        return
-    }
-    val needsKvm = (config.nanoKvm != null && !config.hasKvmPassword && !kvmSkipped) || screen == Screen.Kvm
-    if (needsKvm) {
-        LaunchedEffect(state.kvm) {
-            if (state.kvm == KvmStep.Done) {
-                vm.resetKvmStep()
-                screen = Screen.Home
-            }
-        }
-        BackHandler(enabled = screen == Screen.Kvm) { screen = Screen.Settings }
-        KvmSetupScreen(
-            address = config.nanoKvm.orEmpty(),
-            user = config.nanoKvmUser,
-            step = state.kvm,
-            onConnect = vm::connectKvm,
-            onSkip = { kvmSkipped = true; vm.resetKvmStep(); screen = Screen.Home },
-        )
-        return
-    }
-    when (screen) {
-        Screen.Settings -> {
-            BackHandler { screen = Screen.Home }
-            SettingsScreen(
-                config,
-                SettingsActions(
-                    back = { screen = Screen.Home },
-                    unpair = { vm.unpair(); screen = Screen.Home },
-                    changeKvm = { vm.resetKvmStep(); screen = Screen.Kvm },
-                    forgetKvm = { vm.forgetKvm() },
-                    setConfirm = { vm.setConfirmShutdown(it) },
-                    setAutoTailscale = { vm.setAutoTailscale(it) },
-                    addWidget = { Shortcuts.pinWidget(activity) },
-                    addTiles = { Shortcuts.addTiles(activity) },
-                    checkUpdate = vm::checkUpdate,
-                    openProject = { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ProjectZero02/powerdeck"))) },
+    if (!state.loaded) return
+    val hint: (String) -> Unit = { vm.say(it) }
+
+    when {
+        state.devices.isEmpty() || route == "add" -> {
+            if (route == "add") BackHandler { vm.resetAdd(); route = "home" }
+            LaunchedEffect(Unit) { vm.find(refresh = true) }
+            AddScreen(
+                state,
+                AddActions(
+                    back = if (state.devices.isEmpty()) null else ({ vm.resetAdd(); route = "home" }),
+                    scan = activity::scan,
+                    byName = vm::addByName,
+                    addPeer = vm::addPeer,
+                    submitCode = vm::submitCode,
+                    dismiss = vm::resetAdd,
+                    find = { vm.find(refresh = true) },
+                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
                 ),
+                snackbar,
+            )
+        }
+        route == "settings" -> {
+            BackHandler { route = "home" }
+            SettingsScreen(
+                state.settings,
+                SettingsActions(
+                    back = { route = "home" },
+                    setConfirm = vm::setConfirmShutdown,
+                    setAutoTailscale = vm::setAutoTailscale,
+                    setNotifications = { on -> vm.setNotifications(on); if (on) activity.askNotifications() },
+                    addWidget = { Shortcuts.pinWidget(ctx) },
+                    addTiles = { Shortcuts.addTiles(ctx, state.devices, state.tiles) { slot, d -> vm.setTile(slot, d) } },
+                    checkUpdate = vm::checkUpdate,
+                    openProject = { activity.open("https://github.com/ProjectZero02/powerdeck") },
+                ),
+            )
+        }
+        route.startsWith("device:") -> {
+            val d = state.devices.firstOrNull { it.id == route.removePrefix("device:") }
+            if (d == null) {
+                LaunchedEffect(Unit) { route = "home" }
+                return
+            }
+            BackHandler { route = "home" }
+            LaunchedEffect(d.id) { vm.loadDetail(d) }
+            DeviceScreen(
+                d, state, detail,
+                DeviceActions(
+                    back = { route = "home" },
+                    turnOn = { vm.turnOn(d) },
+                    shutdown = { upd -> vm.powerOff(d, restart = false, installUpdates = upd) },
+                    restart = { vm.powerOff(d, restart = true) },
+                    cancel = { vm.cancel(d) },
+                    forceOff = { vm.forceOff(d) },
+                    fix = { vm.fix(d, it) },
+                    addSchedule = { act, t, days, skip -> vm.addSchedule(d, act, t, days, skip) },
+                    removeSchedule = { host, s -> vm.removeSchedule(d, host, s) },
+                    loadKeys = { vm.loadKeys(d) },
+                    addKey = { n, p, devs -> vm.addKey(d, n, p, devs) },
+                    removeKey = { vm.removeKey(d, it) },
+                    clearNewKey = vm::clearNewKey,
+                    linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
+                    unlinkKvm = { vm.unlinkKvm(d) },
+                    setTile = { slot ->
+                        val cur = state.tiles.indexOf(d.id)
+                        if (cur >= 0) vm.setTile(cur, null)
+                        if (slot != null) {
+                            vm.setTile(slot, d)
+                            Shortcuts.requestTile(ctx, slot, d.name)
+                        }
+                    },
+                    pinShortcut = { Shortcuts.pinDevice(ctx, d) },
+                    rename = { vm.rename(d, it) },
+                    remove = { vm.remove(d); route = "home" },
+                    hint = hint,
+                ),
+                snackbar,
             )
         }
         else -> HomeScreen(
             state,
             HomeActions(
-                pcOn = vm::pcOn,
-                pcShutdown = vm::pcShutdown,
-                pcRestart = vm::pcRestart,
-                pcCancel = vm::pcCancel,
-                serverOn = vm::serverOn,
-                serverOff = vm::serverOff,
-                setUpServer = { vm.resetKvmStep(); screen = Screen.Kvm },
+                open = { route = "device:${it.id}" },
+                turnOn = vm::turnOn,
+                shutdown = { vm.powerOff(it, restart = false) },
+                restart = { vm.powerOff(it, restart = true) },
+                cancel = vm::cancel,
                 retry = vm::refresh,
-                openSettings = { screen = Screen.Settings },
+                add = { route = "add" },
+                settings = { route = "settings" },
                 connectTailscale = activity::openTailscale,
                 update = vm::installUpdate,
-                addWidget = { Shortcuts.pinWidget(activity) },
+                addWidget = { Shortcuts.pinWidget(ctx) },
+                dismissWidgetTip = { prefs.edit().putBoolean("widgetTipDismissed", true).apply(); widgetTip = false },
+                hint = hint,
             ),
             snackbar,
             showWidgetTip = widgetTip,
+        )
+    }
+
+    state.force?.let { f ->
+        AlertDialog(
+            onDismissRequest = vm::dismissForce,
+            title = { Text("${f.device.name} is in use") },
+            text = { Text(f.presence.describe(f.device.name) + " ${if (f.restart) "Restart" else "Shut down"} anyway? Unsaved work may be lost.") },
+            confirmButton = {
+                Button(onClick = { vm.forcePower(f) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                    Text(if (f.restart) "Restart anyway" else "Shut down anyway")
+                }
+            },
+            dismissButton = { TextButton(onClick = vm::dismissForce) { Text("Leave it on") } },
         )
     }
 }
