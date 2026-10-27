@@ -14,8 +14,8 @@ var procGetExtendedTcpTable = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("
 
 // LocalCaller reports whether the program behind a loopback connection (remote is the client's
 // "ip:port", server the listening port) runs in the active console session, i.e. belongs to the
-// person at this PC's screen, or is elevated. Other users signed in to the same PC (fast user
-// switching, Remote Desktop) and services are refused.
+// person at this PC's screen, or belongs to an administrator of this PC (over Remote Desktop, say).
+// Standard users signed in to the same PC (fast user switching, Remote Desktop) are refused.
 func LocalCaller(remote string, server uint16) bool {
 	ap, err := netip.ParseAddrPort(remote)
 	if err != nil || !ap.Addr().Is4() {
@@ -29,7 +29,7 @@ func LocalCaller(remote string, server uint16) bool {
 	if windows.ProcessIdToSessionId(pid, &session) == nil && session == windows.WTSGetActiveConsoleSessionId() {
 		return true
 	}
-	return elevated(pid)
+	return administrator(pid)
 }
 
 // owningPID finds the process that owns the client side of a loopback TCP connection.
@@ -63,7 +63,12 @@ func owningPID(client netip.AddrPort, server uint16) (uint32, bool) {
 	return 0, false
 }
 
-func elevated(pid uint32) bool {
+// tokenElevationTypeLimited: an administrator's token with UAC's restrictions (TOKEN_ELEVATION_TYPE).
+const tokenElevationTypeLimited = 3
+
+// administrator: the process runs elevated, or as an administrator who isn't elevated right now
+// (UAC's limited token). UAC doesn't keep an administrator out of anything, so neither does this.
+func administrator(pid uint32) bool {
 	p, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return false
@@ -74,5 +79,10 @@ func elevated(pid uint32) bool {
 		return false
 	}
 	defer t.Close()
-	return t.IsElevated()
+	if t.IsElevated() {
+		return true
+	}
+	var typ, n uint32
+	err = windows.GetTokenInformation(t, windows.TokenElevationType, (*byte)(unsafe.Pointer(&typ)), uint32(unsafe.Sizeof(typ)), &n)
+	return err == nil && typ == tokenElevationTypeLimited
 }

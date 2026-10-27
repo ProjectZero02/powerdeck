@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.1
+
+- **PC window over Remote Desktop.** An administrator of the PC can now open the PowerDeck window over Remote Desktop without running it as administrator. Standard accounts in another session are still refused, and the message now says what to do.
+
 ## 2.2.0
 
 KVMs move to an always-on PowerDeck computer, which can now reset a frozen one.

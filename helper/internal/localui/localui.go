@@ -65,7 +65,7 @@ type Deps struct {
 	Fix         func(ctx context.Context, id string) (check.Result, error)
 	Reports     *power.Reports // presence from the user-session companion (Windows)
 	// AllowLocal, if set, decides whether the program behind a connection (its "ip:port") may use
-	// the window: on Windows, only the person at the screen or an administrator.
+	// the window: on Windows, only the person at the screen or an administrator of the PC.
 	AllowLocal func(remote string) bool
 	Log        *slog.Logger
 	OS         string // default runtime.GOOS (the demo pretends to be Windows)
@@ -119,7 +119,7 @@ func (u *ui) guard(next http.Handler) http.Handler {
 			return
 		}
 		if u.AllowLocal != nil && !u.AllowLocal(r.RemoteAddr) {
-			http.Error(w, "PowerDeck's window is only for the person signed in at this PC's screen. Over Remote Desktop, open PowerDeck as administrator.", http.StatusForbidden)
+			http.Error(w, "PowerDeck's window is only for the person at this PC's screen and its administrators. Sign in with an administrator account, or at the PC itself.", http.StatusForbidden)
 			return
 		}
 		h := w.Header()
