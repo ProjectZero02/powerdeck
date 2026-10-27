@@ -149,8 +149,11 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     addWidget = { Shortcuts.pinWidget(ctx) },
                     addTiles = { Shortcuts.addTiles(ctx, state.devices, state.tiles) { slot, d -> vm.setTile(slot, d) } },
                     checkUpdate = vm::checkUpdate,
+                    updateDevices = vm::updateAllHelpers,
+                    setDevicesAutoUpdate = vm::setHelperAutoUpdate,
                     openProject = { activity.open("https://github.com/ProjectZero02/powerdeck") },
                 ),
+                helpers = vm.helperUpdates(state),
             )
         }
         route.startsWith("device:") -> {
@@ -191,6 +194,7 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     rename = { vm.rename(d, it) },
                     remove = { vm.remove(d); route = "home" },
                     hint = hint,
+                    updateHelper = { vm.updateHelper(d) },
                 ),
                 snackbar,
             )

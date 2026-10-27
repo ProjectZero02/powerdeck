@@ -91,6 +91,7 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 | **Shortcuts** | A home-screen widget with every device, four Quick Settings tiles, home-screen shortcuts per device, and long-press shortcuts on the app icon. |
 | **Notifications** | When a schedule or an agent acts, or a device goes offline. |
 | **History** | Who did what and when, on every device. |
+| **Updates** | Every computer updates itself with signed releases (never during a countdown). Turn that off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out. |
 | **AI agents** | Let an agent or a script check and control your devices over [MCP](https://modelcontextprotocol.io), within limits you set. |
 | **Other people's computers** | A device on another Tailscale account can be added with a one-time 8-character pairing code. |
 

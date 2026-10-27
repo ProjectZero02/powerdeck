@@ -27,6 +27,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/peer"
 	"github.com/projectzero02/powerdeck/helper/internal/power"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
+	"github.com/projectzero02/powerdeck/helper/internal/update"
 	"github.com/projectzero02/powerdeck/helper/internal/version"
 )
 
@@ -45,12 +46,20 @@ type Deps struct {
 	Fix      func(ctx context.Context, id string) (check.Result, error)
 	Guests   func(ctx context.Context) *guests.Info
 	Wake     func(mac string, lans []string) ([]string, error)
+	Update   Updater // nil: updates aren't managed here (tests, development builds)
 	// PairLink returns this device's add link (QR payload, no code) and the current pairing code.
 	PairLink func() (link, code string)
 	// AllowRemote is the source-address policy (default: tailnet and loopback).
 	AllowRemote func(netip.Addr) bool
 	Log         *slog.Logger
 	Now         func() time.Time
+}
+
+// Updater is the helper's self-update (update.Manager).
+type Updater interface {
+	Status() update.Status
+	Check(ctx context.Context) (update.Status, error)
+	Install(ctx context.Context) error
 }
 
 type server struct {
@@ -88,6 +97,9 @@ func New(d Deps) *API {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v2/hello", s.hello)
 	mux.HandleFunc("POST /v2/pair", s.pair)
+	mux.HandleFunc("GET /v2/update", s.with(store.ScopeAdmin, s.ownersOnly(s.updateStatus)))
+	mux.HandleFunc("POST /v2/update", s.with(store.ScopeAdmin, s.ownersOnly(s.updateInstall)))
+	mux.HandleFunc("POST /v2/settings", s.with(store.ScopeAdmin, s.ownersOnly(s.putSettings)))
 	mux.HandleFunc("GET /v2/pairing", s.with(store.ScopeAdmin, s.ownersOnly(s.pairing))) // codes mint keys
 	mux.HandleFunc("GET /v2/status", s.with(store.ScopeStatus, s.status))
 	mux.HandleFunc("GET /v2/peers", s.with(store.ScopeStatus, s.peers))
@@ -351,10 +363,93 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	if g := s.Guests(ctx); g != nil {
 		body["guests"] = g
 	}
+	if s.Update != nil && c.Kind == auth.Owner {
+		u := s.Update.Status() // what the last check found; no network here
+		body["update"] = map[string]any{"available": u.Available, "latest": u.Latest, "installing": u.Installing,
+			"auto": s.Store.Settings().AutoUpdate}
+	}
 	if c.Has(store.ScopeAdmin) || c.Kind == auth.Owner {
 		body["checks"] = s.cachedChecks(ctx)
 	}
 	return body
+}
+
+func (s *server) updateBody(u update.Status) map[string]any {
+	return map[string]any{"current": u.Current, "latest": u.Latest, "available": u.Available, "checkedAt": u.CheckedAt,
+		"error": u.Error, "installing": u.Installing, "auto": s.Store.Settings().AutoUpdate}
+}
+
+// updateStatus reports this helper's update state; ?check=1 asks GitHub first.
+func (s *server) updateStatus(w http.ResponseWriter, r *http.Request, _ auth.Caller) {
+	if s.Update == nil {
+		fail(w, http.StatusNotImplemented, "no_updates", "This build doesn't update itself.")
+		return
+	}
+	u := s.Update.Status()
+	if r.URL.Query().Get("check") == "1" {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		u, _ = s.Update.Check(ctx)
+		cancel()
+	}
+	writeJSON(w, http.StatusOK, s.updateBody(u))
+}
+
+// updateInstall installs the latest release now. The helper restarts, so it answers first.
+func (s *server) updateInstall(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	if s.Update == nil {
+		fail(w, http.StatusNotImplemented, "no_updates", "This build doesn't update itself.")
+		return
+	}
+	if s.Power.Pending() != nil {
+		fail(w, http.StatusConflict, "pending", "A shutdown or restart is counting down. Update after it, or cancel it first.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	u, err := s.Update.Check(ctx)
+	cancel()
+	if err != nil {
+		fail(w, http.StatusBadGateway, "update_check", "Couldn't check for updates: "+err.Error())
+		return
+	}
+	if !u.Available {
+		writeJSON(w, http.StatusOK, s.updateBody(u))
+		return
+	}
+	if u.Installing {
+		writeJSON(w, http.StatusAccepted, s.updateBody(u))
+		return
+	}
+	s.logEvent(c.Name, "started update to "+u.Latest, "ok")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := s.Update.Install(ctx); err != nil {
+			s.Log.Error("update install failed", "err", err)
+		}
+	}()
+	u.Installing = true
+	writeJSON(w, http.StatusAccepted, s.updateBody(u))
+}
+
+func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	var req struct {
+		AutoUpdate *bool `json:"autoUpdate"`
+	}
+	if !decode(r, &req) {
+		fail(w, http.StatusBadRequest, "bad_request", "Malformed settings.")
+		return
+	}
+	if req.AutoUpdate != nil && *req.AutoUpdate != s.Store.Settings().AutoUpdate {
+		if err := s.Store.SetAutoUpdate(*req.AutoUpdate); err != nil {
+			fail(w, http.StatusInternalServerError, "store", err.Error())
+			return
+		}
+		s.checksMu.Lock()
+		s.checks = nil // the "automatic updates" check changes
+		s.checksMu.Unlock()
+		s.logEvent(c.Name, map[bool]string{true: "turned automatic updates on", false: "turned automatic updates off"}[*req.AutoUpdate], "ok")
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func utcOffsetMinutes(t time.Time) int {

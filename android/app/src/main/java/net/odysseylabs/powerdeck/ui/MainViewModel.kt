@@ -28,6 +28,7 @@ import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.Ask
 import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Schedule
+import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.Settings
 import net.odysseylabs.powerdeck.data.Tailscale
 import net.odysseylabs.powerdeck.data.Updater
@@ -380,6 +381,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setNotifications(on: Boolean) = viewModelScope.launch {
         deck.store.setNotifications(on)
         if (on) EventsWorker.schedule(getApplication()) else EventsWorker.cancel(getApplication())
+    }
+
+    // ---- Helper updates -----------------------------------------------------------------------
+
+    /** Your helpers and their update state, from the last refresh (owners see it; keys don't). */
+    fun helperUpdates(s: UiState = _state.value): List<Pair<Device, HelperUpdate>> =
+        s.devices.mapNotNull { d -> ((s.states[d.id] as? DeviceState.On)?.status?.update)?.let { d to it } }
+
+    fun updateHelper(d: Device) = act(d) { installHelperUpdate(d) }
+
+    private suspend fun installHelperUpdate(d: Device): Outcome = deck.withHelper(d) { installUpdate() }.fold(
+        { u ->
+            when {
+                u.installing || u.available -> Outcome(true, "${d.name} is updating to ${u.latest ?: "the latest version"}. It's back in about a minute.")
+                else -> Outcome(true, "${d.name} is up to date.")
+            }
+        },
+        { Outcome(false, it.message ?: "${d.name} couldn't update.") },
+    )
+
+    fun updateAllHelpers() {
+        viewModelScope.launch {
+            val list = helperUpdates()
+            if (list.isEmpty()) {
+                _messages.send("Open PowerDeck while your computers are on to update them.")
+                return@launch
+            }
+            val results = list.map { (d, _) -> async { d to installHelperUpdate(d) } }.awaitAll()
+            val updating = results.filter { (_, o) -> o.ok && o.message.contains("updating") }.map { it.first.name }
+            val failed = results.filter { (_, o) -> !o.ok }.map { it.first.name }
+            _messages.send(buildString {
+                append(if (updating.isEmpty()) "Every device that's on is up to date." else "Updating ${updating.joinToString(", ")}.")
+                if (failed.isNotEmpty()) append(" Couldn't reach ${failed.joinToString(", ")}.")
+            })
+            fastUntil = System.currentTimeMillis() + 120_000
+            refreshNow()
+        }
+    }
+
+    fun setHelperAutoUpdate(on: Boolean) {
+        viewModelScope.launch {
+            val list = helperUpdates()
+            val failed = list.map { (d, _) -> async { d to deck.withHelper(d) { setAutoUpdate(on) }.isSuccess } }.awaitAll().filter { !it.second }.map { it.first.name }
+            _messages.send(when {
+                list.isEmpty() -> "Open PowerDeck while your computers are on to change this."
+                failed.isNotEmpty() -> "Couldn't reach ${failed.joinToString(", ")}; try again when it's on."
+                on -> "Your devices update themselves again."
+                else -> "Automatic updates are off. Update from here when you like."
+            })
+            refreshNow()
+        }
     }
 
     fun checkUpdate() {

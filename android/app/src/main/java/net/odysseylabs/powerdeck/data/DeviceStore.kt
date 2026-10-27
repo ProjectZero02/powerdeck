@@ -39,6 +39,7 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
         val confirm = booleanPreferencesKey("opt.confirmShutdown")
         val autoTs = booleanPreferencesKey("opt.autoTailscale")
         val notify = booleanPreferencesKey("opt.notifications")
+        val appUpdate = stringPreferencesKey("app.update") // {"checkedAt": millis, "told": version}
         fun key(id: String) = stringPreferencesKey("secret.key.$id")
         fun kvm(id: String) = stringPreferencesKey("secret.kvm.$id")
     }
@@ -164,6 +165,13 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
 
     suspend fun setSeenEvents(id: String, at: String) {
         ctx.dataStore.edit { p -> p[K.seen] = map(p, K.seen).put(id, at).toString() }
+    }
+
+    /** When the app last looked for its own update, and which version it last told you about. */
+    suspend fun appUpdateCheck(): Pair<Long, String?> = map(ctx.dataStore.data.first(), K.appUpdate).let { it.optLong("checkedAt") to it.optString("told").ifEmpty { null } }
+
+    suspend fun setAppUpdateCheck(at: Long, told: String?) {
+        ctx.dataStore.edit { p -> p[K.appUpdate] = JSONObject().put("checkedAt", at).put("told", told ?: "").toString() }
     }
 
     suspend fun setConfirmShutdown(on: Boolean) = ctx.dataStore.edit { it[K.confirm] = on }

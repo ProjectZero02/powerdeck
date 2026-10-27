@@ -23,6 +23,7 @@ import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.Power
 import net.odysseylabs.powerdeck.data.Tailscale
+import net.odysseylabs.powerdeck.data.Updater
 import net.odysseylabs.powerdeck.deck
 import net.odysseylabs.powerdeck.ui.MainActivity
 import net.odysseylabs.powerdeck.ui.Shortcuts
@@ -39,6 +40,7 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         val ctx = applicationContext
         val deck = ctx.deck
         if (!deck.store.currentSettings().notifications) return Result.success()
+        appUpdate(ctx)
         // Never switch the VPN on from the background; just skip this round.
         if (!Tailscale.vpnActive(ctx)) return Result.success()
         val all = deck.store.all()
@@ -60,6 +62,29 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         }
         Shortcuts.refreshAll(ctx)
         return Result.success()
+    }
+
+    /** Once a day: tell you about a new version of this app (Android installs it only after you tap). */
+    private suspend fun appUpdate(ctx: Context) {
+        val store = ctx.deck.store
+        val (checkedAt, told) = store.appUpdateCheck()
+        if (System.currentTimeMillis() - checkedAt < TimeUnit.HOURS.toMillis(24)) return
+        val r = runCatching { Updater.available() }.getOrElse { return } // offline: try next round
+        store.setAppUpdateCheck(System.currentTimeMillis(), r?.version ?: told)
+        if (r == null || r.version == told) return
+        if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        ctx.getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(NotificationChannel(UPDATES, "App updates", NotificationManager.IMPORTANCE_LOW))
+        val open = PendingIntent.getActivity(ctx, 1, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(ctx, UPDATES)
+            .setSmallIcon(R.drawable.ic_power)
+            .setContentTitle("PowerDeck ${r.version} is available")
+            .setContentText("Open PowerDeck and tap Update.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(UPDATES.hashCode(), n)
     }
 
     private fun notable(e: Event, d: Device, helpers: Set<String>): Boolean {
@@ -90,6 +115,7 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     companion object {
         private const val NAME = "events"
         private const val CHANNEL = "activity"
+        private const val UPDATES = "updates"
 
         fun schedule(ctx: Context) {
             val req = PeriodicWorkRequestBuilder<EventsWorker>(15, TimeUnit.MINUTES)

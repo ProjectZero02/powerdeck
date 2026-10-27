@@ -22,6 +22,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import net.odysseylabs.powerdeck.BuildConfig
+import net.odysseylabs.powerdeck.data.Device
+import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.Settings
 
 data class SettingsActions(
@@ -32,6 +34,8 @@ data class SettingsActions(
     val addWidget: () -> Unit = {},
     val addTiles: () -> Unit = {},
     val checkUpdate: () -> Unit = {},
+    val updateDevices: () -> Unit = {},
+    val setDevicesAutoUpdate: (Boolean) -> Unit = {},
     val openProject: () -> Unit = {},
 )
 
@@ -52,7 +56,7 @@ private fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(settings: Settings, a: SettingsActions) {
+fun SettingsScreen(settings: Settings, a: SettingsActions, helpers: List<Pair<Device, HelperUpdate>> = emptyList()) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -74,13 +78,27 @@ fun SettingsScreen(settings: Settings, a: SettingsActions) {
             })
             HorizontalDivider()
 
+            Header("Updates")
+            val outdated = helpers.filter { it.second.available }
+            SettingRow("Update devices now",
+                when {
+                    helpers.isEmpty() -> "Updates the PowerDeck helper on every computer that's on"
+                    outdated.isEmpty() -> "All ${helpers.size} ${if (helpers.size == 1) "device is" else "devices are"} up to date"
+                    else -> "${outdated.joinToString(", ") { it.first.name }}: ${outdated.first().second.latest} is ready"
+                },
+                onClick = a.updateDevices)
+            SettingRow("Update devices automatically", "Each computer checks every 6 hours and installs signed updates, never during a shutdown countdown", trailing = {
+                Switch(checked = helpers.isEmpty() || helpers.all { it.second.auto }, onCheckedChange = a.setDevicesAutoUpdate, enabled = helpers.isNotEmpty())
+            })
+            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME} on this phone", "Check for an app update (it's checked daily too)", onClick = a.checkUpdate)
+            HorizontalDivider()
+
             Header("Shortcuts")
             SettingRow("Add home-screen widget", "Every device with its state and a power button", onClick = a.addWidget)
             SettingRow("Add Quick Settings tiles", "Pick which device each tile controls on its device page", onClick = a.addTiles)
             HorizontalDivider()
 
             Header("About")
-            SettingRow("PowerDeck ${BuildConfig.VERSION_NAME}", "Check for updates", onClick = a.checkUpdate)
             SettingRow("Help, source code and releases", "github.com/ProjectZero02/powerdeck", onClick = a.openProject)
         }
     }

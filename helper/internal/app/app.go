@@ -152,6 +152,7 @@ func Run(ctx context.Context, o Options) error {
 			return ""
 		},
 		Network: network, Checks: runChecks, Fix: fix, Guests: guests.Cached(15*time.Second, guests.Running), Wake: wol.Send,
+		Update: upd,
 		PairLink: func() (string, string) {
 			ip, _ := netinfo.TailnetIPv4()
 			code := pm.Current().Value

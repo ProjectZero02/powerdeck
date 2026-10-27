@@ -162,8 +162,8 @@ jobs:
       - name: "End-to-end: silent install"
         run: |
           $p = Start-Process dist\PowerDeck-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
-          if ($p.ExitCode) { throw "installer exit $($p.ExitCode)" }
           Get-Content "$env:TEMP\PowerDeck-install.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode) { throw "installer exit $($p.ExitCode)" }
           $svc = Get-Service PowerDeck
           if ($svc.Status -ne 'Running') { throw "service is $($svc.Status)" }
           if ((Get-CimInstance Win32_Service -Filter "Name='PowerDeck'").StartMode -ne 'Auto') { throw "service is not automatic" }

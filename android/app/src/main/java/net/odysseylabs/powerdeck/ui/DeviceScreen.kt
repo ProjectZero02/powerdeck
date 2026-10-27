@@ -103,6 +103,7 @@ data class DeviceActions(
     val rename: (String) -> Unit = {},
     val remove: () -> Unit = {},
     val hint: (String) -> Unit = {},
+    val updateHelper: () -> Unit = {},
 )
 
 private val DAYS = listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -212,6 +213,16 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                             Text("Update and shut down")
                         }
                     }
+                }
+            }
+
+            // ---- PowerDeck helper update
+            status?.update?.takeIf { it.available || it.installing }?.let { u ->
+                Section("Update") {
+                    Row2(if (u.installing) "Updating to ${u.latest}…" else "PowerDeck ${u.latest} is ready",
+                        "${d.name} has ${status.version}." + if (u.auto) " It installs on its own within 6 hours." else "",
+                        icon = { Icon(Icons.Rounded.SystemUpdateAlt, null, tint = MaterialTheme.colorScheme.primary) },
+                        trailing = if (u.installing) null else ({ TextButton(onClick = a.updateHelper, enabled = !busy && status.pending == null) { Text("Update") } }))
                 }
             }
 

@@ -139,9 +139,16 @@ func secureDataDir() error {
 		admins, nil, dacl, nil); err != nil {
 		return err
 	}
-	inherit, err := windows.ACLFromEntries(nil, nil) // no entries of its own: just what the folder passes down
+	empty, err := windows.SecurityDescriptorFromString("D:AI") // no entries of its own: just what the folder passes down
 	if err != nil {
 		return err
+	}
+	inherit, _, err := empty.DACL()
+	if err != nil {
+		return err
+	}
+	if inherit == nil { // a NULL DACL would mean "everyone"
+		return errors.New("empty DACL came back NULL")
 	}
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || path == dir {

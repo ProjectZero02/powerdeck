@@ -126,6 +126,8 @@ data class HelperStatus(
     val youName: String?,
     /** The helper's clock, which its schedules run on. */
     val utcOffsetMinutes: Int? = null,
+    /** The helper's own updates (owners only). */
+    val update: HelperUpdate? = null,
 ) {
     companion object {
         fun pendingFrom(p: JSONObject?) = p?.let { Pending(it.optString("action"), Instant.parse(it.optString("at")), it.optString("by")) }
@@ -149,8 +151,17 @@ data class HelperStatus(
                 checks = o.optJSONArray("checks")?.let { a -> (0 until a.length()).map { Check.from(a.getJSONObject(it)) } } ?: emptyList(),
                 youName = o.optJSONObject("you")?.optStringOrNull("name"),
                 utcOffsetMinutes = if (o.has("utcOffsetMinutes")) o.optInt("utcOffsetMinutes") else null,
+                update = o.optJSONObject("update")?.let(HelperUpdate::from),
             )
         }
+    }
+}
+
+/** A helper's self-update state: it checks every 6 hours and, when [auto] is on, installs on its own. */
+data class HelperUpdate(val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean) {
+    companion object {
+        fun from(o: JSONObject) = HelperUpdate(o.optBoolean("available"), o.optStringOrNull("latest")?.ifEmpty { null },
+            o.optBoolean("installing"), o.optBoolean("auto", true))
     }
 }
 

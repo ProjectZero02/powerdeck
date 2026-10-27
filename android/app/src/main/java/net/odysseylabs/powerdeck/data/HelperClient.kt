@@ -133,6 +133,13 @@ class HelperClient(
         return HelperStatus.pendingFrom(call("POST", "/v2/power/$action", body).optJSONObject("pending"))
     }
 
+    /** Installs the helper's latest release now; it restarts on its own a few seconds later. */
+    suspend fun installUpdate(): HelperUpdate = HelperUpdate.from(call("POST", "/v2/update", timeoutSeconds = 45))
+
+    suspend fun setAutoUpdate(on: Boolean) {
+        call("POST", "/v2/settings", JSONObject().put("autoUpdate", on))
+    }
+
     suspend fun cancel() {
         call("POST", "/v2/power/cancel")
     }

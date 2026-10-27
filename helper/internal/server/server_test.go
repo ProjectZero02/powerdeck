@@ -26,6 +26,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/power"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
 	"github.com/projectzero02/powerdeck/helper/internal/tailscale"
+	"github.com/projectzero02/powerdeck/helper/internal/update"
 )
 
 // Addresses on the fake tailnet.
@@ -58,6 +59,21 @@ func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error
 	}
 	return tailscale.Identity{}, errors.New("unknown peer")
 }
+
+type fakeUpdater struct {
+	mu        sync.Mutex
+	st        update.Status
+	installed chan struct{}
+}
+
+func (f *fakeUpdater) Status() update.Status { f.mu.Lock(); defer f.mu.Unlock(); return f.st }
+func (f *fakeUpdater) Check(context.Context) (update.Status, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.st.Latest, f.st.Available = "2.1.0", true
+	return f.st, nil
+}
+func (f *fakeUpdater) Install(context.Context) error { close(f.installed); return nil }
 
 type fakeSys struct {
 	mu        sync.Mutex
@@ -106,6 +122,7 @@ type env struct {
 	calls   []forwarded
 	wakes   []string
 	peerErr error
+	upd     *fakeUpdater
 }
 
 func newEnv(t *testing.T) *env {
@@ -114,7 +131,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, sys: &fakeSys{}, st: st, clock: testStart}
+	e := &env{t: t, sys: &fakeSys{}, st: st, clock: testStart, upd: &fakeUpdater{st: update.Status{Current: "2.0.1"}, installed: make(chan struct{})}}
 	now := func() time.Time { return e.clock }
 	e.pm = pairing.NewManager(now)
 	lan := func() (netinfo.Network, bool) {
@@ -158,6 +175,7 @@ func newEnv(t *testing.T) *env {
 			return check.Result{ID: "x", Level: check.OK}, nil
 		},
 		Guests:   func(context.Context) *guests.Info { return nil },
+		Update:   e.upd,
 		Wake:     wake,
 		PairLink: func() (string, string) { return "powerdeck://add?v=2", e.pm.Current().Value },
 		Log:      log, Now: now,
@@ -569,4 +587,46 @@ func TestPeersEndpoint(t *testing.T) {
 		t.Errorf("peers: %d %v", code, out)
 	}
 	_ = discovery.KindHelper
+}
+
+func TestUpdatesFromTheApp(t *testing.T) {
+	e := newEnv(t)
+	code, out := e.do(req{method: "GET", path: "/v2/status", from: phone})
+	if u, _ := out["update"].(map[string]any); code != 200 || u == nil || u["auto"] != true || u["available"] != false {
+		t.Fatalf("status update block: %d %v", code, out["update"])
+	}
+	if code, out := e.do(req{method: "GET", path: "/v2/update?check=1", from: phone}); code != 200 || out["latest"] != "2.1.0" || out["available"] != true {
+		t.Errorf("check: %d %v", code, out)
+	}
+	// Owners only: not a paired key, not an agent.
+	pk := pairedKey(t, e)
+	for _, k := range []string{pk, e.agentKey([]string{"status", "wake", "power"})} {
+		from := friend
+		if k != pk {
+			from = atlas
+		}
+		if code, _ := e.do(req{method: "POST", path: "/v2/update", from: from, key: k}); code != http.StatusForbidden {
+			t.Errorf("non-owner started an update: %d", code)
+		}
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"autoUpdate": false}}); code != http.StatusNoContent || e.st.Settings().AutoUpdate {
+		t.Errorf("turn auto-update off: %d", code)
+	}
+	if code, out := e.do(req{method: "POST", path: "/v2/update", from: phone}); code != http.StatusAccepted || out["installing"] != true {
+		t.Fatalf("install: %d %v", code, out)
+	}
+	select {
+	case <-e.upd.installed:
+	case <-time.After(2 * time.Second):
+		t.Error("install never started")
+	}
+}
+
+func pairedKey(t *testing.T, e *env) string {
+	t.Helper()
+	code, out := e.do(req{method: "POST", path: "/v2/pair", from: friend, body: map[string]string{"code": e.pm.Current().Value, "deviceName": "Friend's phone"}})
+	if code != 200 {
+		t.Fatalf("pair: %d %v", code, out)
+	}
+	return out["key"].(string)
 }
