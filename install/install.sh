@@ -41,14 +41,14 @@ if [ "$(id -u)" -ne 0 ]; then
   command -v sudo >/dev/null 2>&1 || die "run this as root (for example after su -)"
   say "PowerDeck installs a system service, so it needs root. sudo may ask for your password."
   case "$0" in
-    *.sh) exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh "$0" "$@" ;; # run from a saved file
+    *.sh) exec sudo env POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh "$0" "$@" ;; # run from a saved file
   esac
   # Piped from curl: this copy of the script was read from stdin, so download it again and run that.
   SELF="https://github.com/$REPO/releases/latest/download/install.sh"
   [ -z "${POWERDECK_VERSION:-}" ] || SELF="https://github.com/$REPO/releases/download/v${POWERDECK_VERSION#v}/install.sh"
   ME=$(mktemp "${TMPDIR:-/var/tmp}/powerdeck-install.XXXXXX")
   fetch "$SELF" "$ME" && [ "$(head -c 9 "$ME")" = "#!/bin/sh" ] || { rm -f "$ME"; die "download failed: $SELF"; }
-  exec sudo POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh -c 'sh "$0" "$@"; s=$?; rm -f "$0"; exit $s' "$ME" "$@"
+  exec sudo env POWERDECK_VERSION="${POWERDECK_VERSION:-}" sh -c 'sh "$0" "$@"; s=$?; rm -f "$0"; exit $s' "$ME" "$@"
 fi
 
 if [ "$UNINSTALL" -eq 1 ]; then

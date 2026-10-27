@@ -52,8 +52,14 @@ func hidden(name string, args ...string) *exec.Cmd {
 
 // Install sets everything up and starts the service. Only service registration failures are fatal;
 // the rest is reported so the checks can show what still needs attention.
-func Install(exePath string) ([]Step, error) {
-	var steps []Step
+func Install(exePath string) (steps []Step, err error) {
+	defer func() {
+		// The installer stopped the service first, and a stop on purpose isn't restarted by Windows:
+		// if setup fails part-way, start whatever is registered so the PC stays reachable.
+		if err != nil {
+			_ = startService()
+		}
+	}()
 	add := func(name string, err error, detail string) {
 		s := Step{Name: name, OK: err == nil, Detail: detail}
 		if err != nil {

@@ -270,7 +270,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
         // its helper doesn't answer (asked twice) and the power light reads off.
         // A changed identity still means something is running there: never press its button.
         if (d.hasHelper) answers(d)?.let { r ->
-            return@guarded r.exceptionOrNull()?.let { Outcome(false, "${d.name} is on, but ${it.message?.replaceFirstChar(Char::lowercase)}") }
+            return@guarded r.exceptionOrNull()?.let { e ->
+                Outcome(false, "${d.name} is on, but " + (e.message?.replaceFirstChar(Char::lowercase) ?: "its helper answered with an error."))
+            }
                 ?: Outcome(true, "${d.name} is already on.")
         }
         if (d.kvm != null && d.kvm.ledSeen) {
@@ -291,13 +293,18 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
         wake(d, mac)
     }
 
-    /** Whether the helper answers, with one retry so a dropped packet doesn't read as "off". */
-    /** Answered, or answered with a changed identity (still running there), or null: silent twice. */
+    /**
+     * Whether the helper answers, asked twice so a dropped packet doesn't read as "off". Success, or a
+     * failure for any other answer (changed identity, throttled, an error): something is running
+     * there. Null only when it's silent both times. hello needs no key, so a lost key can't hide it.
+     */
     private suspend fun answers(d: Device): Result<Unit>? {
+        val host = d.host ?: return null
+        val c = HelperClient(http, host, d.port, d.pin, null)
         repeat(2) { i ->
-            val r = runCatching { client(d)!!.hello() }
+            val r = runCatching { c.hello() }
             if (r.isSuccess) return Result.success(Unit)
-            r.exceptionOrNull().let { if (it is HelperException.WrongDevice) return Result.failure(it) }
+            r.exceptionOrNull().let { if (it !is HelperException.Unreachable) return Result.failure(it ?: IllegalStateException()) }
             if (i == 0) delay(1500)
         }
         return null
@@ -333,6 +340,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
 
     private suspend fun powerOffNow(d: Device, restart: Boolean, force: Boolean, installUpdates: Boolean, pressKvm: Boolean): Outcome = guarded {
         val verb = if (restart) "restart" else "shutdown"
+        // A confirmed press may come minutes after the prompt: if the helper is back, use it instead,
+        // so its in-use check still applies.
+        val pressKvm = pressKvm && !(d.hasHelper && answers(d)?.isSuccess == true)
         if (d.hasHelper && !pressKvm) {
             try {
                 val p = client(d)!!.power(verb, 60, force, installUpdates)

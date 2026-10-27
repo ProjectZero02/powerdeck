@@ -320,8 +320,13 @@ func (s *server) pair(w http.ResponseWriter, r *http.Request) {
 		name = "Phone"
 	}
 	k, secret, err := s.Store.AddKey(store.NewKey{Name: name, Kind: store.KindPhone, Scopes: store.AllScopes}, s.Now())
-	if err != nil {
+	if errors.Is(err, store.ErrTooManyKeys) {
 		fail(w, http.StatusConflict, "too_many_keys", "Too many keys. Remove one on the device first.")
+		return
+	}
+	if err != nil {
+		s.Log.Error("saving key failed", "err", err)
+		fail(w, http.StatusInternalServerError, "internal", "Couldn't save the key: "+err.Error())
 		return
 	}
 	s.logEvent(name, "paired", "ok")
@@ -660,8 +665,13 @@ func (s *server) addKey(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	}
 	k, secret, err := s.Store.AddKey(store.NewKey{Name: clean(req.Name, 64), Kind: store.KindAutomation, Scopes: scopes,
 		Devices: devices, AllowSelf: req.AllowSelf}, s.Now())
-	if err != nil {
+	if errors.Is(err, store.ErrTooManyKeys) {
 		fail(w, http.StatusConflict, "too_many_keys", "Too many keys. Remove one first.")
+		return
+	}
+	if err != nil {
+		s.Log.Error("saving key failed", "err", err)
+		fail(w, http.StatusInternalServerError, "internal", "Couldn't save the key: "+err.Error())
 		return
 	}
 	s.logEvent(c.Name, "created key "+k.Name, strings.Join(scopes, ","))

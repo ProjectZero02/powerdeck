@@ -128,6 +128,7 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	rel, err := m.fetchLatest(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.expireLocked()
 	m.status.CheckedAt = time.Now().UTC()
 	if err != nil {
 		m.status.Error = err.Error()

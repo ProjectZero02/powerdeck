@@ -182,7 +182,7 @@ That's Tailscale key expiry. In the Tailscale admin console, **Disable key expir
 <details>
 <summary><b>Uninstalling</b></summary>
 
-- **Windows:** Settings → Apps → PowerDeck → Uninstall.
+- **Windows:** Settings → Apps → PowerDeck → Uninstall. This also deletes its keys and settings; if you reinstall, remove the PC in the app and add it again.
 - **Linux:** `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh -s -- --uninstall` (add `--purge` to delete its data too).
 - **Phone:** uninstall the app as usual.
 </details>

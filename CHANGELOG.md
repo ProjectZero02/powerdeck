@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.2
+
+Fixes from a final review.
+
+- **NanoKVM safety:** a helper that answers with any error (throttled, a lost key) now counts as on, so its power button is never pressed. The check needs no key. A confirmed "press the power button" re-checks the helper first and uses it if it's back, so the in-use check still applies.
+- **Windows:** if an update's setup fails part-way, the service is started again, so the PC stays reachable.
+- **Quick Settings tile** shows "Tap to check" instead of "Off" when a device has a problem.
+- **Clearer errors:** a failure to save a key is reported as such, not as "too many keys". Devices on another account are no longer called "older helpers".
+- **Linux installer** passes the version through sudo in a way restricted sudo rules accept.
+- **Banner and README:** logo beside the title, diagram centered.
+
 ## 2.0.1
 
 Fixes from a final security and reliability review, and updates you control from the phone.

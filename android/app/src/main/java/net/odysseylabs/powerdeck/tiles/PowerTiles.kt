@@ -41,7 +41,11 @@ abstract class PowerTileService(private val slot: Int) : TileService() {
             render(d.name, null, store.snapshot(d.id).power)
             // Refresh only if Tailscale is already up; tiles never switch the VPN on by themselves.
             if (Tailscale.vpnActive(this@PowerTileService)) {
-                render(d.name, null, if (deck.state(d) is DeviceState.On) Power.On else Power.Off)
+                render(d.name, null, when (deck.state(d)) {
+                    is DeviceState.On -> Power.On
+                    DeviceState.Off -> Power.Off
+                    else -> Power.Unknown // a problem isn't "off": show "Tap to check"
+                })
             }
         }
     }

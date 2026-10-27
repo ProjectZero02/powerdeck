@@ -409,9 +409,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         { HelperUpdateResult.Failed(it.message ?: "couldn't update.") }, // the helper's own reason: counting down, no update server, ...
     )
 
-    /** Helpers too old to update from the app (before 2.0.1); they update themselves every few hours. */
+    /**
+     * Helpers too old to update from the app (before 2.0.1); they update themselves every few hours.
+     * Judged by version: newer helpers on another account also hide update details (owners only).
+     */
     private fun olderHelpers(s: UiState = _state.value): List<Device> =
-        s.devices.filter { d -> (s.states[d.id] as? DeviceState.On)?.status?.let { it.update == null } == true }
+        s.devices.filter { d -> (s.states[d.id] as? DeviceState.On)?.status?.let { it.update == null && Updater.newer("2.0.1", it.version) } == true }
 
     fun updateAllHelpers() {
         viewModelScope.launch {
