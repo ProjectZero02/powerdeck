@@ -168,7 +168,7 @@ func Run(ctx context.Context, o Options) error {
 		return &http.Server{
 			Addr: addr, Handler: h,
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 20 * time.Second,
-			WriteTimeout: 40 * time.Second, IdleTimeout: 60 * time.Second,
+			WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, // a forced off through a KVM takes up to a minute
 			ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 		}
 	}

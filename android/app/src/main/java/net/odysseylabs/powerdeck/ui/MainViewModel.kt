@@ -178,13 +178,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun forcePower(p: ForcePrompt) {
         _state.update { it.copy(force = null) }
         act(p.device) {
-            if (p.ask.kvmPress) deck.powerOff(p.device, p.restart, pressKvm = true) else deck.powerOff(p.device, p.restart, force = true)
+            when {
+                p.ask.hubAction == "reset" -> deck.reset(p.device, force = true)
+                p.ask.hubAction == "force-off" -> deck.forceOff(p.device, force = true)
+                p.ask.kvmPress -> deck.powerOff(p.device, p.restart, pressKvm = true)
+                else -> deck.powerOff(p.device, p.restart, force = true)
+            }
         }
     }
 
     fun dismissForce() = _state.update { it.copy(force = null) }
     fun cancel(d: Device) = act(d) { deck.cancel(d) }
-    fun forceOff(d: Device) = act(d) { deck.forceOff(d) }
+    fun forceOff(d: Device) = act(d) { deck.forceOff(d).also { o -> ask(d, o) } }
+    fun reset(d: Device) = act(d) { deck.reset(d).also { o -> ask(d, o) } }
+    fun recheckKvm(d: Device) = act(d) { deck.recheckKvm(d) }
+
+    private fun ask(d: Device, o: Outcome) {
+        o.ask?.let { a -> _state.update { it.copy(force = ForcePrompt(d, false, a)) } }
+    }
 
     // ---- Adding -------------------------------------------------------------------------------
 
@@ -385,7 +396,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun rename(d: Device, name: String) = viewModelScope.launch { deck.store.update(d.id) { it.copy(name = name.trim().take(40).ifBlank { it.name }) } }
-    fun unlinkKvm(d: Device) = viewModelScope.launch { deck.store.unlinkKvm(d.id) }
+    fun unlinkKvm(d: Device) = viewModelScope.launch { deck.unlinkKvm(d) }
     fun move(d: Device, by: Int) = viewModelScope.launch { deck.store.move(d.id, by) }
 
     fun remove(d: Device) {
@@ -454,6 +465,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setConfirmShutdown(on: Boolean) = viewModelScope.launch { deck.store.setConfirmShutdown(on) }
     fun setCountdown(seconds: Int) = viewModelScope.launch { deck.store.setCountdown(seconds) }
+    fun setKvmHub(choice: String) = viewModelScope.launch {
+        deck.store.setKvmHub(choice)
+        refreshNow() // moves the KVMs (linkHelpers after the refresh)
+    }
     fun setAutoTailscale(on: Boolean) = viewModelScope.launch { deck.store.setAutoTailscale(on) }
     fun setNotifications(on: Boolean) = viewModelScope.launch {
         deck.store.setNotifications(on)

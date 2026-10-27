@@ -91,6 +91,7 @@ class HelperClient(
                 "GET" -> b.get()
                 "DELETE" -> b.delete()
                 "PUT" -> b.put((body ?: JSONObject()).toString().toRequestBody(json))
+                "PATCH" -> b.patch((body ?: JSONObject()).toString().toRequestBody(json))
                 else -> b.post((body ?: JSONObject()).toString().toRequestBody(json))
             }
             val client = timeoutSeconds?.let { http.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: http
@@ -231,6 +232,39 @@ class HelperClient(
     suspend fun forgetMe() {
         call("DELETE", "/v2/key")
     }
+
+    // ---- KVMs this helper drives (a hub, 2.2+) ----
+
+    /** Links a KVM: the hub checks the login and the power light, and keeps the password sealed. */
+    suspend fun addKvm(name: String, address: String, user: String, password: String, machine: String, mac: String?, helper: Boolean): KvmLink {
+        val o = call("POST", "/v2/kvms", JSONObject().put("name", name).put("address", address).put("user", user).put("password", password)
+            .put("machine", machine).put("mac", mac ?: "").put("helper", helper), timeoutSeconds = 30)
+        val k = o.getJSONObject("kvm")
+        return KvmLink("nanokvm", k.optString("address", address), k.optString("name", name), k.optString("user", user),
+            machine = k.optString("machine", machine), wiring = k.optJSONObject("wiring")?.let(KvmWiring::from))
+    }
+
+    /** Forgets what was learned about the wiring, so it's checked again. */
+    suspend fun recheckKvm(name: String): KvmWiring? =
+        call("PATCH", "/v2/kvms/${path(name)}", JSONObject().put("recheck", true)).optJSONObject("kvm")?.optJSONObject("wiring")?.let(KvmWiring::from)
+
+    suspend fun removeKvm(name: String) {
+        call("DELETE", "/v2/kvms/${path(name)}")
+    }
+
+    /** The machines a hub sees, with live state; [kvmOnly]: just those with a KVM (quicker). */
+    suspend fun machines(kvmOnly: Boolean = false): List<HubMachine> =
+        call("GET", "/v2/machines" + if (kvmOnly) "?kvm=1" else "", timeoutSeconds = 20).optJSONArray("machines").list(HubMachine::from)
+
+    /**
+     * Runs wake, shutdown, restart, reset or force-off through the hub's KVM. A refusal throws
+     * [HelperException.Api] whose body has the steps too ([HubResult.from]).
+     */
+    suspend fun machineAction(machine: String, action: String, force: Boolean = false, stayOff: Boolean = false, press: Boolean = false): HubResult =
+        HubResult.from(call("POST", "/v2/machines/${path(machine)}/$action",
+            JSONObject().put("force", force).put("stayOff", stayOff).put("press", press), timeoutSeconds = 90))
+
+    private fun path(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 }

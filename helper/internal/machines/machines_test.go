@@ -155,6 +155,8 @@ func TestLink(t *testing.T) {
 		{LinkRequest{Address: e.kvm.URL, Password: "wrong", Machine: "gaming-pc"}, "kvm_password"},
 		{LinkRequest{Address: "kvm.invalid.ts.net", Password: "s3cret", Machine: "gaming-pc"}, "kvm_unreachable"},
 		{LinkRequest{Address: e.kvm.URL, Password: "s3cret", Machine: "nas", MAC: "nope"}, "bad_request"},
+		// A machine with a helper this hub hasn't seen: a reset couldn't check it first.
+		{LinkRequest{Address: e.kvm.URL, Password: "s3cret", Machine: "workstation", Helper: true}, "unknown_helper"},
 	}
 	for _, c := range cases {
 		_, _, err := e.hub.Link(ctx, c.r)
@@ -303,6 +305,50 @@ func TestShutdownThroughHelper(t *testing.T) {
 	e.kvm.Hang()
 	if r := e.act("shutdown", Options{}); r.OK || r.Code != "helper_down" || presses(e.kvm) != "" {
 		t.Errorf("frozen: %+v", r) // no press: a reset is the owner's decision
+	}
+}
+
+func TestShutdownByPowerPress(t *testing.T) {
+	e := newEnv(t, fakekvm.Options{On: true})
+	e.link("gaming-pc")
+	// The helper answers: it's asked (its in-use check applies), not pressed.
+	if r := e.act("shutdown", Options{Press: true}); !r.OK || presses(e.kvm) != "" || len(e.fleet.forwards) != 1 {
+		t.Fatalf("answering: %+v", r)
+	}
+	e.fleet.silent = true // running, helper stopped
+	for _, c := range []struct {
+		action string
+		o      Options
+		code   string
+	}{
+		{"restart", Options{Press: true}, "no_helper"},
+		{"shutdown", Options{Press: true, Agent: true}, "owner_only"},
+	} {
+		if r := e.act(c.action, c.o); r.OK || r.Code != c.code || presses(e.kvm) != "" {
+			t.Errorf("%s %+v: %+v", c.action, c.o, r)
+		}
+	}
+	r := e.act("shutdown", Options{Press: true})
+	if !r.OK || presses(e.kvm) != "power 800ms" || ledSteps(r) != 2 {
+		t.Fatalf("press: %+v %s", r, presses(e.kvm))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for e.kvm.On() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if e.kvm.On() {
+		t.Error("didn't shut down after the press")
+	}
+	if r := e.act("shutdown", Options{Press: true}); !r.OK || r.Code != "already_off" || presses(e.kvm) != "power 800ms" {
+		t.Errorf("already off: %+v", r)
+	}
+}
+
+func TestShutdownWithoutHelper(t *testing.T) {
+	e := newEnv(t, fakekvm.Options{On: true})
+	e.link("nas") // KVM only: shutdown is a power press
+	if r := e.hub.Act(context.Background(), "nas", "shutdown", Options{}); !r.OK || presses(e.kvm) != "power 800ms" {
+		t.Errorf("%+v %s", r, presses(e.kvm))
 	}
 }
 

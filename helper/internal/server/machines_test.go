@@ -124,6 +124,10 @@ func TestMachinesList(t *testing.T) {
 	if ws == nil || ws["state"] != "on" || ws["kvm"] == nil {
 		t.Fatalf("workstation: %v", out)
 	}
+	_, out = e.do(req{method: "GET", path: "/v2/machines?kvm=1", from: phone})
+	if m := out["machines"].([]any); len(m) != 1 || m[0].(map[string]any)["name"] != "workstation" {
+		t.Errorf("kvm only: %v", out)
+	}
 	// A key sees only its own devices.
 	key := e.agentKey([]string{"status"}, "atlas")
 	_, out = e.do(req{method: "GET", path: "/v2/machines", from: atlas, key: key})

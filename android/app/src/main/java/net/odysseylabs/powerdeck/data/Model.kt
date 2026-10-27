@@ -65,11 +65,61 @@ data class KvmLink(
     // The power light has been seen on (with the helper agreeing, if there is one). An unwired LED
     // reads "off" forever, so until then a press could switch a running computer off: never press.
     val ledSeen: Boolean = false,
+    /** The helper (a device id) that drives this KVM; null: this phone does, directly. */
+    val hub: String? = null,
+    /** The machine's name on the hub. */
+    val machine: String? = null,
+    /** What the hub learned about the wiring. */
+    val wiring: KvmWiring? = null,
+    /** Why the hub couldn't take this KVM over (shown; tried again later). */
+    val hubError: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().put("kind", kind).put("address", address).put("name", name).put("user", user).put("ledSeen", ledSeen)
+        .put("hub", hub).put("machine", machine).put("wiring", wiring?.toJson()).put("hubError", hubError)
 
     companion object {
-        fun fromJson(o: JSONObject) = KvmLink(o.optString("kind", "nanokvm"), o.getString("address"), o.optString("name"), o.optString("user", "admin"), o.optBoolean("ledSeen"))
+        fun fromJson(o: JSONObject) = KvmLink(o.optString("kind", "nanokvm"), o.getString("address"), o.optString("name"), o.optString("user", "admin"), o.optBoolean("ledSeen"),
+            o.optStringOrNull("hub"), o.optStringOrNull("machine"), o.optJSONObject("wiring")?.let(KvmWiring::from), o.optStringOrNull("hubError"))
+    }
+}
+
+/** Which of the KVM's cables reach the machine, as the hub learned it: "wired", "not_wired" or "unknown". */
+data class KvmWiring(val led: String, val power: String, val reset: String) {
+    val ledWired get() = led == WIRED
+
+    fun toJson(): JSONObject = JSONObject().put("led", led).put("power", power).put("reset", reset)
+
+    companion object {
+        const val WIRED = "wired"
+        const val NOT_WIRED = "not_wired"
+        fun from(o: JSONObject) = KvmWiring(o.optString("led", "unknown"), o.optString("power", "unknown"), o.optString("reset", "unknown"))
+    }
+}
+
+/** A machine as a hub sees it (GET /v2/machines). [led] null: not read. */
+data class HubMachine(val name: String, val state: String, val led: Boolean?, val ledError: String?, val kvm: String?, val wiring: KvmWiring?, val actions: List<String>) {
+    companion object {
+        fun from(o: JSONObject): HubMachine {
+            val k = o.optJSONObject("kvm")
+            return HubMachine(o.optString("name"), o.optString("state", "unknown"), if (o.has("led") && !o.isNull("led")) o.optBoolean("led") else null,
+                o.optStringOrNull("ledError"), k?.optStringOrNull("name"), k?.optJSONObject("wiring")?.let(KvmWiring::from),
+                o.optJSONArray("actions")?.strings() ?: emptyList())
+        }
+    }
+}
+
+/** What a hub did for an action: its message, and each step with the power light read. */
+data class HubResult(val ok: Boolean, val code: String?, val message: String, val steps: List<String>) {
+    companion object {
+        fun from(o: JSONObject) = HubResult(
+            o.optBoolean("ok", !o.has("error")), o.optStringOrNull("code") ?: o.optStringOrNull("error"), o.optString("message"),
+            o.optJSONArray("steps")?.let { a ->
+                (0 until a.length()).map { a.getJSONObject(it) }.map { s ->
+                    s.optString("do") + (if (s.has("led")) if (s.optBoolean("led")) ": on" else ": off" else "") +
+                        (s.optStringOrNull("error")?.let { ": $it" } ?: "")
+                }
+            } ?: emptyList(),
+        )
     }
 }
 
@@ -237,4 +287,8 @@ enum class Power { On, Off, Unknown }
 data class Outcome(val ok: Boolean, val message: String, val ask: Ask? = null)
 
 /** A question to put to the user before going ahead anyway. */
-data class Ask(val title: String, val text: String, val confirm: String, val kvmPress: Boolean = false)
+data class Ask(
+    val title: String, val text: String, val confirm: String, val kvmPress: Boolean = false,
+    /** Run this hub action again with force (reset or force-off of a machine whose helper still answers). */
+    val hubAction: String? = null,
+)

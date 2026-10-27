@@ -96,8 +96,12 @@ func (s *server) listMachines(w http.ResponseWriter, r *http.Request, c auth.Cal
 	if s.noHub(w) {
 		return
 	}
+	list := s.Machines.List
+	if r.URL.Query().Get("kvm") == "1" {
+		list = s.Machines.KVMMachines
+	}
 	out := []machines.Machine{}
-	for _, m := range s.Machines.List(r.Context()) {
+	for _, m := range list(r.Context()) {
 		names := []string{m.Name}
 		if p, err := s.Fleet.Peer(m.Name); err == nil {
 			names = peerNames(p)
@@ -112,6 +116,7 @@ func (s *server) listMachines(w http.ResponseWriter, r *http.Request, c auth.Cal
 type machineRequest struct {
 	Force   bool `json:"force"`   // reset or force off although the helper answers
 	StayOff bool `json:"stayOff"` // force off without starting again
+	Press   bool `json:"press"`   // shutdown by a power press when the helper doesn't answer
 }
 
 // machineAction runs an action through the same rules as the relay (act).
@@ -126,7 +131,7 @@ func (s *server) machineAction(w http.ResponseWriter, r *http.Request, c auth.Ca
 		fail(w, http.StatusNotFound, "not_found", "Unknown action "+action+".")
 		return
 	}
-	res, e := s.actWith(r.Context(), c, r.PathValue("name"), action, machines.Options{Force: req.Force, StayOff: req.StayOff})
+	res, e := s.actWith(r.Context(), c, r.PathValue("name"), action, machines.Options{Force: req.Force, StayOff: req.StayOff, Press: req.Press})
 	if e != nil {
 		failErr(w, e)
 		return

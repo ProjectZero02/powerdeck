@@ -192,6 +192,9 @@ type LinkRequest struct {
 	Password string `json:"password"`
 	Machine  string `json:"machine"`
 	MAC      string `json:"mac"`
+	// Helper: the machine runs a PowerDeck helper. This helper must know it, or a reset couldn't
+	// first check that the machine has stopped answering.
+	Helper bool `json:"helper"`
 }
 
 // allowedAddress: a Tailscale name or address (WireGuard protects the password, which the KVM only
@@ -240,6 +243,9 @@ func (h *Hub) Link(ctx context.Context, r LinkRequest) (KVMView, *bool, error) {
 	}
 	if p, err := h.Fleet.Peer(r.Machine); err == nil {
 		r.Machine = p.Name
+	} else if r.Helper {
+		return KVMView{}, nil, fail(http.StatusUnprocessableEntity, "unknown_helper",
+			"%s hasn't seen %s's PowerDeck helper yet, so it couldn't tell a frozen %s from a running one. Try again in a few minutes, with %s on.", h.Self, r.Machine, r.Machine, r.Machine)
 	}
 	if r.MAC != "" {
 		mac, err := normalMAC(r.MAC)
@@ -438,6 +444,9 @@ func (h *Hub) HasKVM(name string) bool {
 // List shows every machine with live state. Peers without a KVM are listed by their helper alone.
 func (h *Hub) List(ctx context.Context) []Machine { return h.list(ctx, false) }
 
+// KVMMachines is List for the machines with a KVM here only (no probing of the rest).
+func (h *Hub) KVMMachines(ctx context.Context) []Machine { return h.list(ctx, true) }
+
 func (h *Hub) list(ctx context.Context, kvmOnly bool) []Machine {
 	kvms := h.Store.KVMs()
 	byMachine := map[string]store.KVM{}
@@ -620,6 +629,7 @@ type Options struct {
 	Who     string // shown on the machine and in events
 	Force   bool   // reset or force off even though the helper answers
 	StayOff bool   // force off without powering on again
+	Press   bool   // shutdown: press the power button (the OS shuts down cleanly) if the helper doesn't answer
 	Agent   bool   // on behalf of an AI agent (relayed to the machine's helper)
 }
 
@@ -806,9 +816,16 @@ func (r *run) wake(hasHelper bool) Result {
 
 func (r *run) powerOff(hasHelper bool, action string, o Options) Result {
 	m := r.k.Machine
-	r.led("before")
-	if !hasHelper {
-		return r.refuse(http.StatusUnprocessableEntity, "no_helper", "%s has no PowerDeck helper to shut it down cleanly. Use the KVM's power button from the app.", m)
+	led := r.led("before")
+	if !hasHelper || o.Press {
+		switch {
+		case action == "restart":
+			return r.refuse(http.StatusUnprocessableEntity, "no_helper", "%s can only be restarted through its PowerDeck helper.", m)
+		case hasHelper && r.h.Fleet.Answers(r.ctx, m):
+			r.step("helper answers: asking it instead of pressing", nil, nil) // so its in-use check applies
+		default:
+			return r.pressOff(led, o)
+		}
 	}
 	ctx := r.ctx
 	if o.Agent {
@@ -847,6 +864,32 @@ func (r *run) powerOff(hasHelper bool, action string, o Options) Result {
 		verb = "restarts"
 	}
 	return r.done(true, "", "%s %s in 60 seconds. It can be cancelled until then.", m, verb)
+}
+
+// pressOff is a short power press on a machine that's on: the OS shuts down cleanly (Proxmox stops
+// its VMs first). Nothing checks whether someone is using it, so only the owner may.
+func (r *run) pressOff(led *bool, o Options) Result {
+	m := r.k.Machine
+	if o.Agent {
+		return r.refuse(http.StatusForbidden, "owner_only", "Without its helper nobody can check whether someone is using %s, so only the owner can press its power button.", m)
+	}
+	switch {
+	case led == nil:
+		return r.refuse(http.StatusBadGateway, "led_unreadable", "Can't read %s's power light, so PowerDeck won't press its button.", m)
+	case !*led && r.k.Wiring.LED == store.Wired:
+		return r.done(true, "already_off", "%s is already off.", m)
+	case !*led:
+		return r.refuse(http.StatusConflict, "led_untrusted", "%s's power light reads off, but it hasn't been seen on yet, so off can't be told from not wired. Turn %s on by hand once.", m, m)
+	}
+	r.ledWired()
+	if r.k.Wiring.Power == store.NotWired {
+		return r.refuse(http.StatusUnprocessableEntity, "power_not_wired", "%s's power button doesn't reach %s.", r.k.Name, m)
+	}
+	if err := r.press(nanokvm.Power, 800*time.Millisecond); err != nil {
+		return r.refuse(http.StatusBadGateway, "kvm_failed", "%v", kvmError(r.k.Name, err))
+	}
+	r.led("after")
+	return r.done(true, "", "Pressed %s's power button. It shuts down cleanly, which can take a few minutes.", m)
 }
 
 // gate checks what reset and force off need: a trusted light that reads on, and a helper that

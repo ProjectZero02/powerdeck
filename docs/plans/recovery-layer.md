@@ -93,7 +93,10 @@ Build:
      otherwise (LED on, untrusted or unreadable) no press, Wake-on-LAN from a helper on the
      machine's LAN, or from its KVM.
    - `shutdown`, `restart`: through the machine's helper with its usual countdown. If the helper
-     doesn't answer, the reply says so and points to reset (no press).
+     doesn't answer, the reply says so and points to reset (no press). *Built:* `shutdown` with
+     `press: true`, or for a machine without a helper, is a short power press (the OS's own clean
+     shutdown), owner devices only and only while a trusted LED reads on, because the phone already
+     offered that before the hub existed.
    - `reset` (owner devices only until phase 4): the LED must be trusted and on; refused while the
      helper answers unless `force`. Reset press, LED read after.
    - `force-off` (owner devices only until phase 4): the LED must be trusted and on. 12 s hold, LED
@@ -117,7 +120,10 @@ Build:
    about the wiring, with **Check again**. Reset and Force off appear while the LED is trusted and on.
 8. **NanoKVM hardening guide** (`docs/nanokvm-hardening.md`): a power-only account on 2.5 for
    PowerDeck, password, firmware updates, Tailscale ACLs so only the hub reaches the KVM, services
-   to turn off, and what the sealed credentials do and don't protect.
+   to turn off, and what the sealed credentials do and don't protect. *Checked:* 2.5.1 and 2.5.2
+   have only the `admin` and `user` roles, and `user` keeps keyboard, video and power; a grant of
+   only `power` (which still shows the screen) exists on NanoKVM's main branch after 2.5.2, not in
+   a release yet. The guide says both.
 
 Test:
 - Client against the fake: every login style and failure mode, re-login on 401, 403, HTTPS
