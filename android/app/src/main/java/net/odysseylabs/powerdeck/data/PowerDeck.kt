@@ -23,6 +23,9 @@ sealed interface AddResult {
     data class Failed(val message: String) : AddResult
 }
 
+/** How long before linking two helpers is tried again (it failed, or the key was later refused). */
+private const val LINK_RETRY_MS = 5 * 60_000L
+
 /** All device logic. Screens, the widget, tiles and the background worker call into this. */
 class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     private val http = OkHttpClient.Builder()
@@ -145,6 +148,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     /** Checks a KVM login and links the KVM to a device's power button. */
     suspend fun linkKvm(deviceId: String, kind: String, address: String, name: String, user: String, password: String): Outcome {
         if (!tailnet()) return Outcome(false, "Tailscale isn't connected. Turn it on and try again.")
+        if (!KvmAddress.allowed(address)) return Outcome(false, "$name has no Tailscale name. Turn on MagicDNS in the Tailscale admin console, then try again.")
         return try {
             val kvm = NanoKvmClient(http, address, user, password)
             val led = kvm.powerLedOn(kvm.login())
@@ -241,6 +245,51 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             me = s.youName ?: d.me,
         )
         if (next != d) store.update(d.id) { next.copy(kvm = it.kvm) }
+        // A helper upgraded from 2.0 trusts every personal device on its account until one claims
+        // it. This phone is one of them (it got in without a key), so it claims it.
+        if (s.ownersLegacy && !d.hasKey) runCatching { client(d)?.claim(phoneName()) }
+    }
+
+    // ---- Linking helpers ----------------------------------------------------------------------
+
+    private val linkLock = Mutex()
+    private val linkTried = mutableMapOf<String, Long>() // "a>b" -> last attempt; tried again after LINK_RETRY_MS
+
+    /**
+     * Keeps the owner's helpers able to reach each other, after a refresh: each one gets a peer key
+     * (status, wake, power) for every other helper this phone owns, issued by that helper. Also
+     * renames KVMs linked by IP address (before 2.1) to their Tailscale names.
+     */
+    suspend fun linkHelpers(states: Map<String, DeviceState>) {
+        val devices = store.all()
+        val up = devices.mapNotNull { d -> (states[d.id] as? DeviceState.On)?.status?.let { d to it } }
+        val found = up.map { (d, s) -> d to s to runCatching { client(d)!!.peers(false) }.getOrDefault(emptyList()) }
+        // Owned: no key needed, and new enough to hold peer keys.
+        val owned = up.filter { (d, s) -> !d.hasKey && s.peerKeys != null }
+        for ((pair, peers) in found) {
+            val (a, sa) = pair
+            if (owned.none { it.first.id == a.id }) continue
+            for (p in peers.filter { it.isHelper && it.name !in sa.peerKeys!! }) {
+                val b = owned.firstOrNull { it.first.id != a.id && it.first.pin == p.pin }?.first ?: continue
+                val pairId = "${a.id}>${b.id}"
+                val now = System.currentTimeMillis()
+                val due = linkLock.withLock {
+                    (linkTried[pairId]?.let { now - it >= LINK_RETRY_MS } ?: true).also { if (it) linkTried[pairId] = now }
+                }
+                if (!due) continue
+                runCatching {
+                    val key = client(b)!!.addPeerKey(sa.name.ifBlank { a.name })
+                    client(a)!!.setPeerKey(p.name, key)
+                }
+            }
+        }
+        val kvms = found.flatMap { it.second }.filter { it.isKvm && KvmAddress.allowed(it.kvmHost) }
+        for (d in devices) {
+            val k = d.kvm ?: continue
+            if (KvmAddress.allowed(k.address)) continue
+            val name = kvms.firstOrNull { it.address == k.address }?.kvmHost ?: continue
+            store.update(d.id) { it.copy(kvm = it.kvm?.copy(address = name)) }
+        }
     }
 
     // ---- Actions ------------------------------------------------------------------------------

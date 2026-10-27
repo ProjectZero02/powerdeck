@@ -25,6 +25,11 @@ import (
 func newUI(t *testing.T) (http.Handler, string) {
 	t.Helper()
 	st, _ := store.Open(t.TempDir())
+	return newUIWith(t, st)
+}
+
+func newUIWith(t *testing.T, st *store.Store) (http.Handler, string) {
+	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := New(Deps{
 		Addr: "127.0.0.1:47322", APIPort: 47321, Name: "Gaming-PC", Fingerprint: "FP_abc",
@@ -101,19 +106,19 @@ func TestAPINeedsKey(t *testing.T) {
 }
 
 func TestAddLink(t *testing.T) {
-	link := AddLink("Gaming-PC", netip.MustParseAddr("100.101.1.10"), 47321, "FP_abc", "")
+	link := AddLink("Gaming-PC", netip.MustParseAddr("100.101.1.10"), 47321, "FP_abc", "7K3Q-M9XD")
 	u, err := url.Parse(link)
 	if err != nil || u.Scheme != "powerdeck" || u.Host != "add" {
 		t.Fatalf("link: %s", link)
 	}
 	q := u.Query()
-	for k, v := range map[string]string{"v": "2", "n": "Gaming-PC", "h": "100.101.1.10", "p": "47321", "f": "FP_abc"} {
+	for k, v := range map[string]string{"v": "2", "n": "Gaming-PC", "h": "100.101.1.10", "p": "47321", "f": "FP_abc", "c": "7K3Q-M9XD"} {
 		if q.Get(k) != v {
 			t.Errorf("%s = %q, want %q", k, q.Get(k), v)
 		}
 	}
-	if q.Has("c") {
-		t.Error("the add link must not carry the pairing code")
+	if strings.Contains(AddLink("Gaming-PC", netip.MustParseAddr("100.101.1.10"), 47321, "FP_abc", ""), "c=") {
+		t.Error("no code, no c")
 	}
 }
 
@@ -168,5 +173,26 @@ func TestQRSVG(t *testing.T) {
 	svg, err := QRSVG("powerdeck://add?v=2")
 	if err != nil || !strings.Contains(svg, `<path fill="#000" d="M`) {
 		t.Fatalf("svg: %v %s", err, svg[:80])
+	}
+}
+
+func TestOwnerDevicesInWindow(t *testing.T) {
+	st, _ := store.Open(t.TempDir())
+	_ = st.AddOwner(store.Owner{NodeID: "nPHONE", Name: "Pixel 9 Pro", AddedAt: time.Now(), AddedBy: "pairing code"})
+	h, key := newUIWith(t, st)
+	var s struct {
+		Owners       []store.Owner
+		OwnersLegacy bool
+	}
+	w := get(h, "127.0.0.1:47322", "/api/state", map[string]string{"X-PowerDeck-Key": key})
+	if err := json.Unmarshal(w.Body.Bytes(), &s); err != nil || len(s.Owners) != 1 || s.Owners[0].NodeID != "nPHONE" || s.OwnersLegacy {
+		t.Fatalf("state owners: %v %+v", err, s)
+	}
+	req := httptest.NewRequest("POST", "http://127.0.0.1:47322/api/owners/nPHONE/remove", nil)
+	req.Header.Set("X-PowerDeck-Key", key)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusNoContent || len(st.Owners()) != 0 {
+		t.Errorf("remove owner: %d %v", rw.Code, st.Owners())
 	}
 }

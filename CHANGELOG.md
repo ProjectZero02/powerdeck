@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.0
+
+Security groundwork before PowerDeck can reset a frozen computer through a KVM.
+
+**Update the phone app first.** The 2.0 app can't pair with a 2.1 helper.
+
+- **Owner devices.** A helper trusts the phones and computers that scanned its code, not every device on your Tailscale account. Upgraded helpers keep the old rule until the updated app claims them, which it does on its own. The code is now in every QR code. Owner devices are listed, and can be removed, on the device's page in the app, in the PC window and with `powerdeck-helper owner list|add|rm`.
+- **Phones on another account** that pair with the code can turn that device on and off, but no longer change its settings, keys or updates.
+- **Helpers reach each other with peer keys** (status, wake, power only) that the app sets up, instead of as you.
+- **Listening:** the helper listens only on loopback and its Tailscale addresses, never on every network card, and follows Tailscale when it starts late or changes address.
+- **Updates are staged:** a release installs on its own 3 days after it's published, and you can pause that for 7 days in the app or the PC window. The PC window has an automatic-updates switch. New Linux installs (servers) start with automatic updates off. SECURITY.md explains the signing-key risk.
+- **App:** no plain HTTP except to Tailscale names. NanoKVMs are linked by their Tailscale name; ones linked by IP address are renamed on their own. MagicDNS must be on. A NanoKVM that refuses an action now says so, and long presses wait long enough.
+
 ## 2.0.4
 
 - **Settings → Updates** now shows what happened. Checking the app for an update says "Checking…", then "Up to date" or "PowerDeck x.y.z is ready" with an **Update** button. Before, the result only appeared after going back to the home screen. **Update devices now** and the automatic-updates switch also report their result on the Settings screen.

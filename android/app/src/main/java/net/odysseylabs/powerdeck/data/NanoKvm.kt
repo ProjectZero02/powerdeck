@@ -56,6 +56,13 @@ sealed class KvmException(message: String) : IOException(message) {
     class Locked : KvmException("The NanoKVM locked logins after failed attempts. Try again in a few minutes.")
     class SessionExpired : KvmException("The NanoKVM session expired.")
     class Failed(what: String) : KvmException(what)
+    class NotTailscaleName(address: String) : KvmException("$address isn't a Tailscale name. Set the KVM up again so PowerDeck reaches it as name.your-tailnet.ts.net (MagicDNS must be on).")
+    class Forbidden : KvmException("The NanoKVM refused: this account isn't allowed to do that.")
+}
+
+/** NanoKVMs speak plain HTTP, which the app allows only to Tailscale (MagicDNS) names. */
+object KvmAddress {
+    fun allowed(address: String): Boolean = address.removePrefix("http://").substringBefore('/').substringBefore(':').lowercase().endsWith(".ts.net")
 }
 
 /**
@@ -67,15 +74,20 @@ class NanoKvmClient(
     address: String,
     private val username: String,
     private val password: String,
+    /** Tests talk to a local fake; the app only ever reaches KVMs by Tailscale name. */
+    private val requireTailscaleName: Boolean = true,
 ) {
-    private val base = "http://" + address.removePrefix("http://").trimEnd('/')
+    private val host = address.removePrefix("http://").trimEnd('/')
+    private val base = "http://$host"
     private val json = "application/json".toMediaType()
 
-    private suspend fun call(request: Request): Pair<JSONObject, okhttp3.Headers> = withContext(Dispatchers.IO) {
+    private suspend fun call(request: Request, client: OkHttpClient = http): Pair<JSONObject, okhttp3.Headers> = withContext(Dispatchers.IO) {
+        if (requireTailscaleName && !KvmAddress.allowed(host)) throw KvmException.NotTailscaleName(host)
         try {
-            http.newCall(request).execute().use { resp ->
+            client.newCall(request).execute().use { resp ->
                 val body = resp.body.string()
                 if (resp.code == 401) throw KvmException.SessionExpired()
+                if (resp.code == 403) throw KvmException.Forbidden()
                 val obj = runCatching { JSONObject(body) }.getOrElse { throw KvmException.Failed("Unexpected NanoKVM reply (HTTP ${resp.code}).") }
                 obj to resp.headers
             }
@@ -96,7 +108,7 @@ class NanoKvmClient(
             -4, -5 -> throw KvmException.Locked()
             else -> throw KvmException.Failed("NanoKVM login failed: ${obj.optString("msg")}")
         }
-        // Firmware 2.x returns the token in the body; newer builds only set the cookie.
+        // Up to 2.4.x the token is in the body too; from 2.5 it's only the (HttpOnly) cookie.
         val token = obj.optJSONObject("data")?.optString("token")?.takeIf { it.isNotEmpty() }
             ?: headers.values("Set-Cookie").firstNotNullOfOrNull { c ->
                 c.split(';').first().trim().takeIf { it.startsWith("nano-kvm-token=") }?.substringAfter('=')
@@ -104,10 +116,10 @@ class NanoKvmClient(
         return if (token != null) "nano-kvm-token=$token" else ""
     }
 
-    private suspend fun api(cookie: String, path: String, body: JSONObject? = null): JSONObject {
+    private suspend fun api(cookie: String, path: String, body: JSONObject? = null, client: OkHttpClient = http): JSONObject {
         val b = Request.Builder().url(base + path).header("Cookie", cookie)
         if (body != null) b.post(body.toString().toRequestBody(json))
-        val (obj, _) = call(b.build())
+        val (obj, _) = call(b.build(), client)
         if (obj.optInt("code", -99) != 0) throw KvmException.Failed("NanoKVM $path failed: ${obj.optString("msg")}")
         return obj
     }
@@ -122,7 +134,9 @@ class NanoKvmClient(
 
     /** Presses the power button. 800 ms is a normal press (ACPI shutdown when on). */
     suspend fun pressPower(cookie: String, durationMs: Int = 800) {
-        api(cookie, "/api/vm/gpio", JSONObject().put("type", "power").put("duration", durationMs))
+        // The NanoKVM answers only after the press ends, so a long hold needs a longer read timeout.
+        val client = http.newBuilder().readTimeout(durationMs + 15_000L, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        api(cookie, "/api/vm/gpio", JSONObject().put("type", "power").put("duration", durationMs), client)
     }
 
     /** Sends a Wake-on-LAN magic packet from the NanoKVM's LAN. */

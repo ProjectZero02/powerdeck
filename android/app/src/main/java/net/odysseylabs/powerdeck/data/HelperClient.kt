@@ -56,6 +56,9 @@ sealed class HelperException(message: String, cause: Throwable? = null) : IOExce
 
 data class Hello(val name: String, val os: String, val version: String, val apiVersion: Int)
 
+/** A device that controls a helper fully (protocol: owner devices). [you] is this phone. */
+data class OwnerInfo(val node: String, val name: String, val addedAt: String?, val you: Boolean)
+
 data class KeyInfo(val id: String, val name: String, val kind: String, val scopes: List<String>, val devices: List<String>, val bound: Boolean, val lastUsed: String?)
 
 /** One PowerDeck helper, protocol v2 (docs/protocol.md). */
@@ -87,6 +90,7 @@ class HelperClient(
             when (method) {
                 "GET" -> b.get()
                 "DELETE" -> b.delete()
+                "PUT" -> b.put((body ?: JSONObject()).toString().toRequestBody(json))
                 else -> b.post((body ?: JSONObject()).toString().toRequestBody(json))
             }
             val client = timeoutSeconds?.let { http.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: http
@@ -187,10 +191,40 @@ class HelperClient(
         call("DELETE", "/v2/keys/${enc(id)}")
     }
 
-    /** Exchanges a pairing code for a key (devices on another Tailscale account). */
-    suspend fun pair(code: String, deviceName: String): Pair<String, HelperStatus> {
+    /**
+     * Pairs with the code the helper shows. A phone on the helper's own Tailscale account becomes one
+     * of its owner devices and gets no key (null); a phone on another account gets a key.
+     */
+    suspend fun pair(code: String, deviceName: String): Pair<String?, HelperStatus> {
         val o = call("POST", "/v2/pair", JSONObject().put("code", code).put("deviceName", deviceName))
-        return o.getString("key") to HelperStatus.from(o.getJSONObject("status"))
+        return o.optString("key").ifEmpty { null } to HelperStatus.from(o.getJSONObject("status"))
+    }
+
+    suspend fun owners(): List<OwnerInfo> = call("GET", "/v2/owners").optJSONArray("owners").list {
+        OwnerInfo(it.optString("node"), it.optString("name"), it.optStringOrNull("addedAt"), it.optBoolean("you"))
+    }
+
+    suspend fun removeOwner(node: String) {
+        call("DELETE", "/v2/owners/${enc(node)}")
+    }
+
+    /** Holds automatic updates for 7 days (true) or resumes them (false). */
+    suspend fun pauseUpdates(on: Boolean) {
+        call("POST", "/v2/settings", JSONObject().put("pauseUpdates", on))
+    }
+
+    /** Records this phone as an owner device, ending the "anything on my account" rule of 2.0 helpers. */
+    suspend fun claim(deviceName: String) {
+        call("POST", "/v2/owners/claim", JSONObject().put("deviceName", deviceName))
+    }
+
+    /** Creates a peer key for another of the owner's helpers (status, wake, power); returns the secret. */
+    suspend fun addPeerKey(forHelper: String): String =
+        call("POST", "/v2/keys", JSONObject().put("name", forHelper).put("kind", "peer")).getString("key")
+
+    /** Stores the key this helper presents to [peer] (its name in this helper's peer list). */
+    suspend fun setPeerKey(peer: String, key: String) {
+        call("PUT", "/v2/peers/${enc(peer)}/key", JSONObject().put("key", key))
     }
 
     /** Revokes this phone's own key. */

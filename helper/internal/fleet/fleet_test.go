@@ -71,3 +71,64 @@ func TestScanRemembersAndHandlesChangedPin(t *testing.T) {
 		t.Errorf("impostor accepted: %+v", p)
 	}
 }
+
+// A helper with owner devices answers 401 without a key, so the scan must ask with the stored one.
+func TestScanSendsPeerKey(t *testing.T) {
+	st, _ := store.Open(t.TempDir())
+	pr := &prober{pin: "pin-1"}
+	dns := "pc.example.ts.net"
+	if err := st.PutPeer(store.Peer{Name: "pc", DNSName: dns, Pin: "pin-1", Key: "pdk_peer"}); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	f := New(Deps{TS: ts{&dns}, Store: st, Prober: pr, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: time.Now,
+		Network: func() (netinfo.Network, bool) { return netinfo.Network{}, true },
+		Call: func(_ context.Context, p store.Peer, _, _ string, _, out any, _ string) error {
+			keys = append(keys, p.Key)
+			if p.Key != "pdk_peer" {
+				return &peer.Error{Status: 401, Code: "unauthorized"}
+			}
+			b, _ := json.Marshal(map[string]any{"network": netinfo.Network{MAC: "02:00:5e:00:00:01"}})
+			return json.Unmarshal(b, out)
+		}})
+	_ = f.Scan(context.Background())
+	if p, _ := f.Peer("pc"); p.MAC != "02:00:5e:00:00:01" || p.Key != "pdk_peer" {
+		t.Fatalf("status not learned with the key: %+v (sent %q)", p, keys)
+	}
+	// After a reinstall the old key belongs to the old install; it isn't sent.
+	pr.pin, keys = "pin-2", nil
+	_ = f.Scan(context.Background())
+	if len(keys) != 1 || keys[0] != "" {
+		t.Errorf("key sent to a reinstalled helper: %q", keys)
+	}
+}
+
+// A key the target no longer accepts is forgotten, so it isn't sent again (and the app relinks).
+func TestRefusedKeyIsForgotten(t *testing.T) {
+	st, _ := store.Open(t.TempDir())
+	dns := "pc.example.ts.net"
+	if err := st.PutPeer(store.Peer{Name: "pc", DNSName: dns, Pin: "pin-1", Key: "pdk_old"}); err != nil {
+		t.Fatal(err)
+	}
+	f := New(Deps{TS: ts{&dns}, Store: st, Prober: &prober{pin: "pin-1"}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: time.Now,
+		Call: func(context.Context, store.Peer, string, string, any, any, string) error {
+			return &peer.Error{Status: 401, Code: "unauthorized"}
+		}})
+	err := f.Forward(context.Background(), "pc", "POST", "/v2/power/sleep", nil, nil, "")
+	var pe *peer.Error
+	if !errors.As(err, &pe) || pe.Status != 401 {
+		t.Fatalf("err %v", err)
+	}
+	if p, _ := st.Peer("pc"); p.Key != "" {
+		t.Errorf("refused key kept: %+v", p)
+	}
+	// Other failures keep it.
+	_ = st.SetPeerKey("pc", "pdk_new")
+	f.Call = func(context.Context, store.Peer, string, string, any, any, string) error {
+		return &peer.Error{Status: 409, Code: "in_use"}
+	}
+	_ = f.Forward(context.Background(), "pc", "POST", "/v2/power/sleep", nil, nil, "")
+	if p, _ := st.Peer("pc"); p.Key != "pdk_new" {
+		t.Errorf("key dropped on a 409: %+v", p)
+	}
+}

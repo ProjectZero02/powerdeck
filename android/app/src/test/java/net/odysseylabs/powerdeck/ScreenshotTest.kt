@@ -51,6 +51,7 @@ import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
+import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.KvmLink
 import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.Pending
@@ -235,6 +236,22 @@ class ScreenshotTest {
         compose.onNodeWithText("Allow AI agents to use this device").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Atlas can use it. Shutdowns count down 60 s").assertExists()
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-agents.png")
+    }
+
+    @Test fun deviceOwnersAndUpdate() {
+        val st = all.states["pc"] as DeviceState.On
+        val update = HelperUpdate(true, "2.1.0", false, true, autoAt = Instant.parse("2026-10-30T12:00:00Z"))
+        val state = all.copy(states = all.states + ("pc" to DeviceState.On(st.status!!.copy(update = update, peerKeys = emptyList()))))
+        shot("device-owners") {
+            DeviceScreen(pc, state, Detail(events = emptyList(), owners = listOf(
+                net.odysseylabs.powerdeck.data.OwnerInfo("n1", "Pixel 9 Pro", "2026-10-27T07:00:00Z", you = true),
+                net.odysseylabs.powerdeck.data.OwnerInfo("n2", "Laptop", "2026-10-27T08:00:00Z", you = false),
+            )), DeviceActions(), SnackbarHostState())
+        }
+        compose.onNodeWithText("Pause automatic updates for 7 days").assertExists()
+        compose.onNodeWithText("Laptop").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Pixel 9 Pro (this phone)").assertExists()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-owners.png")
     }
 
     @Test fun settings() = shot("settings") { SettingsScreen(Settings(), SettingsActions()) }

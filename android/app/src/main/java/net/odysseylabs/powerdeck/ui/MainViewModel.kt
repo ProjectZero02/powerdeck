@@ -29,6 +29,7 @@ import net.odysseylabs.powerdeck.data.Ask
 import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Schedule
 import net.odysseylabs.powerdeck.data.HelperUpdate
+import net.odysseylabs.powerdeck.data.OwnerInfo
 import net.odysseylabs.powerdeck.data.Settings
 import net.odysseylabs.powerdeck.data.Tailscale
 import net.odysseylabs.powerdeck.data.Updater
@@ -73,6 +74,8 @@ data class Detail(
     val events: List<Event>? = null,
     val schedules: List<Pair<Device, Schedule>>? = null,
     val keys: List<KeyInfo>? = null,
+    /** Owner devices of this helper (null: not loaded, or this phone isn't one). */
+    val owners: List<OwnerInfo>? = null,
     val newKey: String? = null,
     val error: String? = null,
 )
@@ -145,6 +148,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         _state.update { it.copy(states = it.states + results) }
         Shortcuts.refreshAll(ctx)
+        viewModelScope.launch { runCatching { deck.linkHelpers(results.toMap()) } }
     }
 
     // ---- Power --------------------------------------------------------------------------------
@@ -295,10 +299,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val events = deck.withHelper(d) { events() }
             val schedules = loadSchedules(d)
+            val owners = if (d.hasKey) null else deck.withHelper(d) { owners() }.getOrNull()
             _detail.update {
                 it.copy(
                     events = events.getOrNull()?.sortedByDescending { e -> e.at },
                     schedules = schedules,
+                    owners = owners,
                     error = events.exceptionOrNull()?.message,
                 )
             }
@@ -353,7 +359,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun loadKeys(d: Device) {
         viewModelScope.launch {
             val r = deck.withHelper(d) { keys() }
-            _detail.update { it.copy(keys = r.getOrNull()?.filter { k -> k.kind != "phone" }, error = r.exceptionOrNull()?.message) }
+            _detail.update { it.copy(keys = r.getOrNull()?.filter { k -> k.kind == "automation" }, error = r.exceptionOrNull()?.message) }
         }
     }
 
@@ -406,6 +412,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Lets AI agents turn [d] on and off, or not. They can always see its status. */
+    fun removeOwner(d: Device, o: OwnerInfo) {
+        viewModelScope.launch {
+            deck.withHelper(d) { removeOwner(o.node) }
+                .onSuccess { _messages.send("${o.name} can no longer control ${d.name}.") }
+                .onFailure { _messages.send(it.message ?: "Couldn't remove it.") }
+            loadDetail(d)
+        }
+    }
+
+    fun pauseUpdates(d: Device, on: Boolean) {
+        viewModelScope.launch {
+            deck.withHelper(d) { pauseUpdates(on) }
+                .onSuccess { _messages.send(if (on) "${d.name} won't update on its own for 7 days." else "${d.name} updates on its own again.") }
+                .onFailure { _messages.send(it.message ?: "Couldn't change it.") }
+            refreshNow()
+        }
+    }
+
     fun setAgents(d: Device, on: Boolean) {
         viewModelScope.launch {
             deck.withHelper(d) { setAgents(on) }.fold(

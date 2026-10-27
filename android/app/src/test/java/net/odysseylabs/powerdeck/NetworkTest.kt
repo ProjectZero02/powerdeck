@@ -3,6 +3,7 @@ package net.odysseylabs.powerdeck
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import net.odysseylabs.powerdeck.data.KvmAddress
 import net.odysseylabs.powerdeck.data.KvmException
 import net.odysseylabs.powerdeck.data.NanoKvmClient
 import net.odysseylabs.powerdeck.data.NanoKvmCrypto
@@ -168,6 +169,42 @@ class HelperClientTest {
         assertEquals("7K3Q-M9XD", JSONObject(req.body!!.utf8()).getString("code"))
     }
 
+    @Test fun sameAccountPairsAsOwnerWithoutKey() = runBlocking {
+        server.enqueue(json(200, """{"owner":true,"status":$status}"""))
+        val (key, s) = client().pair("7K3Q-M9XD", "Phone")
+        assertNull(key)
+        assertEquals("Gaming-PC", s.name)
+    }
+
+    @Test fun claimAndPeerKeys() = runBlocking {
+        server.enqueue(json(204, ""))
+        client().claim("Pixel")
+        val claim = server.takeRequest()
+        assertEquals("POST", claim.method)
+        assertEquals("/v2/owners/claim", claim.url.encodedPath)
+        assertEquals("Pixel", JSONObject(claim.body!!.utf8()).getString("deviceName"))
+        server.enqueue(json(200, """{"id":"k1","key":"pdk_peer"}"""))
+        assertEquals("pdk_peer", client().addPeerKey("pve"))
+        val add = JSONObject(server.takeRequest().body!!.utf8())
+        assertEquals("peer", add.getString("kind"))
+        assertEquals("pve", add.getString("name"))
+        server.enqueue(json(204, ""))
+        client().setPeerKey("gaming pc", "pdk_peer")
+        val put = server.takeRequest()
+        assertEquals("PUT", put.method)
+        assertEquals("/v2/peers/gaming+pc/key", put.url.encodedPath)
+        assertEquals("pdk_peer", JSONObject(put.body!!.utf8()).getString("key"))
+    }
+
+    @Test fun ownerFieldsInStatus() {
+        val s = net.odysseylabs.powerdeck.data.HelperStatus.from(JSONObject("""{"name":"pve","owners":{"legacy":true,"you":false},"peerKeys":["gaming-pc"]}"""))
+        assertTrue(s.ownersLegacy)
+        assertEquals(listOf("gaming-pc"), s.peerKeys)
+        val old = net.odysseylabs.powerdeck.data.HelperStatus.from(JSONObject("""{"name":"pve"}"""))
+        assertFalse(old.ownersLegacy)
+        assertNull(old.peerKeys)
+    }
+
     @Test fun sendsKeyAndParsesPending() = runBlocking {
         server.enqueue(json(202, """{"pending":{"action":"shutdown","at":"2026-10-06T12:01:00Z","by":"Phone"}}"""))
         val p = client(key = "pdk_k").power("shutdown")
@@ -208,7 +245,7 @@ class NanoKvmClientTest {
 
     @After fun tearDown() = server.close()
 
-    private fun client(pw: String = "pw") = NanoKvmClient(OkHttpClient(), "${server.hostName}:${server.port}", "admin", pw)
+    private fun client(pw: String = "pw") = NanoKvmClient(OkHttpClient(), "${server.hostName}:${server.port}", "admin", pw, requireTailscaleName = false)
     private fun ok(data: String = "null", cookie: String? = null) = MockResponse.Builder().body("""{"code":0,"msg":"success","data":$data}""")
         .apply { if (cookie != null) addHeader("Set-Cookie", cookie) }.build()
 
@@ -257,6 +294,34 @@ class NanoKvmClientTest {
     @Test fun unreachable() {
         server.close()
         assertThrows(KvmException.Unreachable::class.java) { runBlocking { client().login() } }
+    }
+
+    @Test fun forbiddenIsAPermissionError() {
+        server.enqueue(MockResponse.Builder().code(403).body("\"permission denied\"").build())
+        assertThrows(KvmException.Forbidden::class.java) { runBlocking { client().pressPower("c") } }
+    }
+
+    @Test fun onlyTailscaleNames() {
+        for (ok in listOf("kvm-a34d.tail1234.ts.net", "http://KVM.example.ts.net/", "kvm.example.ts.net:80")) assertTrue(ok, KvmAddress.allowed(ok))
+        for (bad in listOf("100.101.1.20", "192.168.1.50", "kvm.local", "ts.net.evil.com", "evilts.net")) assertFalse(bad, KvmAddress.allowed(bad))
+        val kvm = NanoKvmClient(OkHttpClient(), "100.101.1.20", "admin", "pw")
+        assertThrows(KvmException.NotTailscaleName::class.java) { runBlocking { kvm.login() } }
+        assertEquals(0, server.requestCount)
+    }
+}
+
+class NetworkSecurityConfigTest {
+    // Plain HTTP only to Tailscale names (NanoKVMs); everything else must be TLS.
+    @Test fun cleartextOnlyForTailscaleNames() {
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder()
+            .parse(java.io.File("src/main/res/xml/network_security_config.xml"))
+        val base = doc.getElementsByTagName("base-config").item(0) as org.w3c.dom.Element
+        assertEquals("false", base.getAttribute("cleartextTrafficPermitted"))
+        val domains = doc.getElementsByTagName("domain")
+        assertEquals(1, domains.length)
+        val d = domains.item(0) as org.w3c.dom.Element
+        assertEquals("ts.net", d.textContent.trim())
+        assertEquals("true", (d.parentNode as org.w3c.dom.Element).getAttribute("cleartextTrafficPermitted"))
     }
 }
 

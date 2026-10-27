@@ -96,7 +96,7 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 - **Notifications.** When a schedule or an agent acts, or a device goes offline.
 - **History.** Who did what and when, on every device.
 - **Tidy up from the phone.** Each device card's **⋮** menu renames, opens settings, adds a home-screen shortcut, or deletes it: from the phone only, or also uninstalling PowerDeck from that computer.
-- **Updates.** Every computer updates itself with signed releases (never during a countdown). Turn that off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out.
+- **Updates.** Computers update themselves with signed releases, 3 days after a release is out (never during a countdown); pause that for a week from a device's page. Servers (Linux) start with it off. Turn it on or off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out.
 - **AI agents.** Let an agent or a script check and control your devices over [MCP](https://modelcontextprotocol.io), within limits you set.
 - **Other people's computers.** A device on another Tailscale account can be added with a one-time 8-character pairing code.
 
@@ -115,13 +115,13 @@ What the installer sets up:
 
 - **Windows:** a service that starts before anyone signs in; a firewall rule that admits only Tailscale addresses; Wake-on-LAN on the wired network card, and Fast Startup off so "shut down" is a real power-off; Tailscale's unattended mode, so the PC is reachable at the sign-in screen.
 - **Linux:** a systemd service that answers only Tailscale addresses and loopback; Wake-on-LAN armed with `ethtool` at every start.
-- **Both:** automatic updates, checked against an Ed25519 signature.
+- **Both:** the helper listens only on loopback and the Tailscale addresses; updates are checked against an Ed25519 signature (automatic on Windows, off by default on Linux).
 
 Your BIOS also needs Wake-on-LAN enabled. On many boards that's *ErP Ready: Disabled* and *Power On By PCI-E: Enabled*. For a server, also turn on *Restore on AC power loss* so it comes back after a power cut.
 
 ## Safe by design
 
-- **Only you.** A helper asks Tailscale who's calling. It trusts only devices signed in to your Tailscale account (not shared or tagged ones). Anyone else needs a one-time pairing code shown on the device, which lasts 10 minutes and dies after 5 wrong guesses. A device added that way can control only that device (and send Wake-on-LAN); it can't reach your others or create keys.
+- **Only you.** A helper asks Tailscale who's calling and trusts only its **owner devices**: the phones and computers that scanned its code (the code works once, for 10 minutes) or that you added on the machine with `powerdeck-helper owner add`. Another device on your Tailscale account isn't trusted just for being there. A phone on another account that enters the code can turn that one device on and off, but can't change its settings or reach your other devices. Your computers reach each other with keys the app sets up, which can power them on and off and nothing more.
 - **No accidental power-offs.** A KVM press toggles power, so PowerDeck presses to turn on only when the computer's helper doesn't answer *and* the power light reads off. It won't press at all until it has seen that computer's light on, which proves the LED cable is connected (an unwired LED always reads off). Linking a KVM checks that its light matches the computer. Holding the button down to force a computer off is hidden behind a confirmation.
 - **Nothing exposed.** No ports are opened to the internet. Phone-to-helper traffic is HTTPS pinned to that helper's own certificate, inside Tailscale's WireGuard tunnel.
 - **Your NanoKVM password stays on your phone,** encrypted with a key in Android's hardware keystore. The app is excluded from backups.
@@ -137,6 +137,8 @@ Let an AI agent or a script check and control your devices through [MCP](https:/
 {"mcpServers": {"powerdeck": {"type": "http", "url": "http://<server's tailnet address>:47323/mcp",
   "headers": {"Authorization": "Bearer pdk_…"}}}}
 ```
+
+Port 47323 is plain HTTP for agents that can't pin a self-signed certificate. It's only reachable over Tailscale, which encrypts it end to end. If your agent can pin a certificate, use `https://<server>:47321/mcp` instead.
 
 Tools: `list_devices`, `get_status`, `power_on`, `power_off`, `cancel`. Whatever the agent asks for, the helper enforces these limits:
 - only the devices and permissions on its key;

@@ -104,7 +104,7 @@ fun SettingsScreen(
                     else -> "${outdated.joinToString(", ") { it.first.name }}: ${outdated.first().second.latest} is ready"
                 },
                 onClick = a.updateDevices)
-            SettingRow("Update devices automatically", "Signed updates, checked every 6 hours", trailing = {
+            SettingRow("Update devices automatically", "Signed updates, installed 3 days after release", trailing = {
                 Switch(checked = helpers.isEmpty() || helpers.all { it.second.auto }, onCheckedChange = a.setDevicesAutoUpdate, enabled = helpers.isNotEmpty())
             })
             SettingRow(

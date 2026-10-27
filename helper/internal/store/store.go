@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -36,7 +37,36 @@ var AllScopes = []string{ScopeStatus, ScopeWake, ScopePower, ScopeForce, ScopeAd
 const (
 	KindPhone      = "phone"      // issued through a pairing code
 	KindAutomation = "automation" // created by an owner for an agent or script
+	KindPeer       = "peer"       // held by another PowerDeck helper of the same owner, to reach this one
 )
+
+// PeerScopes are what a peer key may do: see a device, wake it, shut it down or restart it.
+var PeerScopes = []string{ScopeStatus, ScopeWake, ScopePower}
+
+// PhoneScopes are what a pairing code grants a phone on another Tailscale account: everything on
+// this one device except managing it (keys, settings, owners, updates, uninstall).
+var PhoneScopes = []string{ScopeStatus, ScopeWake, ScopePower, ScopeForce}
+
+// Owner is a device that controls this helper fully: a phone or computer recorded by pairing.
+type Owner struct {
+	NodeID  string    `json:"nodeId"` // Tailscale stable node ID
+	Name    string    `json:"name"`   // its name when it was added
+	AddedAt time.Time `json:"addedAt"`
+	AddedBy string    `json:"addedBy"` // "pairing code", "this device" or "upgrade"
+}
+
+// Owner modes.
+const (
+	// OwnersLegacy: a helper from before owner devices. Any untagged node of this device's
+	// Tailscale user is an owner, until the first owner device is recorded.
+	OwnersLegacy = ""
+	// OwnersExplicit: only recorded owner devices (and this machine's own tools) are owners.
+	OwnersExplicit = "explicit"
+)
+
+// DefaultAutoUpdate is the automatic-update setting of a new install: on for desktops, off for
+// Linux, where PowerDeck mostly runs on servers that should be updated by hand.
+var DefaultAutoUpdate = runtime.GOOS != "linux"
 
 // Key is an issued API key.
 type Key struct {
@@ -82,6 +112,8 @@ type Peer struct {
 	LAN      []string  `json:"lan,omitempty"`
 	NoAgents bool      `json:"noAgents,omitempty"` // it turns agents away (last we heard)
 	LastSeen time.Time `json:"lastSeen"`
+	// Key is the peer key this helper presents to it (set up by the owner's phone).
+	Key string `json:"key,omitempty"`
 }
 
 // Schedule is a recurring power action run by this helper.
@@ -104,6 +136,8 @@ type Settings struct {
 	Tray bool `json:"tray,omitempty"`
 	// SetupDone records that the PC window's first-run setup was finished or skipped.
 	SetupDone bool `json:"setupDone,omitempty"`
+	// UpdatesPausedUntil holds automatic updates back until then.
+	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitzero"`
 }
 
 type state struct {
@@ -112,6 +146,13 @@ type state struct {
 	Events    []Event         `json:"events"`
 	Peers     map[string]Peer `json:"peers"`
 	Schedules []Schedule      `json:"schedules"`
+	Owners    []Owner         `json:"owners,omitempty"`
+	OwnerMode string          `json:"ownerMode,omitempty"`
+}
+
+// fresh is a new install's state.
+func fresh() state {
+	return state{Settings: Settings{AutoUpdate: DefaultAutoUpdate}, OwnerMode: OwnersExplicit}
 }
 
 const (
@@ -141,13 +182,13 @@ func Open(dir string) (*Store, error) {
 	case errors.Is(err, os.ErrNotExist):
 		// Never set up, or deliberately reset: start fresh, and don't let an old backup come back later.
 		_ = os.Remove(s.path + ".bak")
-		s.st = state{Settings: Settings{AutoUpdate: true}}
+		s.st = fresh()
 	case isCorrupt(err):
 		// Cut short (e.g. by a power loss): keep it aside and fall back to the last good copy, or start
 		// fresh, rather than leave the device unreachable.
 		_ = os.Rename(s.path, s.path+".broken")
 		if s.load(s.path+".bak") != nil {
-			s.st = state{Settings: Settings{AutoUpdate: true}}
+			s.st = fresh() // nothing to fall back on; nobody is an owner until paired again
 		}
 	default:
 		return nil, err // can't read it (permissions, disk): don't guess
@@ -168,7 +209,7 @@ func isCorrupt(err error) bool {
 }
 
 func (s *Store) load(path string) error {
-	s.st = state{Settings: Settings{AutoUpdate: true}}
+	s.st = state{Settings: Settings{AutoUpdate: true}} // files from before the setting had it on
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -337,6 +378,9 @@ func (s *Store) PutPeer(p Peer) error {
 		if p.MAC == "" {
 			p.MAC = old.MAC
 		}
+		if p.Key == "" && old.Pin == p.Pin {
+			p.Key = old.Key // a reinstalled peer (new certificate) has new keys too
+		}
 		if p.LAN == nil {
 			p.LAN = old.LAN
 		}
@@ -425,4 +469,77 @@ func (s *Store) UpdateSettings(f func(*Settings)) error {
 	defer s.mu.Unlock()
 	f(&s.st.Settings)
 	return s.saveLocked()
+}
+
+// SetPeerKey stores the key this helper presents to a remembered peer ("" removes it).
+func (s *Store) SetPeerKey(name, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for n, p := range s.st.Peers {
+		if strings.EqualFold(n, name) || p.Device != "" && strings.EqualFold(p.Device, name) {
+			p.Key = key
+			s.st.Peers[n] = p
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
+}
+
+const maxOwners = 20
+
+// ErrTooManyOwners is returned when the owner list is full.
+var ErrTooManyOwners = errors.New("too many owner devices")
+
+// OwnerMode reports OwnersLegacy or OwnersExplicit.
+func (s *Store) OwnerMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.OwnerMode
+}
+
+// Owners lists owner devices in the order they were added.
+func (s *Store) Owners() []Owner {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.st.Owners)
+}
+
+// IsOwnerNode reports whether a Tailscale node is a recorded owner device.
+func (s *Store) IsOwnerNode(nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.ContainsFunc(s.st.Owners, func(o Owner) bool { return o.NodeID == nodeID })
+}
+
+// AddOwner records an owner device (again: its name is updated) and ends the legacy mode.
+func (s *Store) AddOwner(o Owner) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o.AddedAt = o.AddedAt.UTC()
+	s.st.OwnerMode = OwnersExplicit
+	if i := slices.IndexFunc(s.st.Owners, func(x Owner) bool { return x.NodeID == o.NodeID }); i >= 0 {
+		s.st.Owners[i].Name = o.Name
+		return s.saveLocked()
+	}
+	if len(s.st.Owners) >= maxOwners {
+		return ErrTooManyOwners
+	}
+	s.st.Owners = append(s.st.Owners, o)
+	return s.saveLocked()
+}
+
+// RemoveOwner forgets an owner device.
+func (s *Store) RemoveOwner(nodeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, o := range s.st.Owners {
+		if o.NodeID == nodeID {
+			s.st.Owners = slices.Delete(s.st.Owners, i, i+1)
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
 }

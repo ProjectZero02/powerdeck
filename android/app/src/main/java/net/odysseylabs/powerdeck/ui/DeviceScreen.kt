@@ -77,6 +77,7 @@ import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Peer
+import net.odysseylabs.powerdeck.data.OwnerInfo
 import net.odysseylabs.powerdeck.data.Schedule
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -107,6 +108,8 @@ data class DeviceActions(
     val agents: () -> Unit = {},
     val hint: (String) -> Unit = {},
     val updateHelper: () -> Unit = {},
+    val pauseUpdates: (Boolean) -> Unit = {},
+    val removeOwner: (OwnerInfo) -> Unit = {},
 )
 
 private val DAYS = listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -229,11 +232,17 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         when {
                             u.installing -> null
                             u.error != null -> "Last try: ${u.error}"
-                            u.auto -> "Installs on its own within 6 hours"
+                            u.pausedUntil != null -> "Automatic updates paused until ${timeFmt.format(u.pausedUntil)}"
+                            u.auto && u.autoAt != null -> "Installs on its own ${timeFmt.format(u.autoAt)}"
                             else -> null
                         },
                         icon = { Icon(Icons.Rounded.SystemUpdateAlt, null, tint = MaterialTheme.colorScheme.primary) },
                         trailing = if (u.installing) null else ({ TextButton(onClick = a.updateHelper, enabled = !busy && status.pending == null) { Text("Update") } }))
+                    if (u.auto && !u.installing && status.peerKeys != null) { // pausing needs a 2.1 helper
+                        TextButton(onClick = { a.pauseUpdates(u.pausedUntil == null) }, enabled = !busy, modifier = Modifier.padding(start = 8.dp)) {
+                            Text(if (u.pausedUntil == null) "Pause automatic updates for 7 days" else "Resume automatic updates")
+                        }
+                    }
                 }
             }
 
@@ -346,6 +355,20 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         modifier = Modifier.toggleable(on, enabled = agents != null && !busy, role = Role.Switch, onValueChange = a.setAgents),
                     )
                     TextButton(onClick = a.agents, modifier = Modifier.padding(start = 8.dp)) { Text("Manage agents") }
+                }
+            }
+
+            // ---- Owner devices: what controls this helper fully (only its owners see this)
+            detail.owners?.takeIf { it.isNotEmpty() }?.let { owners ->
+                Section("Owner devices") {
+                    owners.forEach { o ->
+                        Row2(if (o.you) "${o.name} (this phone)" else o.name, "Full control, settings included",
+                            trailing = if (o.you) null else ({
+                                IconButton(onClick = { a.removeOwner(o) }, enabled = !busy) { Icon(Icons.Rounded.Delete, contentDescription = "Remove ${o.name}") }
+                            }))
+                    }
+                    Text("Add another phone or computer by scanning ${d.name}'s code.", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
 
