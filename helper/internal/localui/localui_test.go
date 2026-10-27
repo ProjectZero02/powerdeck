@@ -156,7 +156,7 @@ func TestPresenceReports(t *testing.T) {
 	if c := post("application/json", "https://evil.example", `{"fullscreen":true}`); c != http.StatusForbidden {
 		t.Errorf("browser: %d", c)
 	}
-	if c := post("application/json", "", `{"user":"Alex","idleSeconds":900,"fullscreen":true}`); c != http.StatusNoContent {
+	if c := post("application/json", "", `{"user":"Alex","idleSeconds":900,"fullscreen":true}`); c != http.StatusOK {
 		t.Errorf("report: %d", c)
 	}
 	if p := rep.Fresh(); p == nil || !p.Active || p.User != "Alex" {

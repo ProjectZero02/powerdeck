@@ -47,6 +47,8 @@ type Deps struct {
 	Guests   func(ctx context.Context) *guests.Info
 	Wake     func(mac string, lans []string) ([]string, error)
 	Update   Updater // nil: updates aren't managed here (tests, development builds)
+	// Uninstall removes PowerDeck from this device in the background (nil: not supported here).
+	Uninstall func() error
 	// PairLink returns this device's add link (QR payload, no code) and the current pairing code.
 	PairLink func() (link, code string)
 	// AllowRemote is the source-address policy (default: tailnet and loopback).
@@ -100,6 +102,7 @@ func New(d Deps) *API {
 	mux.HandleFunc("GET /v2/update", s.with(store.ScopeAdmin, s.ownersOnly(s.updateStatus)))
 	mux.HandleFunc("POST /v2/update", s.with(store.ScopeAdmin, s.ownersOnly(s.updateInstall)))
 	mux.HandleFunc("POST /v2/settings", s.with(store.ScopeAdmin, s.ownersOnly(s.putSettings)))
+	mux.HandleFunc("POST /v2/uninstall", s.with(store.ScopeAdmin, s.ownersOnly(s.uninstall)))
 	mux.HandleFunc("GET /v2/pairing", s.with(store.ScopeAdmin, s.ownersOnly(s.pairing))) // codes mint keys
 	mux.HandleFunc("GET /v2/status", s.with(store.ScopeStatus, s.status))
 	mux.HandleFunc("GET /v2/peers", s.with(store.ScopeStatus, s.peers))
@@ -376,6 +379,19 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	if c.Has(store.ScopeAdmin) || c.Kind == auth.Owner {
 		body["checks"] = s.cachedChecks(ctx)
 	}
+	if c.Kind == auth.Owner {
+		// Owners see whether agents may use this device, and which agent keys this helper holds.
+		keys := []map[string]any{}
+		for _, k := range s.Store.Keys() {
+			if k.Kind == store.KindAutomation {
+				keys = append(keys, map[string]any{"name": k.Name, "devices": k.Devices})
+			}
+		}
+		body["agents"] = map[string]any{"allowed": !s.Store.Settings().NoAgents, "keys": keys}
+		if s.Uninstall != nil {
+			body["caps"] = append(body["caps"].([]string), "uninstall")
+		}
+	}
 	return body
 }
 
@@ -439,10 +455,18 @@ func (s *server) updateInstall(w http.ResponseWriter, r *http.Request, c auth.Ca
 func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	var req struct {
 		AutoUpdate *bool `json:"autoUpdate"`
+		Agents     *bool `json:"agents"`
 	}
 	if !decode(r, &req) {
 		fail(w, http.StatusBadRequest, "bad_request", "Malformed settings.")
 		return
+	}
+	if req.Agents != nil && *req.Agents == s.Store.Settings().NoAgents {
+		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.NoAgents = !*req.Agents }); err != nil {
+			fail(w, http.StatusInternalServerError, "store", err.Error())
+			return
+		}
+		s.logEvent(c.Name, map[bool]string{true: "allowed AI agents", false: "turned AI agents away"}[*req.Agents], "ok")
 	}
 	if req.AutoUpdate != nil && *req.AutoUpdate != s.Store.Settings().AutoUpdate {
 		if err := s.Store.SetAutoUpdate(*req.AutoUpdate); err != nil {
@@ -455,6 +479,37 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Call
 		s.logEvent(c.Name, map[bool]string{true: "turned automatic updates on", false: "turned automatic updates off"}[*req.AutoUpdate], "ok")
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// uninstall removes PowerDeck from this device. The body must name the device, so a request meant
+// for another one can't remove this one.
+func (s *server) uninstall(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if !decode(r, &req) || !strings.EqualFold(req.Confirm, s.Name) {
+		fail(w, http.StatusBadRequest, "confirm", "Name this device ("+s.Name+") to uninstall PowerDeck from it.")
+		return
+	}
+	if s.Uninstall == nil {
+		fail(w, http.StatusNotImplemented, "no_uninstall", "PowerDeck can't uninstall itself here. Uninstall it on the device.")
+		return
+	}
+	if s.Power.Pending() != nil {
+		fail(w, http.StatusConflict, "pending", "A shutdown or restart is counting down. Cancel it first.")
+		return
+	}
+	s.logEvent(c.Name, "uninstalled PowerDeck", "ok")
+	w.WriteHeader(http.StatusAccepted)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	go func() {
+		time.Sleep(time.Second) // let the answer reach the phone first
+		if err := s.Uninstall(); err != nil {
+			s.Log.Error("uninstall failed", "err", err)
+		}
+	}()
 }
 
 func utcOffsetMinutes(t time.Time) int {
@@ -507,6 +562,11 @@ func (s *server) power(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 func (s *server) localPower(ctx context.Context, c auth.Caller, action string, req powerRequest) (map[string]any, *apiError) {
 	if !c.MayUse(s.Name) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + s.Name + "."}
+	}
+	if c.IsAutomation() && action != "cancel" {
+		if e := s.agentsAllowed(ctx, s.Name, false); e != nil {
+			return nil, e
+		}
 	}
 	if c.IsAutomation() && !c.Key.AllowSelf && s.SelfNode != nil && c.NodeID != "" && c.NodeID == s.SelfNode(ctx) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "self",
@@ -584,6 +644,12 @@ func (s *server) wake(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	if c.IsAutomation() {
+		for _, p := range s.Store.Peers() {
+			if p.NoAgents && strings.EqualFold(p.MAC, req.MAC) {
+				failErr(w, s.agentsAllowed(r.Context(), p.Name, false))
+				return
+			}
+		}
 		if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(req.MAC), kindWake); e != nil {
 			failErr(w, e)
 			return

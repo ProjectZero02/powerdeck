@@ -10,19 +10,8 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/sys/windows"
-
 	"github.com/projectzero02/powerdeck/helper/internal/app"
 	"github.com/projectzero02/powerdeck/helper/internal/power"
-)
-
-var (
-	user32               = windows.NewLazySystemDLL("user32.dll")
-	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
-	shell32              = windows.NewLazySystemDLL("shell32.dll")
-	procQueryNotifyState = shell32.NewProc("SHQueryUserNotificationState")
-	kernel32             = windows.NewLazySystemDLL("kernel32.dll")
-	procGetTickCount     = kernel32.NewProc("GetTickCount")
 )
 
 // QUERY_USER_NOTIFICATION_STATE values.
@@ -53,14 +42,22 @@ func sample() power.Presence {
 	return p
 }
 
-// runPresence runs in the signed-in user's session (started at sign-in) and tells the service every
-// 20 seconds whether someone is using the PC. Gamepad input doesn't count as input to Windows, so
-// full-screen apps (games, videos) count as "in use" on their own.
+// runPresence runs in the signed-in user's session (the service starts it) and tells the service
+// every 20 seconds whether someone is using the PC. Gamepad input doesn't count as input to
+// Windows, so full-screen apps (games, videos) count as "in use" on their own. The answer says
+// whether to show the notification-area icon.
 func runPresence() error {
 	hc := &http.Client{Timeout: 5 * time.Second}
+	showTray := startTray()
 	for {
 		b, _ := json.Marshal(sample())
 		if resp, err := hc.Post("http://"+app.UIAddr+"/presence", "application/json", bytes.NewReader(b)); err == nil {
+			var r struct {
+				Tray bool `json:"tray"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&r) == nil {
+				showTray(r.Tray)
+			}
 			resp.Body.Close()
 		}
 		time.Sleep(20 * time.Second)

@@ -80,6 +80,7 @@ type Peer struct {
 	OS       string    `json:"os,omitempty"`
 	MAC      string    `json:"mac,omitempty"`
 	LAN      []string  `json:"lan,omitempty"`
+	NoAgents bool      `json:"noAgents,omitempty"` // it turns agents away (last we heard)
 	LastSeen time.Time `json:"lastSeen"`
 }
 
@@ -97,6 +98,12 @@ type Schedule struct {
 // Settings are user preferences.
 type Settings struct {
 	AutoUpdate bool `json:"autoUpdate"`
+	// NoAgents turns AI agents away from this device (the zero value allows them).
+	NoAgents bool `json:"noAgents,omitempty"`
+	// Tray shows PowerDeck's icon in the Windows notification area.
+	Tray bool `json:"tray,omitempty"`
+	// SetupDone records that the PC window's first-run setup was finished or skipped.
+	SetupDone bool `json:"setupDone,omitempty"`
 }
 
 type state struct {
@@ -316,7 +323,7 @@ func (s *Store) AddEvent(e Event) {
 func (s *Store) Events() []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := slices.Clone(s.st.Events)
+	out := append([]Event{}, s.st.Events...) // never nil: the PC window expects a list
 	slices.Reverse(out)
 	return out
 }
@@ -409,8 +416,13 @@ func (s *Store) Settings() Settings {
 
 // SetAutoUpdate turns automatic updates on or off.
 func (s *Store) SetAutoUpdate(on bool) error {
+	return s.UpdateSettings(func(st *Settings) { st.AutoUpdate = on })
+}
+
+// UpdateSettings changes settings with f and saves them.
+func (s *Store) UpdateSettings(f func(*Settings)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.Settings.AutoUpdate = on
+	f(&s.st.Settings)
 	return s.saveLocked()
 }

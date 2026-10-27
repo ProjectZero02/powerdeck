@@ -100,7 +100,7 @@ func runForeground(args []string) error {
 	if *service && ui == "" {
 		ui = "-" // headless
 	}
-	return app.Run(ctx, app.Options{DataDir: *data, APIAddr: *apiAddr, MCPAddr: *mcpAddr, UIAddr: ui, System: sys, Log: log})
+	return app.Run(ctx, app.Options{DataDir: *data, APIAddr: *apiAddr, MCPAddr: *mcpAddr, UIAddr: ui, System: sys, Log: log, Installed: *service && !*dry})
 }
 
 func status() error {

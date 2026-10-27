@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -39,18 +40,15 @@ func TestScanRemembersAndHandlesChangedPin(t *testing.T) {
 			if p.Pin != pr.pin {
 				t.Errorf("called with pin %q", p.Pin)
 			}
-			if o, ok := out.(*struct {
-				Network netinfo.Network `json:"network"`
-			}); ok {
-				o.Network = netinfo.Network{MAC: "02:00:5e:00:00:01", LAN: []string{"192.168.1.0/24"}}
-			}
-			return nil
+			b, _ := json.Marshal(map[string]any{"network": netinfo.Network{MAC: "02:00:5e:00:00:01", LAN: []string{"192.168.1.0/24"}},
+				"agents": map[string]any{"allowed": false}})
+			return json.Unmarshal(b, out)
 		}})
 	if err := f.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	p, err := f.Peer("pc")
-	if err != nil || p.MAC != "02:00:5e:00:00:01" || p.Pin != "pin-1" {
+	if err != nil || p.MAC != "02:00:5e:00:00:01" || p.Pin != "pin-1" || !p.NoAgents {
 		t.Fatalf("%+v %v", p, err)
 	}
 	if sent, err := f.Wake("pc"); err != nil || sent[0] != "02:00:5e:00:00:01" {

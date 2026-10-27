@@ -1,6 +1,7 @@
 // Package localui serves the PC window on 127.0.0.1: the QR code that introduces this PC to the
 // phone, the pairing code for other Tailscale accounts, keys (phones and agents), setup checks,
-// activity and updates. It also takes presence reports from the user-session companion.
+// activity and updates. It also takes presence reports from the user-session companion, which
+// shows the notification-area icon.
 //
 // Hardening for a loopback web app: on Windows only programs of the person at the screen (or an
 // administrator) may connect, the Host header must be the loopback address (defeats DNS rebinding), every API call and QR image needs a per-run key that is only embedded in the page itself
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +68,7 @@ type Deps struct {
 	// the window: on Windows, only the person at the screen or an administrator.
 	AllowLocal func(remote string) bool
 	Log        *slog.Logger
+	OS         string // default runtime.GOOS (the demo pretends to be Windows)
 }
 
 type ui struct {
@@ -84,6 +87,9 @@ func New(d Deps) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if d.OS == "" {
+		d.OS = runtime.GOOS
+	}
 	u := &ui{Deps: d, key: base64.RawURLEncoding.EncodeToString(k), page: page}
 	static, _ := fs.Sub(webFS, "web")
 	mux := http.NewServeMux()
@@ -99,6 +105,7 @@ func New(d Deps) (http.Handler, error) {
 	mux.HandleFunc("POST /api/update/check", u.keyed(u.updateCheck))
 	mux.HandleFunc("POST /api/update/install", u.keyed(u.updateInstall))
 	mux.HandleFunc("POST /presence", u.presence)
+	mux.HandleFunc("POST /tray", u.tray)
 	return u.guard(mux), nil
 }
 
@@ -195,8 +202,13 @@ func (u *ui) state(w http.ResponseWriter, r *http.Request) {
 	for _, p := range u.Store.Peers() {
 		peers = append(peers, p.Name)
 	}
+	checks := u.Checks(r.Context())
+	if checks == nil {
+		checks = []check.Result{}
+	}
 	body := map[string]any{
 		"name":        u.Name,
+		"os":          u.OS,
 		"version":     version.Version,
 		"tailnetIP":   ip.String(),
 		"network":     n,
@@ -207,7 +219,7 @@ func (u *ui) state(w http.ResponseWriter, r *http.Request) {
 		"keys":        keys,
 		"peers":       peers,
 		"events":      u.Store.Events(),
-		"checks":      u.Checks(r.Context()),
+		"checks":      checks,
 		"update":      u.Update.Status(),
 		"settings":    u.Store.Settings(),
 	}
@@ -340,22 +352,60 @@ func (u *ui) presence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.Reports.Put(p)
-	w.WriteHeader(http.StatusNoContent)
+	// The companion also shows the notification-area icon when it's turned on.
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"tray": u.Store.Settings().Tray})
 }
 
 func (u *ui) settings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AutoUpdate *bool `json:"autoUpdate"`
+		Agents     *bool `json:"agents"`
+		Tray       *bool `json:"tray"`
+		SetupDone  *bool `json:"setupDone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if req.AutoUpdate != nil {
-		if err := u.Store.SetAutoUpdate(*req.AutoUpdate); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+	err := u.Store.UpdateSettings(func(s *store.Settings) {
+		if req.AutoUpdate != nil {
+			s.AutoUpdate = *req.AutoUpdate
 		}
+		if req.Agents != nil {
+			s.NoAgents = !*req.Agents
+		}
+		if req.Tray != nil {
+			s.Tray = *req.Tray
+		}
+		if req.SetupDone != nil {
+			s.SetupDone = *req.SetupDone
+		}
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// tray is the notification-area icon's "Hide this icon" (from the user-session companion), with
+// the same guards as presence.
+func (u *ui) tray(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Origin") != "" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Show bool `json:"show"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := u.Store.UpdateSettings(func(s *store.Settings) { s.Tray = req.Show }); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

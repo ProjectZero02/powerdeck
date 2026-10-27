@@ -205,3 +205,14 @@ func PrepareNetwork(e Env) error {
 	}
 	return wol.Arm(n.Interface)
 }
+
+// UninstallLater runs `powerdeck-helper uninstall --purge` as its own systemd unit, so it survives
+// the service it stops.
+func UninstallLater() error {
+	out, err := exec.Command("systemd-run", "--no-block", "--collect", "--unit=powerdeck-uninstall",
+		BinPath, "uninstall", "--purge").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemd-run: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

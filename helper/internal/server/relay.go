@@ -64,6 +64,11 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 	if device != s.Name && c.Kind != auth.Owner && !c.IsAutomation() {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can only control " + s.Name + "."}
 	}
+	if c.IsAutomation() && action == "wake" {
+		if e := s.agentsAllowed(ctx, device, false); e != nil {
+			return nil, e
+		}
+	}
 	if device == s.Name {
 		switch action {
 		case "status":
@@ -104,6 +109,9 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 				Message: "An agent can't shut down or restart the device it runs on."}
 		}
 		if c.IsAutomation() && action != "cancel" {
+			if e := s.agentsAllowed(ctx, device, true); e != nil {
+				return nil, e
+			}
 			if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(device), kindPower); e != nil {
 				return nil, e
 			}
@@ -116,6 +124,41 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 		s.logEvent(c.Name, action+" "+device, "scheduled")
 		return res, nil
 	}
+}
+
+// agentsAllowed refuses an agent when the device turns agents away. With fresh, another helper's
+// setting is asked for first (before a shutdown or restart); otherwise, as when it's off, what it
+// said last time it was seen counts. Cancelling is always allowed.
+func (s *server) agentsAllowed(ctx context.Context, device string, fresh bool) *apiError {
+	off := &apiError{Status: http.StatusForbidden, Code: "agents_off",
+		Message: device + " doesn't let AI agents turn it on or off. Its owner can allow it in the PowerDeck app."}
+	if device == s.Name {
+		if s.Store.Settings().NoAgents {
+			return off
+		}
+		return nil
+	}
+	p, err := s.Fleet.Peer(device)
+	if err != nil {
+		return nil // unknown devices fail later with a clearer error
+	}
+	if fresh {
+		var st struct {
+			Agents *struct {
+				Allowed bool `json:"allowed"`
+			} `json:"agents"`
+		}
+		if err := s.Fleet.Forward(ctx, device, "GET", "/v2/status", nil, &st, ""); err == nil {
+			if st.Agents != nil && !st.Agents.Allowed {
+				return off
+			}
+			return nil
+		}
+	}
+	if p.NoAgents {
+		return off
+	}
+	return nil
 }
 
 // peerNames lists every name a remembered helper goes by.

@@ -498,3 +498,22 @@ func Checks(e Env) []check.Check {
 
 // PrepareNetwork is a no-op on Windows: the driver keeps its Wake-on-LAN setting.
 func PrepareNetwork(Env) error { return nil }
+
+// UninstallLater starts PowerDeck's own uninstaller detached from the service (it stops the service
+// on its way out), removing the program, service, firewall rule and data folder.
+func UninstallLater() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	unins := filepath.Join(filepath.Dir(exe), "unins000.exe")
+	if _, err := os.Stat(unins); err != nil {
+		return errors.New("PowerDeck's uninstaller is missing; uninstall it in Windows Settings → Apps")
+	}
+	cmd := exec.Command(unins, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}

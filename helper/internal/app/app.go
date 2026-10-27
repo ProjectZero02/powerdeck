@@ -62,6 +62,15 @@ type Options struct {
 	Log     *slog.Logger
 	// AllowLocal limits who may use the PC window (see localui.Deps).
 	AllowLocal func(remote string) bool
+	// Installed: running as the installed service, so the phone may uninstall it.
+	Installed bool
+}
+
+func uninstall(o Options) func() error {
+	if !o.Installed {
+		return nil
+	}
+	return setup.UninstallLater
 }
 
 // cachedNetwork re-reads the network card at most once a minute.
@@ -147,7 +156,7 @@ func Run(ctx context.Context, o Options) error {
 			return ""
 		},
 		Network: network, Checks: runChecks, Fix: fix, Guests: guests.Cached(15*time.Second, guests.Running), Wake: wol.Send,
-		Update: upd,
+		Update: upd, Uninstall: uninstall(o),
 		PairLink: func() (string, string) {
 			ip, _ := netinfo.TailnetIPv4()
 			code := pm.Current().Value

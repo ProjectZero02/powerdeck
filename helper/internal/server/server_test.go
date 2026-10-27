@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,7 @@ type env struct {
 	wakes   []string
 	peerErr error
 	upd     *fakeUpdater
+	removed int // Uninstall calls
 }
 
 func newEnv(t *testing.T) *env {
@@ -174,8 +176,14 @@ func newEnv(t *testing.T) *env {
 		Fix: func(context.Context, string) (check.Result, error) {
 			return check.Result{ID: "x", Level: check.OK}, nil
 		},
-		Guests:   func(context.Context) *guests.Info { return nil },
-		Update:   e.upd,
+		Guests: func(context.Context) *guests.Info { return nil },
+		Update: e.upd,
+		Uninstall: func() error {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.removed++
+			return nil
+		},
 		Wake:     wake,
 		PairLink: func() (string, string) { return "powerdeck://add?v=2", e.pm.Current().Value },
 		Log:      log, Now: now,
@@ -381,7 +389,9 @@ func TestAutomationKeyRules(t *testing.T) {
 	}
 	// Relay: shutdown of another helper goes to that helper, named for the agent, with a minute's warning.
 	code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: atlas, key: key})
-	if code != 200 || len(e.calls) != 1 || e.calls[0] != (forwarded{"workstation", "POST", "/v2/power/shutdown", "Atlas"}) {
+	// (First it asks workstation whether it lets agents in.)
+	if code != 200 || len(e.calls) != 2 || e.calls[0] != (forwarded{"workstation", "GET", "/v2/status", ""}) ||
+		e.calls[1] != (forwarded{"workstation", "POST", "/v2/power/shutdown", "Atlas"}) {
 		t.Fatalf("relay: %d %v %+v", code, out, e.calls)
 	}
 	// One shutdown per device per 10 minutes.
@@ -629,4 +639,72 @@ func pairedKey(t *testing.T, e *env) string {
 		t.Fatalf("pair: %d %v", code, out)
 	}
 	return out["key"].(string)
+}
+
+func TestAgentsTurnedAway(t *testing.T) {
+	e := newEnv(t)
+	key := e.agentKey([]string{"wake", "power"}, "Gaming-PC", "workstation", "cabin")
+	if code, _ := e.do(req{method: "POST", path: "/v2/settings", from: atlas, key: key, body: map[string]any{"agents": true}}); code != http.StatusForbidden {
+		t.Errorf("agent changing the setting: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/settings", from: phone, body: map[string]any{"agents": false}}); code != http.StatusNoContent {
+		t.Fatalf("owner turning agents away: %d", code)
+	}
+	_, st := e.do(req{method: "GET", path: "/v2/status", from: phone})
+	if a := st["agents"].(map[string]any); a["allowed"] != false || len(a["keys"].([]any)) != 1 {
+		t.Errorf("status agents: %v", a)
+	}
+	for _, path := range []string{"/v2/power/shutdown", "/v2/devices/Gaming-PC/restart"} {
+		if code, out := e.do(req{method: "POST", path: path, from: atlas, key: key}); code != http.StatusForbidden || out["error"] != "agents_off" {
+			t.Errorf("%s while agents are off: %d %v", path, code, out)
+		}
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/status", from: atlas, key: key}); code != 200 {
+		t.Errorf("status while agents are off: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/power/shutdown", from: phone}); code != http.StatusAccepted {
+		t.Errorf("owner while agents are off: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/power/cancel", from: atlas, key: key}); code != 200 {
+		t.Errorf("agent cancelling: %d", code)
+	}
+	// Another helper that turned agents away: remembered for wakes.
+	_ = e.st.PutPeer(store.Peer{Name: "cabin", Address: "100.101.1.70", Port: 47321, Pin: "pin3", MAC: "aa:00:00:00:00:03", LAN: []string{"192.168.1.0/24"}, NoAgents: true})
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/cabin/wake", from: atlas, key: key}); code != http.StatusForbidden || out["error"] != "agents_off" {
+		t.Errorf("wake a device that turned agents away: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/workstation/wake", from: atlas, key: key}); code != 200 {
+		t.Errorf("wake a device that allows agents: %d", code)
+	}
+	anyKey := e.agentKey([]string{"wake"})
+	if code, out := e.do(req{method: "POST", path: "/v2/wake", from: atlas, key: anyKey, body: map[string]any{"mac": "AA:00:00:00:00:03"}}); code != http.StatusForbidden {
+		t.Errorf("raw wake of a device that turned agents away: %d %v", code, out)
+	}
+}
+
+func TestUninstall(t *testing.T) {
+	e := newEnv(t)
+	_, st := e.do(req{method: "GET", path: "/v2/status", from: phone})
+	if !slices.Contains(st["caps"].([]any), any("uninstall")) {
+		t.Errorf("caps %v", st["caps"])
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/uninstall", from: phone, body: map[string]any{"confirm": "workstation"}}); code != http.StatusBadRequest {
+		t.Errorf("wrong name: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/uninstall", from: friend, body: map[string]any{"confirm": "Gaming-PC"}}); code/100 != 4 {
+		t.Errorf("another account: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/uninstall", from: phone, body: map[string]any{"confirm": "gaming-pc"}}); code != http.StatusAccepted {
+		t.Fatalf("uninstall: %d", code)
+	}
+	for i := 0; i < 50; i++ {
+		e.mu.Lock()
+		n := e.removed
+		e.mu.Unlock()
+		if n == 1 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("Uninstall wasn't called")
 }

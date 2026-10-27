@@ -12,8 +12,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var procCreateEnvironmentBlock = windows.NewLazySystemDLL("userenv.dll").NewProc("CreateEnvironmentBlock")
-
 // companionLoop keeps `PowerDeck.exe presence` running in the active console session, so the
 // service knows when someone is using the PC. The service (SYSTEM, session 0) starts it with the
 // signed-in user's token, restarts it when the user changes, and stops it when the service stops
@@ -65,7 +63,7 @@ func startInSession(sid uint32, exe string) (windows.Handle, error) {
 	}
 	defer tok.Close()
 	var env *uint16
-	if r, _, err := procCreateEnvironmentBlock.Call(uintptr(unsafe.Pointer(&env)), uintptr(tok), 0); r == 0 {
+	if r, _, err := procCreateEnvironment.Call(uintptr(unsafe.Pointer(&env)), uintptr(tok), 0); r == 0 {
 		return 0, err
 	}
 	defer windows.DestroyEnvironmentBlock(env)

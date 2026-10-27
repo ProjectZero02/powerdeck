@@ -95,13 +95,20 @@ func (f *Fleet) remember(ctx context.Context, p discovery.Peer) {
 	}
 	var st struct {
 		Network netinfo.Network `json:"network"`
+		Agents  *struct {
+			Allowed bool `json:"allowed"`
+		} `json:"agents"`
 	}
 	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	if err := f.Call(cctx, rec, "GET", "/v2/status", nil, &st, ""); err == nil {
 		rec.MAC, rec.LAN = st.Network.MAC, st.Network.LAN
+		rec.NoAgents = st.Agents != nil && !st.Agents.Allowed
 	} else {
 		f.Log.Info("peer status unavailable", "peer", p.Name, "err", err)
+		if old, ok := f.Store.Peer(p.Name); ok {
+			rec.NoAgents = old.NoAgents
+		}
 	}
 	if err := f.Store.PutPeer(rec); err != nil {
 		f.Log.Warn("remember peer", "peer", p.Name, "err", err)

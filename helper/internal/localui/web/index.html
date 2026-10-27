@@ -10,98 +10,158 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="top">
-  <div class="brand">
+<header class="bar">
+  <div class="who">
     <img src="/static/icon.svg" alt="" class="logo">
-    <div>
-      <h1>PowerDeck</h1>
-      <p class="sub" id="pcname">This PC</p>
-    </div>
+    <h1 id="pcname">This PC</h1>
   </div>
-  <span class="pill ok" id="running">Running · v{{.Version}}</span>
+  <span class="status" id="running"><i class="dot"></i><span>Running</span></span>
 </header>
 
-<main>
+<!-- First run: three steps, each can be skipped. -->
+<main class="setup" id="setup" hidden>
+  <ol class="progress" aria-label="Setup progress">
+    <li data-step="1"></li><li data-step="2"></li><li data-step="3"></li>
+  </ol>
+
+  <section class="step" data-step="1">
+    <p class="kicker">Step 1 of 3</p>
+    <h2>Get the app on your phone</h2>
+    <p class="lead">Point your phone's camera at this code to download PowerDeck for Android.</p>
+    <img class="qr" id="qr-app" alt="QR code linking to the PowerDeck Android app">
+    <a class="link" id="app-link" href="#">Or open the download page</a>
+  </section>
+
+  <section class="step" data-step="2">
+    <p class="kicker">Step 2 of 3</p>
+    <h2>Add this PC to the app</h2>
+    <p class="lead">In PowerDeck, tap <b>Scan the helper's code</b> and point the camera here.</p>
+    <img class="qr" id="qr-add" alt="QR code that adds this PC to PowerDeck">
+    <p class="error" id="link-error" hidden></p>
+    <p class="hint">Phone on a different Tailscale account? Enter <b class="code pair-code">····-····</b> <span class="pair-expiry"></span></p>
+  </section>
+
+  <section class="step" data-step="3">
+    <p class="kicker">Step 3 of 3</p>
+    <h2>Checking this PC</h2>
+    <p class="lead">PowerDeck makes sure it can be woken and shut down remotely.</p>
+    <ul class="checks card" id="setup-checks"></ul>
+    <div class="card options">
+      <label class="toggle row tray-option" hidden>
+        <span><b>Show icon in hidden icons</b><small>Open PowerDeck from the taskbar's ^ menu</small></span>
+        <input type="checkbox" class="tray-switch"><i></i>
+      </label>
+      <div class="toggle row">
+        <span><span><b>AI agent</b><em>Optional</em></span><small>Let an agent turn your devices on and off, within limits you set</small></span>
+        <button class="secondary small agent-open">Set up</button>
+      </div>
+    </div>
+  </section>
+
+  <nav class="nav">
+    <button class="ghost" id="skip">Skip</button>
+    <button id="next">Next</button>
+  </nav>
+</main>
+
+<!-- After setup -->
+<main class="home" id="home" hidden>
+  <section class="card">
+    <dl class="facts">
+      <div><dt>Tailscale address</dt><dd id="f-ip">…</dd></div>
+      <div><dt>Network card</dt><dd id="f-nic">…</dd></div>
+      <div><dt>Other PowerDeck devices</dt><dd id="f-peers">…</dd></div>
+    </dl>
+  </section>
+
   <section>
-    <h2>Add this PC to your phone</h2>
-    <div class="cards">
-      <article class="card">
-        <div class="step">1</div>
-        <h3>Get the app</h3>
-        <img class="qr" id="qr-app" alt="QR code linking to the PowerDeck Android app">
-        <p>Point your phone's camera at this code to download <b>PowerDeck for Android</b>.</p>
-        <a class="link" id="app-link" target="_blank" rel="noopener">Download link</a>
-      </article>
-      <article class="card">
-        <div class="step">2</div>
-        <h3>Add this PC</h3>
-        <img class="qr" id="qr-add" alt="QR code that adds this PC to PowerDeck">
-        <p>In PowerDeck tap <b>Add devices</b> and scan this. Your other PowerDeck devices show up too.</p>
-        <p class="error" id="link-error" hidden></p>
-        <p class="muted">Phone on a different Tailscale account? Enter <b class="code" id="pair-code">····-····</b>
-          <span id="pair-expiry"></span>. <button class="text" id="renew">New code</button></p>
-      </article>
+    <h2>Add a phone</h2>
+    <div class="card add">
+      <img class="qr small" id="qr-add-home" alt="QR code that adds this PC to PowerDeck">
+      <div>
+        <p>In PowerDeck, tap <b>Scan the helper's code</b> and point the camera here.</p>
+        <p class="hint">Other Tailscale account? Enter <b class="code pair-code">····-····</b> <span class="pair-expiry"></span> · <button class="text" id="renew">New code</button></p>
+        <p class="hint">No app yet? <a class="link" id="app-link-home" href="#">Download PowerDeck for Android</a></p>
+      </div>
     </div>
   </section>
 
   <section>
-    <h2>Setup checks</h2>
-    <ul class="checks" id="checks"></ul>
+    <div class="head"><h2>Setup checks</h2><button class="text" id="checks-more" hidden></button></div>
+    <ul class="checks card" id="checks"></ul>
   </section>
 
   <section>
     <h2>Access</h2>
-    <p class="muted intro">Phones signed in to the same Tailscale account as this PC have access automatically. These are the extra ones:</p>
-    <ul class="list" id="keys"></ul>
-    <p class="muted" id="no-keys" hidden>None. Only your own devices can control this PC.</p>
-    <div class="actions"><button class="secondary" id="agent-open">Connect an AI agent…</button></div>
-    <div class="panel" id="agent" hidden>
-      <h3>Connect an AI agent</h3>
-      <p class="muted">The agent gets a key that only works from the first Tailscale device that uses it. Shutdowns always show a one-minute warning and are refused while someone is using the device.</p>
-      <label class="field">Name <input id="agent-name" maxlength="64" placeholder="e.g. Atlas"></label>
-      <fieldset class="field"><legend>It may</legend>
-        <label><input type="checkbox" value="status" checked disabled> see status</label>
-        <label><input type="checkbox" value="wake" class="scope" checked> turn devices on</label>
-        <label><input type="checkbox" value="power" class="scope"> shut down and restart</label>
-      </fieldset>
-      <fieldset class="field" id="agent-devices"><legend>Devices</legend></fieldset>
-      <div class="actions"><button id="agent-create">Create key</button><button class="secondary" id="agent-cancel">Cancel</button></div>
-      <div id="agent-result" hidden>
-        <p><b>Copy this now.</b> It won't be shown again.</p>
-        <pre id="agent-config"></pre>
-        <div class="actions"><button class="secondary" id="agent-copy">Copy</button></div>
-      </div>
+    <div class="card">
+      <label class="toggle row">
+        <span><b>Allow AI agents to use this PC</b><small id="agents-sub"></small></span>
+        <input type="checkbox" id="agents-switch"><i></i>
+      </label>
+      <ul class="list" id="keys"></ul>
+      <div class="row"><button class="secondary small agent-open">Connect an AI agent</button></div>
     </div>
   </section>
 
   <section class="grid2">
     <div>
-      <h2>This PC</h2>
-      <dl class="facts">
-        <dt>Tailscale address</dt><dd id="f-ip">—</dd>
-        <dt>Network card</dt><dd id="f-nic">—</dd>
-        <dt>Other PowerDeck devices</dt><dd id="f-peers">—</dd>
-      </dl>
+      <h2>Recent activity</h2>
+      <ul class="events card" id="events"></ul>
     </div>
     <div>
-      <h2>Recent activity</h2>
-      <ul class="events" id="events"></ul>
+      <h2>Updates</h2>
+      <div class="card update">
+        <p id="update-text">Checking…</p>
+        <div class="actions">
+          <button class="secondary small" id="check">Check now</button>
+          <button class="small" id="install" hidden>Install update</button>
+        </div>
+      </div>
     </div>
   </section>
 
   <section>
-    <h2>Updates</h2>
-    <div class="update">
-      <p id="update-text">Checking…</p>
-      <label class="switch"><input type="checkbox" id="autoupdate"> <span>Install updates automatically</span></label>
-      <div class="actions">
-        <button class="secondary" id="check">Check now</button>
-        <button id="install" hidden>Install update</button>
+    <h2>Window</h2>
+    <div class="card">
+      <label class="toggle row tray-option" hidden>
+        <span><b>Show icon in hidden icons</b><small>Open PowerDeck from the taskbar's ^ menu</small></span>
+        <input type="checkbox" class="tray-switch"><i></i>
+      </label>
+      <div class="toggle row">
+        <span><b>Setup</b><small>The three steps from the first start</small></span>
+        <button class="secondary small" id="rerun">Run again</button>
       </div>
     </div>
   </section>
+
+  <footer>PowerDeck keeps running in the background. You can close this window.</footer>
 </main>
 
-<footer>PowerDeck runs in the background as a Windows service. You can close this window.</footer>
+<dialog id="agent">
+  <div class="sheet">
+    <h3>Connect an AI agent</h3>
+    <p class="hint">The agent gets a key that only works from the first Tailscale device that uses it. Its shutdowns always count down a minute, and are refused while someone is using the device.</p>
+    <div id="agent-form">
+      <label class="field">Name <input id="agent-name" maxlength="64" placeholder="e.g. Atlas" autocomplete="off"></label>
+      <fieldset class="field"><legend>It may</legend>
+        <label><input type="checkbox" checked disabled> see status</label>
+        <label><input type="checkbox" value="wake" class="scope" checked> turn devices on</label>
+        <label><input type="checkbox" value="power" class="scope"> shut down and restart</label>
+      </fieldset>
+      <fieldset class="field" id="agent-devices"><legend>Devices</legend></fieldset>
+    </div>
+    <div id="agent-result" hidden>
+      <p><b>Paste this into your agent's MCP settings.</b> It's shown only once.</p>
+      <pre id="agent-config"></pre>
+    </div>
+    <div class="actions">
+      <a class="link" id="agent-guide" href="#">How it works</a>
+      <span class="grow"></span>
+      <button class="ghost" id="agent-cancel">Cancel</button>
+      <button class="secondary" id="agent-copy" hidden>Copy</button>
+      <button id="agent-create">Create key</button>
+    </div>
+  </div>
+</dialog>
 </body>
 </html>

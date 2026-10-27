@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
 
 	"golang.org/x/sys/windows"
 
@@ -49,7 +47,7 @@ func runService() error {
 		}
 		defer closer.Close()
 		go companionLoop(ctx, log)
-		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log,
+		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log, Installed: true,
 			AllowLocal: func(remote string) bool { return winsvc.LocalCaller(remote, app.UIPort) }})
 		if err != nil {
 			log.Error("PowerDeck exited", "err", err)
@@ -83,30 +81,11 @@ func messageBox(text string, flags uint32) {
 	windows.MessageBox(0, t, c, flags)
 }
 
-// openWindow shows the PC window: an Edge "app mode" window (no tabs or address bar) on the local
-// UI, falling back to the default browser.
-func openWindow() error {
-	if !setup.ServiceRunning() {
-		messageBox("PowerDeck's background service isn't running.\n\nRestart the PC, or reinstall PowerDeck to repair it.", windows.MB_ICONWARNING)
-		return nil
-	}
-	url := "http://" + app.UIAddr + "/"
-	for _, base := range []string{os.Getenv("ProgramFiles(x86)"), os.Getenv("ProgramFiles")} {
-		edge := filepath.Join(base, `Microsoft\Edge\Application\msedge.exe`)
-		if _, err := os.Stat(edge); err == nil {
-			return exec.Command(edge, "--app="+url, "--window-size=1060,900").Start()
-		}
-	}
-	cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return cmd.Start()
-}
-
 // The exe is a GUI-subsystem program (no console window flashes when the service or companion
 // starts), so attach to the terminal it was started from, if any, for CLI output.
 func init() {
 	const attachParentProcess = ^uint32(0) // ATTACH_PARENT_PROCESS
-	r, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("AttachConsole").Call(uintptr(attachParentProcess))
+	r, _, _ := procAttachConsole.Call(uintptr(attachParentProcess))
 	if r == 0 {
 		return
 	}

@@ -24,7 +24,7 @@ import (
 )
 
 func main() {
-	version.Version = "2.0.0"
+	version.Version = "2.0.3"
 	dir, err := os.MkdirTemp("", "powerdeck-demo")
 	if err != nil {
 		log.Fatal(err)
@@ -64,6 +64,7 @@ func main() {
 		},
 		Fix:     func(context.Context, string) (check.Result, error) { return check.Result{Level: check.OK}, nil },
 		Reports: &power.Reports{},
+		OS:      "windows",
 		Log:     logger,
 	})
 	if err != nil {
