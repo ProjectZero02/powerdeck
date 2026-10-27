@@ -29,9 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.flow.MutableStateFlow
 import net.odysseylabs.powerdeck.data.Tailscale
 
@@ -59,13 +56,6 @@ class MainActivity : ComponentActivity() {
             route.value = "add"
             vm.openLink(data.toString())
         }
-    }
-
-    fun scan() {
-        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
-        GmsBarcodeScanning.getClient(this, options).startScan()
-            .addOnSuccessListener { code -> code.rawValue?.let(vm::addLink) }
-            .addOnFailureListener { vm.scanFailed(it.message) }
     }
 
     fun openTailscale() {
@@ -118,6 +108,11 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
     val hint: (String) -> Unit = { vm.say(it) }
 
     when {
+        route == "scan" -> {
+            val back = if (state.devices.isEmpty()) "home" else "add"
+            BackHandler { route = back }
+            ScanScreen(onCode = { vm.addLink(it); route = back }, onBack = { route = back })
+        }
         state.devices.isEmpty() || route == "add" -> {
             if (route == "add") BackHandler { vm.resetAdd(); route = "home" }
             LaunchedEffect(Unit) { vm.find(refresh = true) }
@@ -125,13 +120,14 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                 state,
                 AddActions(
                     back = if (state.devices.isEmpty()) null else ({ vm.resetAdd(); route = "home" }),
-                    scan = activity::scan,
+                    scan = { route = "scan" },
                     byName = vm::addByName,
                     addPeer = vm::addPeer,
                     submitCode = vm::submitCode,
                     dismiss = vm::resetAdd,
                     confirmLink = vm::confirmLink,
                     find = { vm.find(refresh = true) },
+                    install = { activity.open(INSTALL_GUIDE) },
                     linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
                 ),
                 snackbar,
@@ -193,8 +189,31 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     pinShortcut = { Shortcuts.pinDevice(ctx, d) },
                     rename = { vm.rename(d, it) },
                     remove = { vm.remove(d); route = "home" },
+                    uninstall = { vm.uninstall(d); route = "home" },
+                    setAgents = { vm.setAgents(d, it) },
+                    agents = { route = "agents:${d.id}" },
                     hint = hint,
                     updateHelper = { vm.updateHelper(d) },
+                ),
+                snackbar,
+            )
+        }
+        route.startsWith("agents:") -> {
+            val d = state.devices.firstOrNull { it.id == route.removePrefix("agents:") }
+            if (d == null) {
+                LaunchedEffect(Unit) { route = "home" }
+                return
+            }
+            BackHandler { route = "device:${d.id}" }
+            AgentsScreen(
+                d, state, detail,
+                AgentsActions(
+                    back = { route = "device:${d.id}" },
+                    loadKeys = { vm.loadKeys(d) },
+                    addKey = { n, p, devs -> vm.addKey(d, n, p, devs) },
+                    removeKey = { vm.removeKey(d, it) },
+                    clearNewKey = vm::clearNewKey,
+                    guide = { activity.open(AGENTS_GUIDE) },
                 ),
                 snackbar,
             )
@@ -215,6 +234,10 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                 addWidget = { Shortcuts.pinWidget(ctx) },
                 dismissWidgetTip = { prefs.edit().putBoolean("widgetTipDismissed", true).apply(); widgetTip = false },
                 hint = hint,
+                rename = { d, n -> vm.rename(d, n) },
+                pinShortcut = { Shortcuts.pinDevice(ctx, it) },
+                remove = vm::remove,
+                uninstall = vm::uninstall,
             ),
             snackbar,
             showWidgetTip = widgetTip,

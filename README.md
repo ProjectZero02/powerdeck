@@ -46,7 +46,7 @@ irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.
 curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sh
 ```
 
-Both installers check the download against the release's checksums (on Linux, its Ed25519 signature too), set everything up and show a **QR code**. On Windows it opens in a window; on Linux it's printed in the terminal (`powerdeck-helper qr` shows it again). They also tell you about anything they can't fix themselves, such as a BIOS setting. Prefer a regular installer on Windows? Download [PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe).
+Both installers check the download against the release's checksums (on Linux, its Ed25519 signature too), set everything up and show a **QR code**. On Windows, PowerDeck's window walks you through three skippable steps: a code to download the app, a code to add the PC, and its setup checks (with an option to keep an icon in the taskbar's hidden icons). On Linux the code is printed in the terminal (`powerdeck-helper qr` shows it again). They also tell you about anything they can't fix themselves, such as a BIOS setting. Prefer a regular installer on Windows? Download [PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe).
 
 **2. Install the app on your phone**
 
@@ -54,7 +54,7 @@ Download [**PowerDeck.apk**](https://github.com/ProjectZero02/powerdeck/releases
 
 **3. Scan the code**
 
-Tap **Scan the helper's code**. Your other computers and NanoKVMs then appear under **Found on your tailnet**: tap **Add** on each one. A NanoKVM asks for its password and which computer's power button it's wired to.
+Tap **Scan the helper's code** and allow the camera. Your other computers and NanoKVMs then appear under **Found on your tailnet**: tap **Add** on each one. A NanoKVM asks for its password and which computer's power button it's wired to.
 
 > [!NOTE]
 > A NanoKVM shows up only once it's on Tailscale too: turn Tailscale on in its web settings and sign it in to the same account. Keep its web page on plain HTTP (the default); Tailscale already encrypts the connection.
@@ -95,6 +95,7 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 - **Shortcuts.** A home-screen widget with every device, four Quick Settings tiles, home-screen shortcuts per device, and long-press shortcuts on the app icon.
 - **Notifications.** When a schedule or an agent acts, or a device goes offline.
 - **History.** Who did what and when, on every device.
+- **Tidy up from the phone.** Each device card's **⋮** menu renames, opens settings, adds a home-screen shortcut, or deletes it: from the phone only, or also uninstalling PowerDeck from that computer.
 - **Updates.** Every computer updates itself with signed releases (never during a countdown). Turn that off, or **Update devices now**, from the app's settings. The app tells you when a new version of itself is out.
 - **AI agents.** Let an agent or a script check and control your devices over [MCP](https://modelcontextprotocol.io), within limits you set.
 - **Other people's computers.** A device on another Tailscale account can be added with a one-time 8-character pairing code.
@@ -130,7 +131,7 @@ Details: [SECURITY.md](SECURITY.md) · protocol: [docs/protocol.md](docs/protoco
 
 ## AI agents (MCP)
 
-Let an AI agent or a script check and control your devices through [MCP](https://modelcontextprotocol.io). In the app, open an always-on device (a home server is ideal) and tap **Connect an agent**. Choose which devices it may use and whether it may shut them down, then paste the config it shows into your agent:
+Let an AI agent or a script check and control your devices through [MCP](https://modelcontextprotocol.io). In the app, open an always-on device (a home server is ideal), tap **Set up** next to **Allow AI agents to use this device**, then **Create a key**. Choose which devices it may use and whether it may shut them down, then paste the config it shows into your agent:
 
 ```json
 {"mcpServers": {"powerdeck": {"type": "http", "url": "http://<server's tailnet address>:47323/mcp",
@@ -143,7 +144,7 @@ Tools: `list_devices`, `get_status`, `power_on`, `power_off`, `cancel`. Whatever
 - at most one shutdown per device per 10 minutes;
 - never the computer the agent itself runs on.
 
-The key works only from the first device that uses it. Every action appears in History and in a notification on your phone.
+The key works only from the first device that uses it. Every action appears in History and in a notification on your phone. Each device's **Allow AI agents** switch turns agents away from it at any time: they can still see whether it's on, but can't turn it on or off.
 
 ## Troubleshooting
 

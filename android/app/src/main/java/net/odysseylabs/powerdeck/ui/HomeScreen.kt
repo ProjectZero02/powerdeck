@@ -2,6 +2,8 @@ package net.odysseylabs.powerdeck.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Settings
@@ -29,6 +32,8 @@ import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +44,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +70,10 @@ data class HomeActions(
     val addWidget: () -> Unit = {},
     val dismissWidgetTip: () -> Unit = {},
     val hint: (String) -> Unit = {},
+    val rename: (Device, String) -> Unit = { _, _ -> },
+    val pinShortcut: (Device) -> Unit = {},
+    val remove: (Device) -> Unit = {},
+    val uninstall: (Device) -> Unit = {},
 )
 
 @Composable
@@ -152,6 +165,7 @@ private fun DeviceCard(d: Device, st: DeviceState?, busy: Boolean, online: Boole
                     }
                 }
                 if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                CardMenu(d, st, a)
             }
             if (online) {
                 Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -160,6 +174,25 @@ private fun DeviceCard(d: Device, st: DeviceState?, busy: Boolean, online: Boole
             }
         }
     }
+}
+
+/** ⋮ on each card: the common things without opening the device. */
+@Composable
+private fun CardMenu(d: Device, st: DeviceState?, a: HomeActions) {
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { menu = true }, modifier = Modifier.offset(x = 8.dp)) { Icon(Icons.Rounded.MoreVert, contentDescription = "More for ${d.name}") }
+        DropdownMenu(menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
+            DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; a.open(d) })
+            DropdownMenuItem(text = { Text("Add to home screen") }, onClick = { menu = false; a.pinShortcut(d) })
+            DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; deleting = true })
+        }
+    }
+    if (renaming) RenameDialog(d.name, onSave = { a.rename(d, it) }, onDismiss = { renaming = false })
+    if (deleting) DeleteDialog(d, st, onRemove = { a.remove(d) }, onUninstall = { a.uninstall(d) }, onDismiss = { deleting = false })
 }
 
 @Composable

@@ -14,12 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Info
@@ -33,7 +31,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,7 +41,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -52,6 +48,12 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -66,9 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import net.odysseylabs.powerdeck.data.Check
 import net.odysseylabs.powerdeck.data.Device
@@ -102,6 +102,9 @@ data class DeviceActions(
     val pinShortcut: () -> Unit = {},
     val rename: (String) -> Unit = {},
     val remove: () -> Unit = {},
+    val uninstall: () -> Unit = {},
+    val setAgents: (Boolean) -> Unit = {},
+    val agents: () -> Unit = {},
     val hint: (String) -> Unit = {},
     val updateHelper: () -> Unit = {},
 )
@@ -110,9 +113,15 @@ private val DAYS = listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 private val timeFmt = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
 
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
+private fun Section(title: String, folded: Boolean? = null, onFold: () -> Unit = {}, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
-        SectionTitle(title)
+        if (folded == null) SectionTitle(title)
+        else Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle(title, Modifier.weight(1f))
+            IconButton(onClick = onFold) {
+                Icon(if (folded) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess, contentDescription = if (folded) "Show $title" else "Hide $title")
+            }
+        }
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(vertical = 4.dp)) { content() }
         }
@@ -139,12 +148,12 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
     val tone = describe(st, now).second
     val busy = d.id in state.busy
     val hold = state.settings.confirmShutdown
+    val ctx = LocalContext.current
     var menu by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var confirmForce by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var scheduling by remember { mutableStateOf(false) }
-    var addingKey by remember { mutableStateOf(false) }
     var linkKvm by remember { mutableStateOf<Peer?>(null) }
 
     Scaffold(
@@ -157,7 +166,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
                         DropdownMenuItem(text = { Text("Add to home screen") }, onClick = { menu = false; a.pinShortcut() })
                         if (d.kvm != null) DropdownMenuItem(text = { Text("Force off (hold power 12 s)") }, onClick = { menu = false; confirmForce = true })
-                        DropdownMenuItem(text = { Text("Remove from this phone") }, onClick = { menu = false; confirmRemove = true })
+                        DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; confirmRemove = true })
                     }
             }
         },
@@ -228,25 +237,41 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                 }
             }
 
-            // ---- Setup checks: what needs attention first; checks that passed fold into one row
+            // ---- Setup checks: problems first; folds away (remembered per device), closed when all is well
             val checks = status?.checks.orEmpty()
-            if (checks.isNotEmpty()) Section("Setup") {
-                var showPassed by rememberSaveable { mutableStateOf(false) }
-                val passed = checks.filter { it.ok }
-                (checks - passed.toSet()).sortedBy { if (it.problem) 0 else 1 }.plus(if (showPassed) passed else emptyList()).forEach { c ->
-                    Row2(c.title, c.detail, icon = {
-                        when {
-                            c.ok -> Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen)
-                            c.level == "error" -> Icon(Icons.Rounded.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
-                            c.level == "warn" -> Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.error)
-                            else -> Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }, trailing = if (c.fixable && c.problem) ({ TextButton(onClick = { a.fix(c) }, enabled = !busy) { Text("Fix") } }) else null)
-                }
-                if (passed.isNotEmpty() && !showPassed) {
-                    Row2(if (passed.size == checks.size) "All set" else "${passed.size} more passed",
-                        icon = { Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen) },
-                        trailing = { TextButton(onClick = { showPassed = true }) { Text("Show") } })
+            if (checks.isNotEmpty()) {
+                val prefs = remember { ctx.getSharedPreferences("ui", 0) }
+                val problems = checks.count { it.problem }
+                var open by remember(d.id, problems > 0) { mutableStateOf(prefs.getBoolean("setupOpen:${d.id}", problems > 0)) }
+                val toggle = { open = !open; prefs.edit().putBoolean("setupOpen:${d.id}", open).apply() }
+                Section("Setup", folded = !open, onFold = toggle) {
+                    if (!open) {
+                        Row2(if (problems == 0) "All set" else "$problems need${if (problems == 1) "s" else ""} attention",
+                            "${checks.size} checks",
+                            icon = {
+                                if (problems == 0) Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen)
+                                else Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.error)
+                            },
+                            trailing = { TextButton(onClick = toggle) { Text("Show") } })
+                        return@Section
+                    }
+                    var showPassed by rememberSaveable { mutableStateOf(false) }
+                    val passed = checks.filter { it.ok }
+                    (checks - passed.toSet()).sortedBy { if (it.problem) 0 else 1 }.plus(if (showPassed) passed else emptyList()).forEach { c ->
+                        Row2(c.title, c.detail, icon = {
+                            when {
+                                c.ok -> Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen)
+                                c.level == "error" -> Icon(Icons.Rounded.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
+                                c.level == "warn" -> Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.error)
+                                else -> Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }, trailing = if (c.fixable && c.problem) ({ TextButton(onClick = { a.fix(c) }, enabled = !busy) { Text("Fix") } }) else null)
+                    }
+                    if (passed.isNotEmpty() && !showPassed) {
+                        Row2(if (passed.size == checks.size) "All set" else "${passed.size} more passed",
+                            icon = { Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen) },
+                            trailing = { TextButton(onClick = { showPassed = true }) { Text("Show") } })
+                    }
                 }
             }
 
@@ -297,16 +322,29 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                 }
             }
 
-            // ---- Agents
-            if (d.hasHelper) Section("AI agents and scripts") {
-                Row2("Let an agent use PowerDeck", "Shutdowns from agents always count down 60 s")
-                detail.keys?.forEach { k ->
-                    Row2(k.name, k.scopes.joinToString(", ") + if (k.devices.isNotEmpty()) " · ${k.devices.joinToString()}" else "",
-                        trailing = { IconButton(onClick = { a.removeKey(k) }) { Icon(Icons.Rounded.Delete, contentDescription = "Remove") } })
-                }
-                Row(Modifier.padding(start = 8.dp)) {
-                    if (detail.keys == null) TextButton(onClick = a.loadKeys) { Text("Show keys") }
-                    TextButton(onClick = { addingKey = true }) { Text("Connect an agent") }
+            // ---- Agents: one switch once an agent can reach this device, a Set up button until then
+            if (d.hasHelper) Section("AI agents") {
+                val keys = agentKeysFor(d, state.states)
+                val agents = status?.agents
+                if (keys.isEmpty()) {
+                    Row2("Allow AI agents to use this device", "Let an assistant like Claude check, wake and shut down your devices",
+                        trailing = { FilledTonalButton(onClick = a.agents) { Text("Set up") } })
+                } else {
+                    val on = agents?.allowed ?: true
+                    ListItem(
+                        headlineContent = { Text("Allow AI agents to use this device") },
+                        supportingContent = {
+                            Text(when {
+                                agents == null -> "Turn ${d.name} on to change this"
+                                on -> "${keys.joinToString()} can use it. Shutdowns count down 60 s"
+                                else -> "Agents can see whether it's on, but can't turn it on or off"
+                            })
+                        },
+                        trailingContent = { Switch(checked = on, onCheckedChange = a.setAgents, enabled = agents != null && !busy) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.toggleable(on, enabled = agents != null && !busy, role = Role.Switch, onValueChange = a.setAgents),
+                    )
+                    TextButton(onClick = a.agents, modifier = Modifier.padding(start = 8.dp)) { Text("Manage agents") }
                 }
             }
 
@@ -324,25 +362,8 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
         }
     }
 
-    if (renaming) {
-        var name by rememberSaveable { mutableStateOf(d.name) }
-        AlertDialog(
-            onDismissRequest = { renaming = false },
-            title = { Text("Rename") },
-            text = { OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, singleLine = true) },
-            confirmButton = { Button(onClick = { renaming = false; a.rename(name) }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } },
-        )
-    }
-    if (confirmRemove) {
-        AlertDialog(
-            onDismissRequest = { confirmRemove = false },
-            title = { Text("Remove ${d.name}?") },
-            text = { Text("It disappears from this phone. The helper stays installed; to uninstall it, use the device's own uninstaller.") },
-            confirmButton = { Button(onClick = { confirmRemove = false; a.remove() }) { Text("Remove") } },
-            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
-        )
-    }
+    if (renaming) RenameDialog(d.name, onSave = a.rename, onDismiss = { renaming = false })
+    if (confirmRemove) DeleteDialog(d, st, onRemove = a.remove, onUninstall = a.uninstall, onDismiss = { confirmRemove = false })
     if (confirmForce) {
         AlertDialog(
             onDismissRequest = { confirmForce = false },
@@ -355,8 +376,6 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
         )
     }
     if (scheduling) ScheduleDialog(d, status, onSave = { act, t, days, skip -> scheduling = false; a.addSchedule(act, t, days, skip) }, onDismiss = { scheduling = false })
-    if (addingKey) KeyDialog(d, state.devices, onCreate = { n, p, devs -> a.addKey(n, p, devs); addingKey = false }, onDismiss = { addingKey = false })
-    detail.newKey?.let { NewKeyDialog(d, it, a.clearNewKey) }
     linkKvm?.let { p -> KvmDialog(p, state.devices, onLink = a.linkKvm, onDismiss = { linkKvm = null }, fixedDevice = d) }
 }
 
@@ -430,63 +449,4 @@ internal fun clockNote(name: String, offsetMinutes: Int?, phoneOffsetMinutes: In
     val zone = "UTC" + (if (offsetMinutes < 0) "−" else "+") + (o / 60) + (if (o % 60 != 0) ":%02d".format(o % 60) else "")
     val diff = phoneOffsetMinutes - offsetMinutes
     return "Times are on $name's clock ($zone), ${span(kotlin.math.abs(diff))} ${if (diff > 0) "behind" else "ahead of"} your phone."
-}
-
-@Composable
-private fun KeyDialog(hub: Device, devices: List<Device>, onCreate: (String, Boolean, List<String>) -> Unit, onDismiss: () -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var power by rememberSaveable { mutableStateOf(false) }
-    var picked by rememberSaveable { mutableStateOf(devices.filter { it.hasHelper || it.id == hub.id }.map { it.fleetName }) } // the names helpers know them by
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Connect an agent") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(value = name, onValueChange = { name = it.take(40) }, label = { Text("Agent name (shown in History)") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
-                Spacer(Modifier.height(8.dp))
-                Text("Devices it may use", style = MaterialTheme.typography.labelLarge)
-                devices.filter { it.hasHelper }.forEach { dev ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = dev.fleetName in picked, onCheckedChange = { picked = if (it) picked + dev.fleetName else picked - dev.fleetName })
-                        Text(dev.name)
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Can shut down and restart")
-                        Text("Off: it can only check status and turn devices on.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = power, onCheckedChange = { power = it })
-                }
-            }
-        },
-        confirmButton = { Button(onClick = { onCreate(name.trim(), power, picked) }, enabled = name.isNotBlank() && picked.isNotEmpty()) { Text("Create key") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun NewKeyDialog(hub: Device, key: String, onDone: () -> Unit) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val config = """{"mcpServers":{"powerdeck":{"type":"http","url":"http://${hub.host}:47323/mcp","headers":{"Authorization":"Bearer $key"}}}}"""
-    AlertDialog(
-        onDismissRequest = {},
-        title = { Text("Agent key created") },
-        text = {
-            Column {
-                Text("Add this to the agent's MCP settings. It's shown only once, and works only from the first device that uses it.")
-                Spacer(Modifier.height(10.dp))
-                Text(config, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-            }
-        },
-        confirmButton = {
-            Button(onClick = { copyText(ctx, config, sensitive = true) }) {
-                Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Copy")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDone) { Text("Done") } },
-    )
 }

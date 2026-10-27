@@ -91,7 +91,11 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.gms.code.scanner)
+    // QR scanner inside the app: CameraX and ZXing (pure Java: no Google Play, no native code).
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+    implementation(libs.zxing.core)
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
 

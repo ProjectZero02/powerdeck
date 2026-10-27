@@ -93,7 +93,8 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
 | GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto}`; `?check=1` asks GitHub first |
 | POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown, `502 update_check` when GitHub can't be reached. The helper restarts a few seconds later; `installing` clears itself after 10 minutes if it doesn't, with `error` saying so |
-| POST | `/v2/settings` | owner | `{autoUpdate}` → `204`. Automatic updates (default on): check every 6 hours, install when nothing is counting down |
+| POST | `/v2/settings` | owner | `{autoUpdate?, agents?}` → `204`. `autoUpdate` (default on): check every 6 hours, install when nothing is counting down. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work |
+| POST | `/v2/uninstall` | owner | `{confirm: <this device's name>}` → `202`, then the helper uninstalls itself and deletes its keys and settings. `409 pending` during a countdown. Offered when `caps` has `uninstall` |
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
@@ -116,13 +117,14 @@ before retrying with `force: true`. Callers without the `force` scope can't over
   "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
   "guests": {"running": 3, "names": ["public", "private", "agent"]},
   "network": {"mac": "02:00:5e:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
-  "caps": ["shutdown", "restart", "wake"],
+  "caps": ["shutdown", "restart", "wake", "uninstall"],
   "checks": [Check],
+  "agents": {"allowed": true, "keys": [{"name": "Atlas", "devices": ["Workstation", "nas"]}]},
   "you": {"kind": "owner", "name": "Pixel 9 Pro", "scopes": ["status", "wake", "power", "force", "admin"]}
 }
 ```
 
-`guests` appears on Proxmox hosts. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
+`guests` appears on Proxmox hosts. `agents` and the `uninstall` cap are shown to owners only; `agents.keys` lists the automation keys this helper holds and the devices each may use. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
 
 ### Check
 

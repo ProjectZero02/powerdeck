@@ -128,6 +128,9 @@ data class HelperStatus(
     val utcOffsetMinutes: Int? = null,
     /** The helper's own updates (owners only). */
     val update: HelperUpdate? = null,
+    /** Whether AI agents may use this device, and the agent keys this helper holds (owners only). */
+    val agents: Agents? = null,
+    val caps: List<String> = emptyList(),
 ) {
     companion object {
         fun pendingFrom(p: JSONObject?) = p?.let { Pending(it.optString("action"), Instant.parse(it.optString("at")), it.optString("by")) }
@@ -152,10 +155,24 @@ data class HelperStatus(
                 youName = o.optJSONObject("you")?.optStringOrNull("name"),
                 utcOffsetMinutes = if (o.has("utcOffsetMinutes")) o.optInt("utcOffsetMinutes") else null,
                 update = o.optJSONObject("update")?.let(HelperUpdate::from),
+                agents = o.optJSONObject("agents")?.let(Agents::from),
+                caps = o.optJSONArray("caps")?.strings() ?: emptyList(),
             )
         }
     }
 }
+
+/** [keys]: agent keys on that helper, each limited to [AgentKey.devices] (empty: all of them). */
+data class Agents(val allowed: Boolean, val keys: List<AgentKey>) {
+    companion object {
+        fun from(o: JSONObject) = Agents(
+            o.optBoolean("allowed", true),
+            o.optJSONArray("keys")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.map { AgentKey(it.optString("name"), it.optJSONArray("devices")?.strings() ?: emptyList()) } } ?: emptyList(),
+        )
+    }
+}
+
+data class AgentKey(val name: String, val devices: List<String>)
 
 /** A helper's self-update state: it checks every 6 hours and, when [auto] is on, installs on its own. */
 data class HelperUpdate(val available: Boolean, val latest: String?, val installing: Boolean, val auto: Boolean, val error: String? = null) {

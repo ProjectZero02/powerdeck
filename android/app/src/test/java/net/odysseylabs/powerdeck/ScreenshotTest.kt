@@ -43,7 +43,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryFull
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Icon
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.captureScreenRoboImage
 import net.odysseylabs.powerdeck.data.Check
 import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
@@ -57,7 +59,24 @@ import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Schedule
 import net.odysseylabs.powerdeck.data.Settings
 import net.odysseylabs.powerdeck.ui.AddActions
+import android.Manifest
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
+import net.odysseylabs.powerdeck.data.AgentKey
+import net.odysseylabs.powerdeck.data.Agents
+import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.ui.AddScreen
+import net.odysseylabs.powerdeck.ui.AgentsActions
+import net.odysseylabs.powerdeck.ui.AgentsScreen
+import net.odysseylabs.powerdeck.ui.DeleteDialog
+import net.odysseylabs.powerdeck.ui.ScanScreen
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows
 import net.odysseylabs.powerdeck.ui.AddStep
 import net.odysseylabs.powerdeck.ui.Detail
 import net.odysseylabs.powerdeck.ui.DeviceActions
@@ -97,6 +116,8 @@ class ScreenshotTest {
             Check("fast_startup", "warn", "Fast Startup is on", "Shutting down from the Start menu then leaves the PC unable to wake.", true),
             Check("bios", "info", "Check the BIOS: Wake-on-LAN on, ErP off", "A first wake from the app confirms them.", false),
         ), youName = "Pixel",
+        agents = Agents(allowed = true, keys = listOf(AgentKey("Atlas", listOf("Gaming-PC", "pve")))),
+        caps = listOf("shutdown", "restart", "uninstall"),
     )
     private val all = UiState(
         loaded = true, devices = listOf(pc, pve, nas), tiles = listOf("pc", "pve", null, null),
@@ -148,6 +169,35 @@ class ScreenshotTest {
         )
     }
 
+    @Test fun addSearching() = shot("add-searching") {
+        AddScreen(UiState(loaded = true, devices = listOf(pc), finding = true), AddActions(back = {}), SnackbarHostState())
+    }
+
+    @Test fun addNothing() = shot("add-nothing") {
+        AddScreen(UiState(loaded = true, devices = listOf(pc), found = emptyList()), AddActions(back = {}), SnackbarHostState())
+    }
+
+    @Test fun scan() {
+        Shadows.shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.CAMERA)
+        shot("scan") { CompositionLocalProvider(LocalInspectionMode provides true) { ScanScreen(onCode = {}, onBack = {}) } }
+    }
+
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test fun homeMenu() {
+        compose.setContent { PowerDeckTheme(dynamic = false) { WithStatusBar { HomeScreen(all, HomeActions(), SnackbarHostState(), false) } } }
+        compose.onNodeWithContentDescription("More for Gaming-PC").performClick()
+        compose.onNodeWithText("Delete").assertExists()
+        compose.onNodeWithText("Settings").assertExists()
+        captureScreenRoboImage("build/outputs/roborazzi/home-menu.png") // the menu is its own window
+    }
+
+    @Test fun delete() = shot("delete") { DeleteDialog(pc, all.states["pc"], {}, {}, {}) }
+
+    @Test fun agents() = shot("agents") {
+        AgentsScreen(pve, all, Detail(keys = listOf(KeyInfo("k", "Atlas", "automation", listOf("status", "wake"), listOf("Gaming-PC", "pve"), true, "2026-10-27T07:00:00Z"))),
+            AgentsActions(), SnackbarHostState())
+    }
+
     @Test fun device() = shot("device") {
         DeviceScreen(
             pc, all,
@@ -162,6 +212,13 @@ class ScreenshotTest {
             ),
             DeviceActions(), SnackbarHostState(),
         )
+    }
+
+    @Test fun deviceAgents() {
+        shot("device-agents") { DeviceScreen(pc, all, Detail(), DeviceActions(), SnackbarHostState()) }
+        compose.onNodeWithText("Allow AI agents to use this device").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Atlas can use it. Shutdowns count down 60 s").assertExists()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-agents.png")
     }
 
     @Test fun settings() = shot("settings") { SettingsScreen(Settings(), SettingsActions()) }

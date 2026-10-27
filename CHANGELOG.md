@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.3
+
+A proper Windows window, a scanner that works everywhere, and simpler controls.
+
+- **Windows:** PowerDeck opens in its own window instead of a browser tab, with a title bar and scroll bar that match the light or dark theme. The first start walks through three steps you can skip: a code to get the app, a code to add the PC, and its setup checks one by one, with optional AI agent setup. **Show icon in hidden icons** adds a taskbar icon that opens PowerDeck. The PC's address, network card and other devices show straight away.
+- **Scanner:** the QR scanner is now built into the app instead of relying on Google Play services, which could close the app without opening the camera. It asks for the camera once, accepts only PowerDeck codes, and has a light button.
+- **Add devices:** a radar while PowerDeck searches your tailnet, **Search again** when nothing new turns up, and the scan button at the bottom. Type a **Tailscale name or IP**. Install commands moved to GitHub behind an **Install** link.
+- **Device cards** have a **⋮** menu: Rename, Settings, Add to home screen, Delete. **Delete** asks whether to remove the device from this phone only or also uninstall PowerDeck from it.
+- **AI agents:** one switch per device, **Allow AI agents to use this device**. Off, agents can still see whether it's on but can't turn it on or off, on that device or through a hub. Until an agent is connected the switch is a **Set up** button that explains how.
+- **Setup checks** on a device page fold away, and stay folded once everything passes.
+
 ## 2.0.2
 
 Fixes from a final review.

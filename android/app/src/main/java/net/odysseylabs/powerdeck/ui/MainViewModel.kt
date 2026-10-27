@@ -241,10 +241,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resetAdd() = _state.update { it.copy(add = AddStep.Idle) }
 
-    fun scanFailed(reason: String?) = _state.update {
-        it.copy(add = AddStep.Failed("Couldn't open the scanner${reason?.let { r -> " ($r)" } ?: ""}. Type the device's name instead."))
-    }
-
     fun find(refresh: Boolean) {
         if (_state.value.finding || _state.value.devices.none { it.hasHelper }) return
         viewModelScope.launch {
@@ -345,6 +341,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .onSuccess { k -> _detail.update { it.copy(newKey = k) } }
                 .onFailure { _messages.send(it.message ?: "Couldn't create the key.") }
             loadKeys(d)
+            refreshNow() // the device pages show which devices an agent can reach
         }
     }
 
@@ -354,6 +351,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             deck.withHelper(d) { removeKey(k.id) }.onFailure { _messages.send(it.message ?: "Couldn't remove it.") }
             loadKeys(d)
+            refreshNow()
         }
     }
 
@@ -366,6 +364,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             deck.remove(d)
             _messages.send("Removed ${d.name}")
             Shortcuts.refreshAll(getApplication())
+        }
+    }
+
+    /** Removes [d] from this phone after asking its helper to uninstall PowerDeck. */
+    fun uninstall(d: Device) {
+        val name = (_state.value.states[d.id] as? DeviceState.On)?.status?.name ?: return
+        viewModelScope.launch {
+            deck.withHelper(d) { uninstall(name) }.fold(
+                {
+                    deck.store.remove(d.id)
+                    _messages.send("Uninstalling PowerDeck from ${d.name}. It's removed from this phone.")
+                    Shortcuts.refreshAll(getApplication())
+                },
+                { _messages.send(it.message ?: "Couldn't reach ${d.name}. Nothing was removed.") },
+            )
+        }
+    }
+
+    /** Lets AI agents turn [d] on and off, or not. They can always see its status. */
+    fun setAgents(d: Device, on: Boolean) {
+        viewModelScope.launch {
+            deck.withHelper(d) { setAgents(on) }.fold(
+                { refreshNow() },
+                { _messages.send(it.message ?: "Couldn't reach ${d.name}; try again when it's on.") },
+            )
         }
     }
 

@@ -140,6 +140,16 @@ class HelperClient(
         call("POST", "/v2/settings", JSONObject().put("autoUpdate", on))
     }
 
+    /** Whether AI agents may turn this device on and off. */
+    suspend fun setAgents(on: Boolean) {
+        call("POST", "/v2/settings", JSONObject().put("agents", on))
+    }
+
+    /** Uninstalls PowerDeck from the device; [confirm] must be its name. */
+    suspend fun uninstall(confirm: String) {
+        call("POST", "/v2/uninstall", JSONObject().put("confirm", confirm))
+    }
+
     suspend fun cancel() {
         call("POST", "/v2/power/cancel")
     }
