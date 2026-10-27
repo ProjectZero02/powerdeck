@@ -1,8 +1,8 @@
-<p align="center"><img src="windows/assets/icon-256.png" width="96" alt=""></p>
+<p align="center"><img src="helper/assets/icon-256.png" width="96" alt=""></p>
 
 <h1 align="center">PowerDeck</h1>
 
-<p align="center">Turn your PC and your server on and off from your phone, from anywhere.</p>
+<p align="center">Turn your computers on and off from your phone, from anywhere.</p>
 
 <p align="center">
   <a href="https://github.com/ProjectZero02/powerdeck/releases/latest"><img src="https://img.shields.io/github/v/release/ProjectZero02/powerdeck" alt="Latest release"></a>
@@ -11,100 +11,125 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home-both-on.png" width="200" alt="Dashboard with the PC and server both on">
-  <img src="docs/images/home-pc-shutting-down.png" width="200" alt="PC shutting down, with a cancel button">
-  <img src="docs/images/home-dark.png" width="200" alt="Dashboard in dark mode">
-  <img src="docs/images/welcome-pairing.png" width="200" alt="Pairing with a PC">
-</p>
-
-<p align="center">
-  <img src="docs/images/pc-window.png" width="560" alt="The PowerDeck window on the PC: pairing QR codes, paired phones and setup checks">
+  <img src="docs/images/home.png" width="200" alt="Three devices with their state and power buttons">
+  <img src="docs/images/device.png" width="200" alt="A device's page: setup checks, schedules">
+  <img src="docs/images/add-found.png" width="200" alt="Adding devices found on the tailnet">
+  <img src="docs/images/home-dark.png" width="200" alt="Dark mode">
 </p>
 
 ---
 
-PowerDeck is two small apps:
+PowerDeck has two parts:
 
-- **PowerDeck for Windows** runs quietly in the background on your PC. It lets your paired phone shut the PC down or restart it, and it shows the code that pairs your phone.
-- **PowerDeck for Android** shows whether your PC and server are on, with one big button for each. It also gives you a home-screen widget and Quick Settings tiles.
+- **The helper**, a small background service for **Windows** and **Linux** (including Proxmox). It shuts its computer down or restarts it, sends Wake-on-LAN to other computers on its network, and finds the other PowerDeck devices on your tailnet.
+- **The Android app**, listing every device with its state and a power button. It adds a home-screen widget, Quick Settings tiles and notifications.
 
-It works anywhere your phone has internet, over your own [Tailscale](https://tailscale.com) network. Nothing is exposed to the internet.
+> [!IMPORTANT]
+> **PowerDeck needs [Tailscale](https://tailscale.com)** (free for personal use) on your phone and on every computer, signed in to the same account. That's how your phone reaches your devices from anywhere, and how PowerDeck knows they're yours. Nothing is exposed to the internet.
 
-| What | How |
+| | How |
 |---|---|
-| **Turn the PC on** | A Wake-on-LAN signal, sent by your NanoKVM from inside your home network |
-| **Shut down or restart the PC** | The PowerDeck service on the PC (30-second warning, cancellable) |
-| **Turn the server on or off** | Your NanoKVM presses the server's power button. A short press means a clean OS shutdown, and PowerDeck checks the power light first so it never toggles the wrong way |
+| **Shut down / restart** | The helper on that computer: a clean shutdown with a 60-second countdown you can cancel. If someone is using it (or a game is full-screen), PowerDeck asks first |
+| **Turn on** | Wake-on-LAN, sent by another PowerDeck device that's on the same home network (e.g. an always-on server), or by your phone when it's at home |
+| **Optional: a [NanoKVM](https://github.com/sipeed/NanoKVM)** wired to the power button | Turns the computer on by pressing the button, even where Wake-on-LAN can't, and is a fallback for shutting down. PowerDeck reads the power light first, so a press never turns a running computer off by mistake |
 
-## Install
+## Set up
 
-**You need:** Tailscale on the PC and on the phone, both signed in to the same tailnet. Server control also needs a [NanoKVM](https://github.com/sipeed/NanoKVM) wired to the server's power button and power light.
+1. **Tailscale**: install it on your phone and your computers, and sign in with the same account.
+2. **The helper**: run one line on each computer.
 
-1. **On the PC:** download **[PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe)** and run it. Approve the admin prompt.
-   PowerDeck sets itself up and opens a window with two QR codes.
-2. **On the phone:** scan the first QR code ("Get the app") with the camera and install **PowerDeck.apk**.
-   Android asks you once to allow installing apps from your browser.
-3. **In the app:** tap **Scan pairing code** and scan the second QR code.
-   Then enter your NanoKVM password once. Your password manager can fill it in.
+   **Windows**: open PowerShell and paste:
+   ```powershell
+   irm https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.ps1 | iex
+   ```
+   (or download and run [PowerDeck-Setup.exe](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck-Setup.exe)). A window opens with a QR code.
 
-That's it. Add the widget or the Quick Settings tiles for one-tap control.
+   **Linux / Proxmox**: in a terminal:
+   ```sh
+   curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sudo sh
+   ```
+   It prints a QR code (show it again any time with `powerdeck-helper qr`).
 
-> **First run on Windows:** the installer isn't code-signed yet, so SmartScreen may say "Windows protected your PC". Choose **More info → Run anyway**. Every release is built by GitHub Actions from this repository.
+   Both installers verify the download before running it, set up everything the computer needs (see [below](#what-the-helper-sets-up)), and tell you about anything they can't fix themselves, such as a BIOS setting.
+3. **The app**: install [PowerDeck.apk](https://github.com/ProjectZero02/powerdeck/releases/latest/download/PowerDeck.apk) on your phone (the Windows window has a QR code for it). Open it and tap **Scan the helper's code**.
 
-### What the installer sets up on the PC
+Your other PowerDeck computers and NanoKVMs then show up under **Found on your tailnet**: tap **Add** for each. A NanoKVM asks for its password and which computer's power button it's wired to.
 
-- A **Windows service** ("PowerDeck") that starts with Windows, before anyone signs in.
-- A **firewall rule** that admits only Tailscale addresses (`100.64.0.0/10`) to PowerDeck's port.
-- **Wake-on-LAN** on your wired network card, and **Fast Startup off**, so "shut down" is a real cold shutdown the card can wake from.
-- **Tailscale unattended mode**, so the PC is reachable at the sign-in screen after it wakes up.
-- A **Start menu** entry that reopens the PowerDeck window to pair more phones or remove one.
+> **Windows SmartScreen** may warn about the installer because it isn't code-signed yet. Choose **More info → Run anyway**. Every release is built by GitHub Actions from this repository (see [Checking a download](#checking-a-download)).
 
-Your BIOS needs Wake-on-LAN enabled too. On ASUS boards that's *ErP Ready: Disabled* and *Power On By PCI-E: Enabled*.
+### Shortcuts
 
-### Updates
+- **Widget**: every device and its state; tap one for a quick on/off dialog.
+- **Quick Settings tiles**: up to four; pick a device for each on its page.
+- **Home-screen shortcut** per device (device page → ⋮ → Add to home screen), and long-press shortcuts on the app icon.
 
-Both apps update themselves from the [releases](https://github.com/ProjectZero02/powerdeck/releases):
+### On each device's page
 
-- **Windows** installs updates automatically. You can turn this off in the PowerDeck window. Each installer is checked against an Ed25519 signature before it runs.
-- **Android** shows an "Update available" card. Android itself refuses any update that isn't signed with the same key as the installed app.
+- **Setup checks**, with a **Fix** button where PowerDeck can fix it remotely (Wake-on-LAN, Fast Startup, firewall, Tailscale unattended).
+- **Schedules**: shut down, restart or wake at set times. Wake schedules are kept by another always-on device on the same network.
+- **History**: who did what and when, including schedules and agents.
+- **Update and shut down** on Windows when updates are waiting.
 
-### Checking a download
+## AI agents (MCP)
 
-Every release lists SHA-256 checksums in `SHA256SUMS.txt` and carries a GitHub build attestation, so you can confirm a file was built by this repository's CI:
+PowerDeck can let an AI agent or a script check and control your devices through [MCP](https://modelcontextprotocol.io). Open an always-on device in the app (a home server is ideal), tap **Connect an agent**, choose which devices it may use and whether it may shut them down, and paste the config it shows into your agent:
 
+```json
+{"mcpServers": {"powerdeck": {"type": "http", "url": "http://<server's tailnet address>:47323/mcp",
+  "headers": {"Authorization": "Bearer pdk_…"}}}}
 ```
-gh attestation verify PowerDeck-Setup.exe --repo ProjectZero02/powerdeck
-```
+
+Tools: `list_devices`, `get_status`, `power_on`, `power_off`, `cancel`. Whatever the agent asks, the helper enforces the limits: only the devices and permissions on its key, never while someone is using the device, always the 60-second countdown, at most one shutdown per device per 10 minutes, and never the device the agent itself runs on. The key works only from the first device that uses it. Every action appears in History and in a notification on your phone.
+
+## What the helper sets up
+
+| | Windows | Linux |
+|---|---|---|
+| Runs as | A service that starts before anyone signs in | A systemd service |
+| Network | Firewall rule admitting only Tailscale addresses | Answers only Tailscale addresses and loopback |
+| Wake-on-LAN | Armed on the wired card; Fast Startup off so "shut down" is a real power-off | Armed with ethtool at every start |
+| Tailscale | Unattended mode, so it's reachable at the sign-in screen | |
+| Updates | Automatic, Ed25519-signature-checked | Automatic, Ed25519-signature-checked |
+
+Your BIOS needs Wake-on-LAN enabled. On many boards that's *ErP Ready: Disabled* and *Power On By PCI-E: Enabled*. For a server, also turn on *Restore on AC power loss* so it comes back after a power cut.
+
+To remove the helper: on Windows, Settings → Apps → PowerDeck → Uninstall. On Linux, `curl -fsSL https://github.com/ProjectZero02/powerdeck/releases/latest/download/install.sh | sudo sh -s -- --uninstall` (add `--purge` to delete its data too).
 
 ## Troubleshooting
 
 | Problem | Try |
 |---|---|
-| The app says the PC is off, but it's on | Check Tailscale is connected on both. In the PowerDeck window on the PC, all setup checks should be green |
-| "Turn on" does nothing | Wake-on-LAN must be enabled in the BIOS, and the PC must be wired (Wi-Fi can't wake). Do a full shutdown from PowerDeck once so Windows leaves the network card armed |
-| The PC is unreachable after waking | Turn on **Run unattended** in the Tailscale tray menu, so Tailscale connects before anyone signs in |
-| The server doesn't respond | Check **Settings → Server (NanoKVM)** says "Connected", and that the NanoKVM is on your tailnet |
-| Pairing code expired | Codes last 10 minutes. Click **New code** in the PowerDeck window |
+| A device shows **Off** but it's on | Check Tailscale is connected on both, and look at the device's setup checks |
+| **Turn on** does nothing | The device must be wired (Wi-Fi can't wake), Wake-on-LAN must be on in the BIOS, and something on that network has to be on to send the signal: another helper, a NanoKVM, or your phone at home |
+| Reachable only after someone signs in (Windows) | Fix the **Tailscale unattended** check |
+| "Another Tailscale account" | The device belongs to a different account: enter the pairing code its helper shows |
+| An always-on device drops off after a few months | In the Tailscale admin console, **Disable key expiry** for it |
 
-The Windows log is at `C:\ProgramData\PowerDeck\logs\powerdeck.log`.
+Logs: Windows `C:\ProgramData\PowerDeck\logs\`, Linux `journalctl -u powerdeck`.
 
 ## Security
 
-- **Pairing** works like linking WhatsApp Web. The QR code carries a one-time code (valid 10 minutes, single use, 5 wrong guesses and it's gone) and the PC's certificate fingerprint. The phone gets its own long random token. The PC stores only a hash of it, and you can revoke it from the PC.
-- **Phone ↔ PC** traffic is HTTPS (TLS 1.3) pinned to that PC's own certificate, so another device can't pretend to be your PC. It also runs inside Tailscale's WireGuard tunnel. The PC only answers tailnet addresses, and it throttles repeated failures.
-- **The NanoKVM password** stays on the phone, encrypted with a key held in Android's hardware-backed keystore. It's never sent to the PC or anywhere else. The app is excluded from backups.
-- **The PC window** is served on `127.0.0.1` only. It's protected against DNS rebinding and against other websites calling it.
+- **Trust comes from Tailscale.** A helper asks Tailscale who's calling. Only devices signed in to the same Tailscale account (not shared or tagged ones) are trusted automatically. Anyone else needs a one-time 8-character pairing code shown on the device (10 minutes, 5 wrong guesses and it's gone). Agents use keys that are limited in what they can do and bound to one device.
+- **Phone ↔ helper** traffic is HTTPS pinned to that helper's own certificate, inside Tailscale's WireGuard tunnel. Helpers answer only tailnet addresses and throttle repeated failures.
+- **The NanoKVM password** never leaves your phone. It's encrypted with a key in Android's hardware keystore, and the app is excluded from backups.
+- **Downloads** are checked: installers and updates verify an Ed25519 signature, Android only accepts updates signed with the same key, and every release has SHA-256 checksums and a GitHub build attestation.
 
 Details: [SECURITY.md](SECURITY.md) · protocol: [docs/protocol.md](docs/protocol.md)
+
+### Checking a download
+
+```
+gh attestation verify PowerDeck-Setup.exe --repo ProjectZero02/powerdeck
+```
 
 ## Building
 
 | Part | Stack | Test |
 |---|---|---|
-| `windows/` | Go 1.27, no CGO. The installer is Inno Setup | `go test ./...` · `go run ./tools/demo` shows the PC window with sample data |
-| `android/` | Kotlin, Jetpack Compose (Material 3), Glance widget, AGP 9 | `./gradlew testDebugUnitTest` (unit tests plus Roborazzi screenshots) |
+| `helper/` | Go, no CGO; Windows installer with Inno Setup | `go test ./...` · `go run ./tools/demo` shows the Windows window with sample data |
+| `android/` | Kotlin, Jetpack Compose (Material 3), Glance widget | `./gradlew testDebugUnitTest` (unit tests plus Roborazzi screenshots) |
 
-CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) runs all tests. It also installs, upgrades and uninstalls the real installer on a Windows VM, and renders every screen. Pushing a tag `vX.Y.Z` publishes a signed release.
+CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) runs all tests. It also installs and uninstalls the real helper on Windows and Linux runners, including a real scheduled shutdown that is then cancelled. Pushing a tag `vX.Y.Z` publishes a signed release.
 
 ## Contributing
 

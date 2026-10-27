@@ -21,8 +21,11 @@ data class Device(
     val kvm: KvmLink? = null,
     val guests: Boolean = false, // a Proxmox host (warn about VMs)
     val me: String? = null,      // what this phone is called in the helper's log
+    val helperName: String? = null, // the helper's own name, which other helpers know it by
 ) {
     val hasHelper get() = host != null && pin != null
+    /** The name to use when asking other helpers about this device. */
+    val fleetName get() = helperName ?: name
     val kind: Kind get() = when {
         guests -> Kind.Server
         os == "windows" -> Kind.Pc
@@ -35,7 +38,7 @@ data class Device(
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("host", host).put("port", port).put("pin", pin).put("os", os)
         .put("mac", mac).put("lan", JSONArray(lan)).put("hasKey", hasKey).put("guests", guests)
-        .put("kvm", kvm?.toJson()).put("me", me)
+        .put("kvm", kvm?.toJson()).put("me", me).put("helperName", helperName)
 
     companion object {
         fun fromJson(o: JSONObject) = Device(
@@ -51,6 +54,7 @@ data class Device(
             guests = o.optBoolean("guests"),
             kvm = o.optJSONObject("kvm")?.let(KvmLink::fromJson),
             me = o.optStringOrNull("me"),
+            helperName = o.optStringOrNull("helperName"),
         )
     }
 }
@@ -177,5 +181,8 @@ sealed interface DeviceState {
 /** Last known power states, shown by the widget and tiles without a network round trip. */
 enum class Power { On, Off, Unknown }
 
-/** Result of a button press, phrased for the user. `inUse` asks the user before forcing. */
-data class Outcome(val ok: Boolean, val message: String, val inUse: Presence? = null)
+/** Result of a button press, phrased for the user. `ask` means: confirm, then repeat with force. */
+data class Outcome(val ok: Boolean, val message: String, val ask: Ask? = null)
+
+/** A question to put to the user before going ahead anyway. */
+data class Ask(val title: String, val text: String, val confirm: String, val kvmPress: Boolean = false)

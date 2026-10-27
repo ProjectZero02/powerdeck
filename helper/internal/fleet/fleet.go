@@ -83,11 +83,15 @@ func (f *Fleet) Scan(ctx context.Context) error {
 }
 
 func (f *Fleet) remember(ctx context.Context, p discovery.Peer) {
-	rec := store.Peer{Name: p.Name, DNSName: p.DNSName, Address: p.Address, Port: p.Port, Pin: p.Pin, OS: p.OS, LastSeen: f.Now()}
+	rec := store.Peer{Name: p.Name, Device: p.Device, DNSName: p.DNSName, Address: p.Address, Port: p.Port, Pin: p.Pin, OS: p.OS, LastSeen: f.Now()}
 	if old, ok := f.Store.Peer(p.Name); ok && old.Pin != "" && old.Pin != p.Pin {
-		// Never trust a changed certificate silently (reinstall, or something pretending).
-		f.Log.Warn("peer certificate changed; keeping the old one", "peer", p.Name)
-		return
+		// A new certificate is expected after a reinstall. Accept it only from the same tailnet node
+		// (WireGuard vouches for that); a different node taking over the name is ignored.
+		if old.DNSName == "" || !strings.EqualFold(old.DNSName, p.DNSName) {
+			f.Log.Warn("a different node now uses this name; ignoring it", "peer", p.Name)
+			return
+		}
+		f.Log.Warn("peer certificate changed (reinstalled?); accepting it from the same node", "peer", p.Name)
 	}
 	var st struct {
 		Network netinfo.Network `json:"network"`

@@ -2,8 +2,8 @@
 // phone, the pairing code for other Tailscale accounts, keys (phones and agents), setup checks,
 // activity and updates. It also takes presence reports from the user-session companion.
 //
-// Hardening for a loopback web app: the Host header must be the loopback address (defeats DNS
-// rebinding), every API call and QR image needs a per-run key that is only embedded in the page itself
+// Hardening for a loopback web app: on Windows only programs of the person at the screen (or an
+// administrator) may connect, the Host header must be the loopback address (defeats DNS rebinding), every API call and QR image needs a per-run key that is only embedded in the page itself
 // (other websites can't read the page cross-origin), and responses forbid framing and caching.
 package localui
 
@@ -62,7 +62,10 @@ type Deps struct {
 	Checks      func(ctx context.Context) []check.Result
 	Fix         func(ctx context.Context, id string) (check.Result, error)
 	Reports     *power.Reports // presence from the user-session companion (Windows)
-	Log         *slog.Logger
+	// AllowLocal, if set, decides whether the program behind a connection (its "ip:port") may use
+	// the window: on Windows, only the person at the screen or an administrator.
+	AllowLocal func(remote string) bool
+	Log        *slog.Logger
 }
 
 type ui struct {
@@ -105,6 +108,10 @@ func (u *ui) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowed[r.Host] {
 			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if u.AllowLocal != nil && !u.AllowLocal(r.RemoteAddr) {
+			http.Error(w, "PowerDeck's window is only for the person signed in at this PC's screen.", http.StatusForbidden)
 			return
 		}
 		h := w.Header()

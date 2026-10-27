@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import net.odysseylabs.powerdeck.data.AddInfo
 import net.odysseylabs.powerdeck.data.AddLink
 import net.odysseylabs.powerdeck.data.AddResult
 import net.odysseylabs.powerdeck.data.Check
@@ -24,7 +25,7 @@ import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Outcome
 import net.odysseylabs.powerdeck.data.Peer
-import net.odysseylabs.powerdeck.data.Presence
+import net.odysseylabs.powerdeck.data.Ask
 import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Schedule
 import net.odysseylabs.powerdeck.data.Settings
@@ -53,11 +54,13 @@ sealed interface AddStep {
     data object Idle : AddStep
     data class Working(val what: String) : AddStep
     data class NeedsCode(val name: String, val retry: suspend (String) -> AddResult) : AddStep
+    /** An add link opened from outside the app (a web page, a chat): ask before adding. */
+    data class Confirm(val info: AddInfo) : AddStep
     data class Failed(val message: String) : AddStep
 }
 
 /** Someone is using the device: ask before forcing. */
-data class ForcePrompt(val device: Device, val restart: Boolean, val presence: Presence)
+data class ForcePrompt(val device: Device, val restart: Boolean, val ask: Ask)
 
 /** What the device screen shows beyond the live state. */
 data class Detail(
@@ -145,7 +148,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _state.update { it.copy(busy = it.busy + d.id) }
             val outcome = block()
-            if (outcome.inUse == null) _messages.send(outcome.message) // otherwise the force prompt shows
+            if (outcome.ask == null) _messages.send(outcome.message) // otherwise the prompt shows
             fastUntil = System.currentTimeMillis() + 120_000
             refreshNow()
             _state.update { it.copy(busy = it.busy - d.id) }
@@ -158,13 +161,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun powerOff(d: Device, restart: Boolean, installUpdates: Boolean = false) = act(d) {
         deck.powerOff(d, restart, installUpdates = installUpdates).also { o ->
-            o.inUse?.let { p -> _state.update { it.copy(force = ForcePrompt(d, restart, p)) } }
+            o.ask?.let { a -> _state.update { it.copy(force = ForcePrompt(d, restart, a)) } }
         }
     }
 
     fun forcePower(p: ForcePrompt) {
         _state.update { it.copy(force = null) }
-        act(p.device) { deck.powerOff(p.device, p.restart, force = true) }
+        act(p.device) {
+            if (p.ask.kvmPress) deck.powerOff(p.device, p.restart, pressKvm = true) else deck.powerOff(p.device, p.restart, force = true)
+        }
     }
 
     fun dismissForce() = _state.update { it.copy(force = null) }
@@ -202,6 +207,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         runAdd(info.name) { deck.addFromLink(info) }
+    }
+
+    /** A powerdeck://add link from another app: confirm first, it could come from anywhere. */
+    fun openLink(text: String) {
+        val info = AddLink.parse(text) ?: run {
+            _state.update { it.copy(add = AddStep.Failed("That link isn't a valid PowerDeck code.")) }
+            return
+        }
+        _state.update { it.copy(add = AddStep.Confirm(info)) }
+    }
+
+    fun confirmLink() {
+        val step = _state.value.add as? AddStep.Confirm ?: return
+        runAdd(step.info.name) { deck.addFromLink(step.info) }
     }
 
     fun addByName(text: String) {
@@ -270,7 +289,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadSchedules(d: Device): List<Pair<Device, Schedule>> {
         val own = deck.withHelper(d) { schedules() }.getOrDefault(emptyList()).filter { it.action != "wake" }.map { d to it }
         val wakes = deck.wakeHosts(d).flatMap { h ->
-            deck.withHelper(h) { schedules() }.getOrDefault(emptyList()).filter { it.action == "wake" && it.target.equals(d.name, true) }.map { h to it }
+            deck.withHelper(h) { schedules() }.getOrDefault(emptyList()).filter { it.action == "wake" && (it.target.equals(d.fleetName, true) || it.target.equals(d.name, true)) }.map { h to it }
         }
         return own + wakes
     }
@@ -285,7 +304,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // Prefer a server: it's the one most likely to be on.
                 val host = hosts.sortedByDescending { it.kind == Device.Kind.Server }.first()
-                deck.withHelper(host) { addSchedule(Schedule("", "wake", d.name, time, days, false, true)) }.map { host }
+                deck.withHelper(host) { addSchedule(Schedule("", "wake", d.fleetName, time, days, false, true)) }.map { host }
             } else {
                 deck.withHelper(d) { addSchedule(Schedule("", action, null, time, days, skipIfInUse, true)) }.map { d }
             }

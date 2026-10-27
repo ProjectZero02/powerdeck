@@ -121,6 +121,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
         val d = Device(
             id = DeviceStore.newId(), name = s.name.ifBlank { host }, host = host, port = port, pin = pin, os = s.os,
             mac = s.mac, lan = s.lan, hasKey = key != null, guests = s.guestsRunning != null, me = s.youName,
+            helperName = s.name.ifBlank { null },
         )
         val id = store.upsert(d, key)
         store.saveSnapshot(id, Power.On)
@@ -141,7 +142,15 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     suspend fun linkKvm(deviceId: String, kind: String, address: String, name: String, user: String, password: String): Outcome {
         if (!tailnet()) return Outcome(false, "Tailscale isn't connected. Turn it on and try again.")
         return try {
-            NanoKvmClient(http, address, user, password).login()
+            val kvm = NanoKvmClient(http, address, user, password)
+            val led = kvm.powerLedOn(kvm.login())
+            // The power light must agree with the computer's helper, or a press later could hit the
+            // wrong computer, or shut down a running one whose light isn't wired.
+            store.get(deviceId)?.takeIf { it.hasHelper }?.let { d ->
+                val on = answers(d)
+                if (on && !led) return Outcome(false, "$name reads ${d.name}'s power light as off, but ${d.name} is on. Check that $name's power-LED cable is connected and wired to ${d.name}.")
+                if (!on && led) return Outcome(false, "$name reads the power light as on, but ${d.name} isn't answering. Check it's wired to ${d.name}, or try again while ${d.name}'s helper is reachable.")
+            }
             store.linkKvm(deviceId, KvmLink(kind, address, name, user), password)
             kvmLock.withLock { kvmCookies.remove(address) }
             Outcome(true, "$name linked")
@@ -203,8 +212,11 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
 
     /** Keeps what the phone knows about a device current (it may have a new network card or name). */
     private suspend fun learn(d: Device, s: HelperStatus) {
+        // Follow the helper's name unless the user renamed the device here.
+        val renamed = d.helperName != null && d.name != d.helperName
         val next = d.copy(
-            name = s.name.ifBlank { d.name },
+            name = if (renamed) d.name else s.name.ifBlank { d.name },
+            helperName = s.name.ifBlank { d.helperName },
             os = s.os.ifBlank { d.os ?: "" }.ifBlank { null },
             mac = s.mac ?: d.mac,
             lan = s.lan.ifEmpty { d.lan },
@@ -230,21 +242,32 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
      * while its power LED says off: the button toggles. Then Wake-on-LAN from whatever is on that LAN.
      */
     suspend fun turnOn(d: Device): Outcome = guarded {
+        // A press on a running computer shuts it down, so press only when every sign says it's off:
+        // its helper doesn't answer (asked twice) and the power light reads off.
+        if (d.hasHelper && answers(d)) return@guarded Outcome(true, "${d.name} is already on.")
         if (d.kvm != null) {
             when (ledOn(d)) {
-                true -> return@guarded Outcome(true, "${d.name} is already on.")
+                true -> return@guarded Outcome(true, "${d.name}'s power light is on: it's on or still starting.")
                 false -> {
                     withKvm(d) { k, c -> k.pressPower(c, 800) }
                     delay(3000)
                     if (ledOn(d) == true) return@guarded Outcome(true, "${d.name} is starting.")
                     // The press didn't take; fall through to Wake-on-LAN.
                 }
-                null -> Unit
+                null -> Unit // can't read the light: never press blind, use Wake-on-LAN
             }
         }
-        if (d.hasHelper && runCatching { client(d)!!.hello() }.isSuccess) return@guarded Outcome(true, "${d.name} is already on.")
         val mac = d.mac ?: return@guarded Outcome(false, "${d.name}'s network card isn't known yet. Open PowerDeck once while it's on.")
         wake(d, mac)
+    }
+
+    /** Whether the helper answers, with one retry so a dropped packet doesn't read as "off". */
+    private suspend fun answers(d: Device): Boolean {
+        repeat(2) { i ->
+            if (runCatching { client(d)!!.hello() }.isSuccess) return true
+            if (i == 0) delay(1500)
+        }
+        return false
     }
 
     private suspend fun wake(d: Device, mac: String): Outcome {
@@ -272,17 +295,20 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     /** Shuts down or restarts through the helper; falls back to a KVM power-button press. */
-    suspend fun powerOff(d: Device, restart: Boolean, force: Boolean = false, installUpdates: Boolean = false): Outcome = guarded {
+    suspend fun powerOff(d: Device, restart: Boolean, force: Boolean = false, installUpdates: Boolean = false, pressKvm: Boolean = false): Outcome = guarded {
         val verb = if (restart) "restart" else "shutdown"
-        if (d.hasHelper) {
+        if (d.hasHelper && !pressKvm) {
             try {
                 val p = client(d)!!.power(verb, 60, force, installUpdates)
                 store.saveSnapshot(d.id, if (restart) Power.On else Power.Off)
                 return@guarded Outcome(true, "${d.name} ${if (restart) "restarts" else "shuts down"} ${countdown(p)}. You can cancel until then.")
             } catch (e: HelperException.Api) {
                 when (e.code) {
-                    "in_use" -> return@guarded Outcome(false, Presence.from(e.body.optJSONObject("presence"))?.describe(d.name) ?: "Someone is using ${d.name}.",
-                        inUse = Presence.from(e.body.optJSONObject("presence")) ?: Presence(true, null, 0, false, false, 0))
+                    "in_use" -> {
+                        val who = Presence.from(e.body.optJSONObject("presence"))?.describe(d.name) ?: "Someone is using ${d.name}."
+                        val word = if (restart) "Restart" else "Shut down"
+                        return@guarded Outcome(false, who, ask = Ask("${d.name} is in use", "$who $word anyway? Unsaved work may be lost.", "$word anyway"))
+                    }
                     "pending" -> return@guarded Outcome(false, "A shutdown or restart is already counting down.")
                     else -> throw e
                 }
@@ -295,6 +321,11 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             null -> Outcome(false, "Can't reach ${d.kvm?.name ?: "the KVM"}.")
             false -> Outcome(true, "${d.name} is already off.")
             true -> {
+                // Its helper would have checked whether someone is using it; without it, ask.
+                if (d.hasHelper && !pressKvm) return@guarded Outcome(false, "${d.name}'s helper isn't answering.", ask = Ask(
+                    "${d.name}'s helper isn't answering",
+                    "Its power light is on, but PowerDeck can't check whether someone is using it. Press its power button? It shuts down cleanly.",
+                    "Press power button", kvmPress = true))
                 // A short press is an ACPI power-button event: the OS shuts down cleanly (Proxmox stops VMs first).
                 withKvm(d) { k, c -> k.pressPower(c, 800) }
                 store.saveSnapshot(d.id, Power.Off)

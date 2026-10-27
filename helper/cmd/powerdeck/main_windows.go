@@ -49,7 +49,8 @@ func runService() error {
 		}
 		defer closer.Close()
 		go companionLoop(ctx, log)
-		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log})
+		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log,
+			AllowLocal: func(remote string) bool { return winsvc.LocalCaller(remote, app.UIPort) }})
 		if err != nil {
 			log.Error("PowerDeck exited", "err", err)
 		}

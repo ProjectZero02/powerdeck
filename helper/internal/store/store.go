@@ -71,6 +71,7 @@ type Event struct {
 // trusted by pin) while it's off.
 type Peer struct {
 	Name     string    `json:"name"`
+	Device   string    `json:"device,omitempty"` // its own name, which the app and schedules may use`
 	DNSName  string    `json:"dnsName,omitempty"`
 	Address  string    `json:"address"`
 	Port     int       `json:"port"`
@@ -295,7 +296,7 @@ func (s *Store) Peer(name string) (Peer, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for n, p := range s.st.Peers {
-		if strings.EqualFold(n, name) {
+		if strings.EqualFold(n, name) || p.Device != "" && strings.EqualFold(p.Device, name) {
 			return p, true
 		}
 	}

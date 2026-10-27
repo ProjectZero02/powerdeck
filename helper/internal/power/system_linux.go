@@ -42,6 +42,10 @@ func (l *Linux) Schedule(a Action, delay time.Duration, message string, _ bool) 
 		if err := exec.Command("systemctl", verb).Run(); err != nil {
 			_ = exec.Command("shutdown", map[string]string{"poweroff": "-P", "reboot": "-r"}[verb], "now").Run()
 		}
+		// Normally the machine is going down now; if it isn't (refused, inhibited), allow another try.
+		l.mu.Lock()
+		l.timer = nil
+		l.mu.Unlock()
 	})
 	return nil
 }

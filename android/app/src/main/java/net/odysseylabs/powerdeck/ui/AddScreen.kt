@@ -58,12 +58,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -87,6 +85,7 @@ data class AddActions(
     val addPeer: (Peer) -> Unit = {},
     val submitCode: (String) -> Unit = {},
     val dismiss: () -> Unit = {},
+    val confirmLink: () -> Unit = {},
     val find: () -> Unit = {},
     val linkKvm: (deviceId: String?, newName: String, peer: Peer, user: String, password: String, done: (Boolean) -> Unit) -> Unit = { _, _, _, _, _, _ -> },
 )
@@ -108,14 +107,13 @@ private fun Step(n: Int, title: String, body: @Composable () -> Unit = {}) {
 /** A copyable command, with a share button so it can be sent to the computer. */
 @Composable
 fun Command(label: String, cmd: String) {
-    val clip = LocalClipboardManager.current
     val ctx = LocalContext.current
     Column(Modifier.padding(top = 8.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(cmd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f).padding(start = 12.dp, top = 10.dp, bottom = 10.dp))
-                IconButton(onClick = { clip.setText(AnnotatedString(cmd)) }) { Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy") }
+                IconButton(onClick = { copyText(ctx, cmd) }) { Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy") }
                 IconButton(onClick = {
                     ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, cmd), "Send the install command"))
                 }) { Icon(Icons.Rounded.Share, contentDescription = "Share") }
@@ -225,6 +223,13 @@ fun AddScreen(state: UiState, a: AddActions, snackbar: SnackbarHostState) {
     }
 
     if (step is AddStep.NeedsCode) CodeDialog(step.name, onSubmit = a.submitCode, onDismiss = a.dismiss)
+    if (step is AddStep.Confirm) AlertDialog(
+        onDismissRequest = a.dismiss,
+        title = { Text("Add ${step.info.name}?") },
+        text = { Text("A link asked PowerDeck to add ${step.info.name} (${step.info.host}). Add it only if it's one of your devices.") },
+        confirmButton = { Button(onClick = a.confirmLink) { Text("Add") } },
+        dismissButton = { TextButton(onClick = a.dismiss) { Text("Cancel") } },
+    )
     kvmFor?.let { p -> KvmDialog(p, state.devices, onLink = a.linkKvm, onDismiss = { kvmFor = null }) }
 }
 
@@ -275,6 +280,8 @@ private fun CodeDialog(name: String, onSubmit: (String) -> Unit, onDismiss: () -
     )
 }
 
+private const val NEW = "new"
+
 /** Links a KVM: its login, and which device's power button it's wired to. */
 @Composable
 fun KvmDialog(
@@ -288,7 +295,8 @@ fun KvmDialog(
     var user by rememberSaveable { mutableStateOf("admin") }
     var shown by rememberSaveable { mutableStateOf(false) }
     val choices = fixedDevice?.let { listOf(it) } ?: devices.filter { it.kvm == null }
-    var target by rememberSaveable { mutableStateOf(choices.firstOrNull { it.kind == Device.Kind.Server }?.id ?: choices.firstOrNull()?.id) }
+    // Nothing preselected: linking the wrong computer would press the wrong power button.
+    var target by rememberSaveable { mutableStateOf(fixedDevice?.id) }
     var newName by rememberSaveable { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     AlertDialog(
@@ -304,11 +312,11 @@ fun KvmDialog(
                             Text(d.name)
                         }
                     }
-                    Row(Modifier.fillMaxWidth().selectable(target == null) { target = null }, verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = target == null, onClick = { target = null })
+                    Row(Modifier.fillMaxWidth().selectable(target == NEW) { target = NEW }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = target == NEW, onClick = { target = NEW })
                         Text("A computer without the helper")
                     }
-                    if (target == null) {
+                    if (target == NEW) {
                         OutlinedTextField(value = newName, onValueChange = { newName = it.take(40) }, label = { Text("Its name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     }
                     Spacer(Modifier.height(12.dp))
@@ -328,7 +336,7 @@ fun KvmDialog(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp).semantics { contentType = ContentType.Username })
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "Stored only on this phone, encrypted by its secure hardware. PowerDeck presses the button only after the power light confirms the computer is off (to turn on) or on (to shut down).",
+                    "Stored only on this phone, encrypted by its secure hardware. PowerDeck checks that the power light matches the computer before linking, and presses the button only when the light confirms it's off (to turn on) or on (to shut down).",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -337,9 +345,9 @@ fun KvmDialog(
             Button(
                 onClick = {
                     working = true
-                    onLink(target, newName, p, user, password) { ok -> working = false; if (ok) onDismiss() }
+                    onLink(target.takeIf { it != NEW }, newName, p, user, password) { ok -> working = false; if (ok) onDismiss() }
                 },
-                enabled = !working && password.isNotEmpty() && (target != null || newName.isNotBlank()),
+                enabled = !working && password.isNotEmpty() && target != null && (target != NEW || newName.isNotBlank()),
             ) { if (working) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Connect") }
         },
         dismissButton = { OutlinedButton(onClick = onDismiss, enabled = !working) { Text("Cancel") } },

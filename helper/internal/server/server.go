@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -56,6 +57,20 @@ type server struct {
 	Deps
 	limiter *limiter
 	quota   *quota
+
+	checksMu sync.Mutex
+	checks   []check.Result // cached: on Windows they run PowerShell, and the app polls every few seconds
+	checksAt time.Time
+}
+
+// cachedChecks runs the setup checks at most once a minute (a fix clears the cache).
+func (s *server) cachedChecks(ctx context.Context) []check.Result {
+	s.checksMu.Lock()
+	defer s.checksMu.Unlock()
+	if s.checks == nil || s.Now().Sub(s.checksAt) > time.Minute {
+		s.checks, s.checksAt = s.Checks(ctx), s.Now()
+	}
+	return s.checks
 }
 
 // API is the helper API. It's an http.Handler; schedules run through RunSchedule.
@@ -88,7 +103,7 @@ func New(d Deps) *API {
 	mux.HandleFunc("POST /v2/schedules", s.with(store.ScopeAdmin, s.addSchedule))
 	mux.HandleFunc("DELETE /v2/schedules/{id}", s.with(store.ScopeAdmin, s.removeSchedule))
 	mux.HandleFunc("POST /v2/devices/{name}/{action}", s.with(store.ScopeStatus, s.relay))
-	mux.HandleFunc("POST /mcp", s.with(store.ScopeStatus, s.mcp))
+	mux.HandleFunc("POST /mcp", s.with(store.ScopeStatus, s.ownersAndAgents(s.mcp)))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed) // no server-initiated stream
 	})
@@ -190,6 +205,10 @@ func (s *server) with(scope string, h func(http.ResponseWriter, *http.Request, a
 		ip := remoteAddr(r)
 		bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		c, err := s.Auth.Resolve(r.Context(), ip, strings.TrimSpace(bearer))
+		if errors.Is(err, auth.ErrUnavailable) {
+			fail(w, http.StatusServiceUnavailable, "tailscale", "Tailscale on this device isn't answering. Try again in a moment.")
+			return
+		}
 		if err != nil {
 			s.limiter.fail(ip)
 			fail(w, http.StatusUnauthorized, "unauthorized", "This key isn't valid here any more. Add the device again.")
@@ -209,6 +228,17 @@ func (s *server) with(scope string, h func(http.ResponseWriter, *http.Request, a
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)), c)
+	}
+}
+
+// ownersAndAgents refuses keys from pairing codes: they're for one device, not the whole fleet.
+func (s *server) ownersAndAgents(h func(http.ResponseWriter, *http.Request, auth.Caller)) func(http.ResponseWriter, *http.Request, auth.Caller) {
+	return func(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+		if c.Kind != auth.Owner && !c.IsAutomation() {
+			fail(w, http.StatusForbidden, "scope", "Only your own devices and agent keys can use this.")
+			return
+		}
+		h(w, r, c)
 	}
 }
 
@@ -309,7 +339,7 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 		body["guests"] = g
 	}
 	if c.Has(store.ScopeAdmin) || c.Kind == auth.Owner {
-		body["checks"] = s.Checks(ctx)
+		body["checks"] = s.cachedChecks(ctx)
 	}
 	return body
 }
@@ -357,6 +387,9 @@ func (s *server) power(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 
 // localPower runs shutdown/restart/cancel on this device, with every rule applied.
 func (s *server) localPower(ctx context.Context, c auth.Caller, action string, req powerRequest) (map[string]any, *apiError) {
+	if !c.MayUse(s.Name) {
+		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + s.Name + "."}
+	}
 	if c.IsAutomation() && !c.Key.AllowSelf && s.SelfNode != nil && c.NodeID != "" && c.NodeID == s.SelfNode(ctx) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "self",
 			Message: "An agent can't shut down or restart the device it runs on."}
@@ -424,6 +457,11 @@ func (s *server) wake(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		fail(w, http.StatusBadRequest, "bad_request", "Send {\"mac\": \"aa:bb:cc:dd:ee:ff\"}.")
 		return
 	}
+	// A raw MAC could be any device, so keys limited to some devices wake by name (the relay).
+	if c.Key != nil && (len(c.Key.Devices) > 0 || !c.IsAutomation()) {
+		fail(w, http.StatusForbidden, "device", "This key can't wake other devices directly.")
+		return
+	}
 	if c.IsAutomation() {
 		if e := s.quota.take(c.Key.ID+"/"+strings.ToLower(req.MAC), kindWake); e != nil {
 			failErr(w, e)
@@ -442,6 +480,9 @@ func (s *server) wake(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 
 func (s *server) fix(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 	res, err := s.Fix(r.Context(), r.PathValue("id"))
+	s.checksMu.Lock()
+	s.checks = nil
+	s.checksMu.Unlock()
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "fix_failed", err.Error())
 		return
@@ -539,7 +580,7 @@ func (s *server) listSchedules(w http.ResponseWriter, _ *http.Request, _ auth.Ca
 }
 
 func (s *server) addSchedule(w http.ResponseWriter, r *http.Request, c auth.Caller) {
-	var sc store.Schedule
+	sc := store.Schedule{Enabled: true, SkipIfInUse: true} // what a request leaves out
 	if !decode(r, &sc) {
 		fail(w, http.StatusBadRequest, "bad_request", "Malformed schedule.")
 		return

@@ -259,6 +259,16 @@ func TestPairingCodeForAnotherAccount(t *testing.T) {
 	if code, out := e.do(req{method: "GET", path: "/v2/status", from: friend, key: key}); code != 200 || out["you"].(map[string]any)["kind"] != auth.Holder {
 		t.Errorf("status with key: %d %v", code, out)
 	}
+	// A paired key controls this device only: no relaying to the fleet, no MCP, no raw wakes.
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/za-worldo/status", from: friend, key: key}); code != http.StatusForbidden {
+		t.Errorf("paired key relayed: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/mcp", from: friend, key: key, body: map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}}); code != http.StatusForbidden {
+		t.Errorf("paired key used MCP: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: friend, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusForbidden {
+		t.Errorf("paired key raw wake: %d", code)
+	}
 	if code, _ := e.do(req{method: "DELETE", path: "/v2/key", from: friend, key: key}); code != http.StatusNoContent {
 		t.Errorf("revoke own: %d", code)
 	}
@@ -342,6 +352,20 @@ func TestAutomationKeyRules(t *testing.T) {
 	// Admin routes are off limits.
 	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: lyra, key: key}); code != http.StatusForbidden {
 		t.Errorf("agent listing keys: %d", code)
+	}
+}
+
+func TestKeyDeviceListAppliesToDirectRoutes(t *testing.T) {
+	e := newEnv(t)
+	key := e.agentKey([]string{"wake", "power"}, "za-worldo")
+	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: lyra, key: key}); code != http.StatusForbidden || out["error"] != "device" {
+		t.Errorf("direct shutdown of an unlisted device: %d %v", code, out)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: lyra, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusForbidden {
+		t.Errorf("raw wake with a device list: %d", code)
+	}
+	if e.sys.scheduled != nil {
+		t.Error("shutdown scheduled")
 	}
 }
 

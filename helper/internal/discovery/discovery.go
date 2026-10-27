@@ -34,6 +34,7 @@ type Peer struct {
 	Online  bool   `json:"online"`
 	Pin     string `json:"pin,omitempty"`
 	Version string `json:"version,omitempty"`
+	Device  string `json:"device,omitempty"` // the helper's own name for itself (its OS hostname)
 }
 
 // Prober identifies what runs on a peer; injectable for tests.
@@ -98,7 +99,7 @@ func Scan(ctx context.Context, st *tailscale.Status, pr Prober) []Peer {
 			base := Peer{Name: n.Name(), DNSName: n.DNSName, Address: addr, OS: n.OS, Online: true}
 			if h, pin, err := pr.Helper(ctx, addr); err == nil {
 				p := base
-				p.Kind, p.Port, p.Pin, p.Version = KindHelper, peer.Port, pin, h.Version
+				p.Kind, p.Port, p.Pin, p.Version, p.Device = KindHelper, peer.Port, pin, h.Version, h.Name
 				if h.OS != "" {
 					p.OS = h.OS
 				}

@@ -50,6 +50,10 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 	if !c.MayUse(device) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + device + "."}
 	}
+	// A key from a pairing code is for this one device; only owners and agents reach the rest.
+	if device != s.Name && c.Kind != auth.Owner && !c.IsAutomation() {
+		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can only control " + s.Name + "."}
+	}
 	if device == s.Name {
 		switch action {
 		case "status":

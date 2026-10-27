@@ -90,10 +90,13 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
         write { list ->
             val i = list.indexOfFirst { it.id == d.id }.takeIf { it >= 0 }
                 ?: list.indexOfFirst { d.pin != null && it.pin == d.pin }.takeIf { it >= 0 }
-                ?: list.indexOfFirst { it.name.equals(d.name, ignoreCase = true) }.takeIf { it >= 0 }
+                // Same address and port: the same helper, reinstalled (new certificate). Never by name:
+                // two machines can share one, and the new one must not inherit the other's KVM.
+                ?: list.indexOfFirst { d.host != null && it.host.equals(d.host, ignoreCase = true) && it.port == d.port }.takeIf { it >= 0 }
             if (i != null) {
                 id = list[i].id
-                list[i] = d.copy(id = id, kvm = d.kvm ?: list[i].kvm, hasKey = d.hasKey || list[i].hasKey)
+                val renamed = list[i].helperName != null && list[i].name != list[i].helperName
+                list[i] = d.copy(id = id, name = if (renamed) list[i].name else d.name, kvm = d.kvm ?: list[i].kvm, hasKey = d.hasKey || list[i].hasKey)
             } else {
                 list += d
             }

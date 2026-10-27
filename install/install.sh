@@ -11,6 +11,9 @@
 # to the PowerDeck app. Re-running it upgrades in place and keeps your settings.
 set -eu
 
+# Everything runs from main, called on the last line, so a download cut short never runs half a script.
+main() {
+
 REPO="ProjectZero02/powerdeck"
 # Ed25519 key that signs every release (the same one the helper checks its own updates against).
 PUBKEY_PEM="-----BEGIN PUBLIC KEY-----
@@ -88,3 +91,6 @@ gzip -dc "$TMP/$ASSET" > "$TMP/powerdeck-helper"
 chmod 0755 "$TMP/powerdeck-helper"
 say "Installing…"
 "$TMP/powerdeck-helper" install
+}
+
+main "$@"

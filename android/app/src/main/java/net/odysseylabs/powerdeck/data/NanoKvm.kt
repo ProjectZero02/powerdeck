@@ -113,7 +113,12 @@ class NanoKvmClient(
     }
 
     /** The server's power LED as wired through the NanoKVM's ATX board. */
-    suspend fun powerLedOn(cookie: String): Boolean = api(cookie, "/api/vm/gpio").optJSONObject("data")?.optBoolean("pwr") == true
+    suspend fun powerLedOn(cookie: String): Boolean {
+        val data = api(cookie, "/api/vm/gpio").optJSONObject("data")
+        // No reading is not "off": a press on a running computer would shut it down.
+        if (data == null || !data.has("pwr")) throw KvmException.Failed("The NanoKVM didn't report the power light.")
+        return data.getBoolean("pwr")
+    }
 
     /** Presses the power button. 800 ms is a normal press (ACPI shutdown when on). */
     suspend fun pressPower(cookie: String, durationMs: Int = 800) {

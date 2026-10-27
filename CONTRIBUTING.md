@@ -6,10 +6,10 @@ Issues and pull requests are welcome. PowerDeck's goal is to stay **small, simpl
 
 | Part | Needs | Commands |
 |---|---|---|
-| `windows/` | Go (version in `windows/go.mod`) | `go test ./...` · `GOOS=windows go vet ./...` · `go run ./tools/demo` serves the PC window with sample data on http://127.0.0.1:47322 |
+| `helper/` | Go (version in `helper/go.mod`) | `go test ./...` · `GOOS=windows go vet ./...` · `GOOS=linux go vet ./...` · `go run ./tools/demo` serves the PC window with sample data on http://127.0.0.1:47322 |
 | `android/` | JDK 21, Android SDK | `./gradlew testDebugUnitTest` (unit tests + Roborazzi screenshots in `app/build/outputs/roborazzi/`) · `./gradlew assembleDebug` |
 
-To try a Windows build on a real PC without the installer, run `windows/scripts/install-from-source.ps1` in an elevated PowerShell.
+To try a Windows build on a real PC without the installer, run `helper/scripts/install-from-source.ps1` in an elevated PowerShell.
 
 ## Ground rules
 

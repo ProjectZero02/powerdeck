@@ -60,6 +60,9 @@ type Authenticator struct {
 // ErrBadKey means a key was presented but isn't valid (or is used from the wrong node).
 var ErrBadKey = errors.New("unknown or revoked key")
 
+// ErrUnavailable means Tailscale couldn't say who is calling (it may be restarting); try again.
+var ErrUnavailable = errors.New("tailscale identity unavailable")
+
 // Resolve identifies the caller at ip, presenting bearer (may be empty). Loopback callers count as
 // owner only with the local token; any other local program is nobody.
 func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer string) (Caller, error) {
@@ -98,6 +101,12 @@ func (a *Authenticator) Resolve(ctx context.Context, ip netip.Addr, bearer strin
 			name = id.NodeName
 		}
 		return Caller{Kind: Owner, Name: name, NodeID: id.NodeID, Node: id.NodeName, Scopes: store.AllScopes}, nil
+	}
+	if idErr != nil {
+		// An address Tailscale doesn't know is nobody; Tailscale itself not answering is retryable.
+		if _, err := a.TS.Status(ctx); err != nil {
+			return Caller{Kind: Nobody}, ErrUnavailable
+		}
 	}
 	return Caller{Kind: Nobody, NodeID: id.NodeID}, nil
 }

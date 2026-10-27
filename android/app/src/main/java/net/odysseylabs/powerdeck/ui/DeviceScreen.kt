@@ -66,8 +66,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -426,7 +424,7 @@ private fun KeyDialog(hub: Device, devices: List<Device>, onCreate: (String, Boo
 
 @Composable
 private fun NewKeyDialog(hub: Device, key: String, onDone: () -> Unit) {
-    val clip = LocalClipboardManager.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val config = """{"mcpServers":{"powerdeck":{"type":"http","url":"http://${hub.host}:47323/mcp","headers":{"Authorization":"Bearer $key"}}}}"""
     AlertDialog(
         onDismissRequest = {},
@@ -439,7 +437,7 @@ private fun NewKeyDialog(hub: Device, key: String, onDone: () -> Unit) {
             }
         },
         confirmButton = {
-            Button(onClick = { clip.setText(AnnotatedString(config)) }) {
+            Button(onClick = { copyText(ctx, config, sensitive = true) }) {
                 Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Copy")

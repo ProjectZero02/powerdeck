@@ -233,6 +233,14 @@ class NanoKvmClientTest {
         assertEquals("d8:5e:d3:12:34:56", JSONObject(server.takeRequest().body!!.utf8()).getString("mac"))
     }
 
+    @Test fun missingLedReadingIsNotOff() {
+        // "Off" would allow a press, and a press shuts a running computer down: no reading must throw.
+        server.enqueue(ok("""{"hdd":false}"""))
+        assertThrows(KvmException::class.java) { runBlocking { client().powerLedOn("c") } }
+        server.enqueue(ok())
+        assertThrows(KvmException::class.java) { runBlocking { client().powerLedOn("c") } }
+    }
+
     @Test fun newerFirmwareCookieOnly() = runBlocking {
         server.enqueue(ok(cookie = "nano-kvm-token=jwt2; Path=/; HttpOnly; SameSite=Strict"))
         assertEquals("nano-kvm-token=jwt2", client().login())

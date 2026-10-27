@@ -146,7 +146,7 @@ jobs:
         with: { go-version-file: helper/go.mod, cache-dependency-path: helper/go.sum }
       - name: Build PowerDeck.exe
         run: |
-          go install github.com/tc-hib/go-winres@latest
+          go install github.com/tc-hib/go-winres@v0.3.3
           $fv = ($env:VERSION -split '-')[0]
           go-winres make --in winres/winres.json --out cmd/powerdeck/rsrc --arch amd64 --product-version $env:VERSION --file-version "$fv.0"
           New-Item -ItemType Directory -Force dist | Out-Null

@@ -37,6 +37,8 @@ func newUI(t *testing.T) (http.Handler, string) {
 		Fix:       func(context.Context, string) (check.Result, error) { return check.Result{}, nil },
 		Reports:   &power.Reports{},
 		Log:       log,
+		// httptest requests come from 192.0.2.1; stand in for "another user on this PC".
+		AllowLocal: func(remote string) bool { return !strings.HasPrefix(remote, "10.9.9.9:") },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +70,17 @@ func TestHostHeaderBlocksDNSRebinding(t *testing.T) {
 	}
 	if w := get(h, "localhost:47322", "/api/state", map[string]string{"X-PowerDeck-Key": key}); w.Code != 200 {
 		t.Errorf("localhost must work, got %d", w.Code)
+	}
+}
+
+func TestOtherLocalUsersAreRefused(t *testing.T) {
+	h, _ := newUI(t)
+	req := httptest.NewRequest("GET", "http://127.0.0.1:47322/", nil)
+	req.RemoteAddr = "10.9.9.9:50000"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), "pd-key") {
+		t.Errorf("another local user got the page: %d", w.Code)
 	}
 }
 

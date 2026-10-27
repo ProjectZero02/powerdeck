@@ -238,6 +238,13 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = modifier.padding(top = 8.dp, bottom = 4.dp))
 }
 
+/** Copies text; [sensitive] keeps it out of Android's clipboard preview (Android 13+). */
+fun copyText(ctx: android.content.Context, text: String, sensitive: Boolean = false) {
+    val clip = android.content.ClipData.newPlainText("PowerDeck", text)
+    if (sensitive) clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+    ctx.getSystemService(android.content.ClipboardManager::class.java)?.setPrimaryClip(clip)
+}
+
 /** Ticks once a second while [active], for countdowns. */
 @Composable
 fun rememberNow(active: Boolean): Long {

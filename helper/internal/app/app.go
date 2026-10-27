@@ -60,6 +60,8 @@ type Options struct {
 	System  power.System
 	Reports *power.Reports
 	Log     *slog.Logger
+	// AllowLocal limits who may use the PC window (see localui.Deps).
+	AllowLocal func(remote string) bool
 }
 
 // cachedNetwork re-reads the network card at most once a minute.
@@ -199,7 +201,7 @@ func Run(ctx context.Context, o Options) error {
 		uiHandler, err := localui.New(localui.Deps{
 			Addr: o.UIAddr, APIPort: APIPort, Name: name, Fingerprint: id.Fingerprint,
 			Store: st, Pairing: pm, Update: upd, Network: network, TailnetIP: netinfo.TailnetIPv4,
-			Checks: runChecks, Fix: fix, Reports: o.Reports, Log: log,
+			Checks: runChecks, Fix: fix, Reports: o.Reports, Log: log, AllowLocal: o.AllowLocal,
 		})
 		if err != nil {
 			closeAll()

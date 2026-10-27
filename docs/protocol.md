@@ -27,7 +27,8 @@ Keys are created in two ways:
 - **Pairing code** (for phones on another Tailscale account, or when the helper's node is tagged so
   it has no owner): the helper shows an 8-character code (`XXXX-XXXX`, Crockford base32, 40 bits,
   single use, 10 minutes, 5 wrong guesses and it's gone). `POST /v2/pair` exchanges it for a key
-  with all scopes.
+  with all scopes, for **this device only**: it can't relay to other devices, use `/mcp`, or send
+  a wake to an arbitrary MAC.
 - **Automation keys** (for AI agents and scripts): created by an owner, either from the phone app
   (`POST /v2/keys`) or on the device (`powerdeck-helper key add NAME --scopes …`).
 
@@ -36,6 +37,11 @@ is using the machine), `admin` (keys, settings, fixes). A pairing-code key gets 
 automation key gets what it was created with (default `status,wake`) and can't hold `force` or
 `admin`. The helper stores only the SHA-256 of each key. Keys are 32 random bytes, base64url,
 prefixed `pdk_`.
+
+A key with a device list is held to it on every route, including this device's own
+`/v2/power` (`403 device`), and can't use the raw-MAC `/v2/wake` (it wakes by name through the
+relay). If Tailscale can't identify a caller because it isn't answering, the helper replies
+`503 tailscale` (retry) rather than treating the caller as a stranger.
 
 An automation key is **bound to the tailnet node that first uses it**: from then on the helper
 accepts it only from that node (checked with `whois`), so a leaked key is useless elsewhere.
@@ -88,7 +94,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
 | POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp) |
-| POST | `/mcp` | key holder | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
+| POST | `/mcp` | owner or automation key | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
 
 `delaySeconds` defaults to 60 (0–600). Without `force`, shutdown/restart is refused with
 `409 in_use` when someone is actively using the machine (input in the last 5 minutes, or a

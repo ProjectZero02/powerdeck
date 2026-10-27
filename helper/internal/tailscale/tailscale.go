@@ -197,11 +197,11 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	return st, nil
 }
 
-// WhoIs identifies a tailnet address. Results (including failures) are cached for a minute, so a
+// WhoIs identifies a tailnet address. Results are cached for a minute (failures for 5 seconds), so a
 // busy phone doesn't spawn a process per request.
 func (c *Client) WhoIs(ctx context.Context, ip netip.Addr) (Identity, error) {
 	c.mu.Lock()
-	if e, ok := c.whois[ip]; ok && c.now().Sub(e.at) < time.Minute {
+	if e, ok := c.whois[ip]; ok && (c.now().Sub(e.at) < 5*time.Second || e.err == nil && c.now().Sub(e.at) < time.Minute) {
 		c.mu.Unlock()
 		return e.id, e.err
 	}

@@ -40,7 +40,7 @@ import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Outcome
 import net.odysseylabs.powerdeck.data.Pending
 import net.odysseylabs.powerdeck.data.PowerDeck
-import net.odysseylabs.powerdeck.data.Presence
+import net.odysseylabs.powerdeck.data.Ask
 import net.odysseylabs.powerdeck.deck
 
 /**
@@ -67,7 +67,8 @@ class QuickActionActivity : ComponentActivity() {
 private sealed interface QuickStep {
     data object Checking : QuickStep
     data class AskOff(val canRestart: Boolean, val pending: Pending?) : QuickStep
-    data class AskForce(val restart: Boolean, val presence: Presence) : QuickStep
+    data object AskOn : QuickStep
+    data class AskForce(val restart: Boolean, val ask: Ask) : QuickStep
     data object Working : QuickStep
     data class Done(val outcome: Outcome) : QuickStep
 }
@@ -83,8 +84,8 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
         step = QuickStep.Working
         scope.launch {
             val outcome = block()
-            if (outcome.inUse != null) {
-                step = QuickStep.AskForce(restart, outcome.inUse)
+            if (outcome.ask != null) {
+                step = QuickStep.AskForce(restart, outcome.ask)
                 return@launch
             }
             step = QuickStep.Done(outcome)
@@ -106,7 +107,7 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
         }
         when (val s = deck.state(d)) {
             is DeviceState.On -> step = QuickStep.AskOff(d.hasHelper, s.status?.pending)
-            DeviceState.Off -> perform({ deck.turnOn(d) })
+            DeviceState.Off -> step = QuickStep.AskOn
             is DeviceState.Problem -> step = QuickStep.Done(Outcome(false, s.message))
             DeviceState.Checking -> Unit
         }
@@ -133,7 +134,8 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
                         else -> "It's on. Shut it down? Apps close in 60 seconds, and you can cancel until then."
                     },
                 )
-                is QuickStep.AskForce -> Text(s.presence.describe(name) + " Unsaved work may be lost.")
+                QuickStep.AskOn -> Text("It's off. Turn it on?")
+                is QuickStep.AskForce -> Text(s.ask.text)
                 is QuickStep.Done -> Text(s.outcome.message, color = if (s.outcome.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
             }
         },
@@ -153,16 +155,17 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
                         }
                     }
                 }
+                QuickStep.AskOn -> Button(onClick = { perform({ deck.turnOn(d) }) }) { Text("Turn on") }
                 is QuickStep.AskForce -> Button(
-                    onClick = { perform({ deck.powerOff(d, s.restart, force = true) }) },
+                    onClick = { perform({ if (s.ask.kvmPress) deck.powerOff(d, s.restart, pressKvm = true) else deck.powerOff(d, s.restart, force = true) }) },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) { Text(if (s.restart) "Restart anyway" else "Shut down anyway") }
+                ) { Text(s.ask.confirm) }
                 is QuickStep.Done -> TextButton(onClick = close) { Text("OK") }
                 else -> Unit
             }
         },
         dismissButton = {
-            if (s is QuickStep.AskOff || s is QuickStep.AskForce) TextButton(onClick = close) { Text("Close") }
+            if (s is QuickStep.AskOff || s is QuickStep.AskForce || s is QuickStep.AskOn) TextButton(onClick = close) { Text("Close") }
         },
     )
 }

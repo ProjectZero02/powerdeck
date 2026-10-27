@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
         val data = intent?.data ?: return
         if (data.scheme == "powerdeck") {
             route.value = "add"
-            vm.addLink(data.toString())
+            vm.openLink(data.toString())
         }
     }
 
@@ -130,6 +130,7 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     addPeer = vm::addPeer,
                     submitCode = vm::submitCode,
                     dismiss = vm::resetAdd,
+                    confirmLink = vm::confirmLink,
                     find = { vm.find(refresh = true) },
                     linkKvm = { id, name, p, user, pw, done -> vm.linkKvm(id, name, p.kind, p.address, p.name, user, pw, done) },
                 ),
@@ -219,11 +220,11 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
     state.force?.let { f ->
         AlertDialog(
             onDismissRequest = vm::dismissForce,
-            title = { Text("${f.device.name} is in use") },
-            text = { Text(f.presence.describe(f.device.name) + " ${if (f.restart) "Restart" else "Shut down"} anyway? Unsaved work may be lost.") },
+            title = { Text(f.ask.title) },
+            text = { Text(f.ask.text) },
             confirmButton = {
                 Button(onClick = { vm.forcePower(f) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                    Text(if (f.restart) "Restart anyway" else "Shut down anyway")
+                    Text(f.ask.confirm)
                 }
             },
             dismissButton = { TextButton(onClick = vm::dismissForce) { Text("Leave it on") } },
