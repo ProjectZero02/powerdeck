@@ -53,6 +53,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     // ---- NanoKVM sessions ---------------------------------------------------------------------
 
     private val kvmLock = Mutex()
+    // One power action per device at a time (the app, a widget dialog and a tile can overlap): two
+    // turn-ons could both read the light as off and press twice, which turns the computer off again.
+    private val acting = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val kvmCookies = mutableMapOf<String, Pair<String, Long>>()
 
     private suspend fun kvmClient(d: Device): NanoKvmClient? {
@@ -146,14 +149,17 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             val led = kvm.powerLedOn(kvm.login())
             // The power light must agree with the computer's helper, or a press later could hit the
             // wrong computer, or shut down a running one whose light isn't wired.
-            store.get(deviceId)?.takeIf { it.hasHelper }?.let { d ->
-                val on = answers(d)
-                if (on && !led) return Outcome(false, "$name reads ${d.name}'s power light as off, but ${d.name} is on. Check that $name's power-LED cable is connected and wired to ${d.name}.")
-                if (!on && led) return Outcome(false, "$name reads the power light as on, but ${d.name} isn't answering. Check it's wired to ${d.name}, or try again while ${d.name}'s helper is reachable.")
+            val target = store.get(deviceId)
+            var seen = led
+            if (target != null && target.hasHelper) {
+                val on = answers(target)
+                if (on && !led) return Outcome(false, "$name reads ${target.name}'s power light as off, but ${target.name} is on. Check that $name's power-LED cable is connected and wired to ${target.name}.")
+                if (!on && led) return Outcome(false, "$name reads the power light as on, but ${target.name} isn't answering. Check it's wired to ${target.name}, or try again while ${target.name}'s helper is reachable.")
+                seen = on && led
             }
-            store.linkKvm(deviceId, KvmLink(kind, address, name, user), password)
+            store.linkKvm(deviceId, KvmLink(kind, address, name, user, ledSeen = seen), password)
             kvmLock.withLock { kvmCookies.remove(address) }
-            Outcome(true, "$name linked")
+            Outcome(true, if (seen) "$name linked" else "$name linked. It will press the power button once it has seen the power light on: turn the computer on by hand once.")
         } catch (e: Exception) {
             Outcome(false, e.message ?: "Couldn't log in to the KVM.")
         }
@@ -189,15 +195,25 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
 
     private suspend fun kvmState(d: Device): DeviceState? = d.kvm?.let {
         when (ledOn(d)) {
-            true -> DeviceState.On(null)
-            false -> DeviceState.Off
+            true -> {
+                if (!d.hasHelper) seeLed(d) // a helper device is confirmed in helperState, with the helper agreeing
+                DeviceState.On(null)
+            }
+            false -> if (it.ledSeen || d.hasHelper) DeviceState.Off
+                else DeviceState.Problem("Turn it on by hand once so PowerDeck can check its power light")
             null -> DeviceState.Problem("Can't reach ${it.name}")
         }
+    }
+
+    private suspend fun seeLed(d: Device) {
+        if (d.kvm?.ledSeen == false) store.update(d.id) { it.copy(kvm = it.kvm?.copy(ledSeen = true)) }
     }
 
     private suspend fun helperState(d: Device): DeviceState = try {
         val s = client(d)!!.status()
         learn(d, s)
+        // On, by its helper: if the KVM's light agrees, its LED is wired to this computer.
+        if (d.kvm?.ledSeen == false && ledOn(d) == true) seeLed(d)
         DeviceState.On(s)
     } catch (e: HelperException.Unreachable) {
         // The helper can't answer while the machine is off (or booting). A KVM's power LED knows better.
@@ -241,11 +257,19 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
      * Turns a device on. A KVM press comes first (it works even when Wake-on-LAN doesn't), but only
      * while its power LED says off: the button toggles. Then Wake-on-LAN from whatever is on that LAN.
      */
-    suspend fun turnOn(d: Device): Outcome = guarded {
+    suspend fun turnOn(device: Device): Outcome = oneAtATime(device.id) { turnOnNow(store.get(device.id) ?: device) }
+
+    private suspend fun oneAtATime(id: String, block: suspend () -> Outcome): Outcome {
+        val m = acting.getOrPut(id) { Mutex() }
+        if (!m.tryLock()) return Outcome(false, "Already working on it.")
+        return try { block() } finally { m.unlock() }
+    }
+
+    private suspend fun turnOnNow(d: Device): Outcome = guarded {
         // A press on a running computer shuts it down, so press only when every sign says it's off:
         // its helper doesn't answer (asked twice) and the power light reads off.
         if (d.hasHelper && answers(d)) return@guarded Outcome(true, "${d.name} is already on.")
-        if (d.kvm != null) {
+        if (d.kvm != null && d.kvm.ledSeen) {
             when (ledOn(d)) {
                 true -> return@guarded Outcome(true, "${d.name}'s power light is on: it's on or still starting.")
                 false -> {
@@ -257,7 +281,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
                 null -> Unit // can't read the light: never press blind, use Wake-on-LAN
             }
         }
-        val mac = d.mac ?: return@guarded Outcome(false, "${d.name}'s network card isn't known yet. Open PowerDeck once while it's on.")
+        val mac = d.mac ?: return@guarded Outcome(false,
+            if (d.kvm != null && !d.kvm.ledSeen) "PowerDeck hasn't seen ${d.name}'s power light on yet, so it won't press the button. Turn ${d.name} on by hand once."
+            else "${d.name}'s network card isn't known yet. Open PowerDeck once while it's on.")
         wake(d, mac)
     }
 
@@ -295,7 +321,10 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     /** Shuts down or restarts through the helper; falls back to a KVM power-button press. */
-    suspend fun powerOff(d: Device, restart: Boolean, force: Boolean = false, installUpdates: Boolean = false, pressKvm: Boolean = false): Outcome = guarded {
+    suspend fun powerOff(d: Device, restart: Boolean, force: Boolean = false, installUpdates: Boolean = false, pressKvm: Boolean = false): Outcome =
+        oneAtATime(d.id) { powerOffNow(d, restart, force, installUpdates, pressKvm) }
+
+    private suspend fun powerOffNow(d: Device, restart: Boolean, force: Boolean, installUpdates: Boolean, pressKvm: Boolean): Outcome = guarded {
         val verb = if (restart) "restart" else "shutdown"
         if (d.hasHelper && !pressKvm) {
             try {
@@ -344,7 +373,9 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     /** Emergency: holds the power button for 12 s. Only offered with a KVM, and only while the LED is on. */
-    suspend fun forceOff(d: Device): Outcome = guarded {
+    suspend fun forceOff(d: Device): Outcome = oneAtATime(d.id) { forceOffNow(d) }
+
+    private suspend fun forceOffNow(d: Device): Outcome = guarded {
         if (ledOn(d) != true) return@guarded Outcome(false, "${d.name}'s power light is off (or the KVM can't be reached).")
         withKvm(d) { k, c -> k.pressPower(c, 12_000) }
         store.saveSnapshot(d.id, Power.Off)

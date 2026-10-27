@@ -42,7 +42,7 @@ func TestScanRemembersAndHandlesChangedPin(t *testing.T) {
 			if o, ok := out.(*struct {
 				Network netinfo.Network `json:"network"`
 			}); ok {
-				o.Network = netinfo.Network{MAC: "c8:7f:54:00:00:01", LAN: []string{"192.168.1.0/24"}}
+				o.Network = netinfo.Network{MAC: "02:00:5e:00:00:01", LAN: []string{"192.168.1.0/24"}}
 			}
 			return nil
 		}})
@@ -50,10 +50,10 @@ func TestScanRemembersAndHandlesChangedPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := f.Peer("pc")
-	if err != nil || p.MAC != "c8:7f:54:00:00:01" || p.Pin != "pin-1" {
+	if err != nil || p.MAC != "02:00:5e:00:00:01" || p.Pin != "pin-1" {
 		t.Fatalf("%+v %v", p, err)
 	}
-	if sent, err := f.Wake("pc"); err != nil || sent[0] != "c8:7f:54:00:00:01" {
+	if sent, err := f.Wake("pc"); err != nil || sent[0] != "02:00:5e:00:00:01" {
 		t.Errorf("wake: %v %v", sent, err)
 	}
 	// Known by its own name too.

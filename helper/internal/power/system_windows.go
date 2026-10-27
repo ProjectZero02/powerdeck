@@ -110,14 +110,42 @@ func (Windows) BootTime() (time.Time, error) {
 }
 
 // Presence prefers a fresh report from the user-session companion, and otherwise asks Terminal
-// Services about the console session.
+// Services about the console session. Someone active over Remote Desktop counts too.
 func (w Windows) Presence() *Presence {
+	var p *Presence
 	if w.Reports != nil {
-		if p := w.Reports.Fresh(); p != nil {
+		p = w.Reports.Fresh()
+	}
+	if p == nil {
+		p = consolePresence()
+	}
+	if p != nil && p.Active {
+		return p
+	}
+	if r := remotePresence(); r != nil {
+		return r
+	}
+	return p
+}
+
+// remotePresence finds an active session other than the console's (Remote Desktop).
+func remotePresence() *Presence {
+	var list *windows.WTS_SESSION_INFO
+	var n uint32
+	if windows.WTSEnumerateSessions(0, 0, 1, &list, &n) != nil {
+		return nil
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(list)))
+	console := windows.WTSGetActiveConsoleSessionId()
+	for _, si := range unsafe.Slice(list, n) {
+		if si.SessionID == 0 || si.SessionID == console || si.State != wtsActive {
+			continue
+		}
+		if p := sessionPresence(si.SessionID); p != nil && p.Active {
 			return p
 		}
 	}
-	return consolePresence()
+	return nil
 }
 
 const (
@@ -143,6 +171,10 @@ func consolePresence() *Presence {
 	if id == 0xFFFFFFFF {
 		return &Presence{}
 	}
+	return sessionPresence(id)
+}
+
+func sessionPresence(id uint32) *Presence {
 	info, ok := querySession(id, wtsSessionInfo)
 	if !ok || len(info) < 216 {
 		return nil
@@ -150,7 +182,7 @@ func consolePresence() *Presence {
 	state := *(*uint32)(unsafe.Pointer(&info[0]))
 	user := windows.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(&info[130])), 21))
 	if state != wtsActive || user == "" {
-		return &Presence{} // nobody signed in at the console
+		return &Presence{} // nobody signed in to this session
 	}
 	p := &Presence{User: user, Active: true}
 	if ex, ok := querySession(id, wtsSessionInfoEx); ok && len(ex) >= 20 {

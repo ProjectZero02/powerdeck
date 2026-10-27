@@ -59,12 +59,17 @@ data class Device(
     }
 }
 
-/** A NanoKVM (or PiKVM) wired to a device's power button and LED. */
-data class KvmLink(val kind: String, val address: String, val name: String, val user: String) {
-    fun toJson(): JSONObject = JSONObject().put("kind", kind).put("address", address).put("name", name).put("user", user)
+/** A NanoKVM wired to a device's power button and LED. */
+data class KvmLink(
+    val kind: String, val address: String, val name: String, val user: String,
+    // The power light has been seen on (with the helper agreeing, if there is one). An unwired LED
+    // reads "off" forever, so until then a press could switch a running computer off: never press.
+    val ledSeen: Boolean = false,
+) {
+    fun toJson(): JSONObject = JSONObject().put("kind", kind).put("address", address).put("name", name).put("user", user).put("ledSeen", ledSeen)
 
     companion object {
-        fun fromJson(o: JSONObject) = KvmLink(o.optString("kind", "nanokvm"), o.getString("address"), o.optString("name"), o.optString("user", "admin"))
+        fun fromJson(o: JSONObject) = KvmLink(o.optString("kind", "nanokvm"), o.getString("address"), o.optString("name"), o.optString("user", "admin"), o.optBoolean("ledSeen"))
     }
 }
 

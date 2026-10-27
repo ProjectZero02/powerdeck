@@ -47,7 +47,17 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 	if device == "" || fleet.IsSelf(device, s.Name) {
 		device = s.Name
 	}
-	if !c.MayUse(device) {
+	// A peer may be asked for by its Tailscale name or its own name: use one name from here on,
+	// so key limits, the quota and the "not your own machine" rule can't be dodged with the other.
+	var names []string
+	if device != s.Name {
+		if p, err := s.Fleet.Peer(device); err == nil {
+			device, names = p.Name, peerNames(p)
+		}
+	} else {
+		names = []string{s.Name}
+	}
+	if !mayUseAny(c, append(names, device)) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "device", Message: "This key can't control " + device + "."}
 	}
 	// A key from a pairing code is for this one device; only owners and agents reach the rest.
@@ -89,7 +99,7 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 		st["online"] = true
 		return st, nil
 	default:
-		if c.IsAutomation() && !c.Key.AllowSelf && c.Node != "" && strings.EqualFold(c.Node, device) {
+		if c.IsAutomation() && !c.Key.AllowSelf && c.Node != "" && slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, c.Node) }) {
 			return nil, &apiError{Status: http.StatusForbidden, Code: "self",
 				Message: "An agent can't shut down or restart the device it runs on."}
 		}
@@ -106,6 +116,22 @@ func (s *server) act(ctx context.Context, c auth.Caller, device, action string) 
 		s.logEvent(c.Name, action+" "+device, "scheduled")
 		return res, nil
 	}
+}
+
+// peerNames lists every name a remembered helper goes by.
+func peerNames(p store.Peer) []string {
+	out := []string{p.Name}
+	if p.Device != "" {
+		out = append(out, p.Device)
+	}
+	if label, _, _ := strings.Cut(p.DNSName, "."); label != "" {
+		out = append(out, label)
+	}
+	return out
+}
+
+func mayUseAny(c auth.Caller, names []string) bool {
+	return slices.ContainsFunc(names, func(n string) bool { return n != "" && c.MayUse(n) })
 }
 
 func fleetError(device string, err error) *apiError {

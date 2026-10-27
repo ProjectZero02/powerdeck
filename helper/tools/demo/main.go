@@ -35,10 +35,10 @@ func main() {
 		log.Fatal(err)
 	}
 	now := time.Now()
-	_, _, _ = st.AddKey(store.NewKey{Name: "Lyra", Kind: store.KindAutomation, Scopes: []string{"status", "wake", "power"}, Devices: []string{"Gaming-PC"}}, now.Add(-26*time.Hour))
+	_, _, _ = st.AddKey(store.NewKey{Name: "Atlas", Kind: store.KindAutomation, Scopes: []string{"status", "wake", "power"}, Devices: []string{"Gaming-PC"}}, now.Add(-26*time.Hour))
 	_ = st.PutPeer(store.Peer{Name: "pve", Address: "100.101.1.30", Port: 47321, Pin: "x"})
-	st.AddEvent(store.Event{At: now.Add(-3 * time.Hour), Who: "OPPO Find X9 Ultra", Action: "restart", Result: "scheduled"})
-	st.AddEvent(store.Event{At: now.Add(-40 * time.Minute), Who: "Lyra via pve", Action: "wake Gaming-PC", Result: "sent"})
+	st.AddEvent(store.Event{At: now.Add(-3 * time.Hour), Who: "Pixel 9 Pro", Action: "restart", Result: "scheduled"})
+	st.AddEvent(store.Event{At: now.Add(-40 * time.Minute), Who: "Atlas via pve", Action: "wake Gaming-PC", Result: "sent"})
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	h, err := localui.New(localui.Deps{
 		Addr: "127.0.0.1:47322", APIPort: 47321, Name: "Gaming-PC",

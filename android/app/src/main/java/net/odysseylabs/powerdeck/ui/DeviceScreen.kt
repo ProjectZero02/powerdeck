@@ -255,7 +255,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                     Row2(k.name, "${k.address} · signed in as ${k.user}", trailing = { TextButton(onClick = a.unlinkKvm) { Text("Unlink") } })
                 } else {
                     val kvms = state.found.orEmpty().filter { it.isKvm }
-                    Row2("No KVM linked", if (kvms.isEmpty()) "A NanoKVM or PiKVM wired to the power button can turn it on even when Wake-on-LAN can't." else null)
+                    Row2("No KVM linked", if (kvms.isEmpty()) "A NanoKVM wired to the power button can turn it on even when Wake-on-LAN can't." else null)
                     kvms.forEach { p -> TextButton(onClick = { linkKvm = p }, modifier = Modifier.padding(start = 8.dp)) { Text("Link ${p.name}") } }
                 }
             }
@@ -392,7 +392,7 @@ private fun ScheduleDialog(d: Device, onSave: (String, String, List<String>, Boo
 private fun KeyDialog(hub: Device, devices: List<Device>, onCreate: (String, Boolean, List<String>) -> Unit, onDismiss: () -> Unit) {
     var name by rememberSaveable { mutableStateOf("") }
     var power by rememberSaveable { mutableStateOf(false) }
-    var picked by rememberSaveable { mutableStateOf(devices.filter { it.hasHelper || it.id == hub.id }.map { it.name }) }
+    var picked by rememberSaveable { mutableStateOf(devices.filter { it.hasHelper || it.id == hub.id }.map { it.fleetName }) } // the names helpers know them by
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Connect an agent") },
@@ -404,7 +404,7 @@ private fun KeyDialog(hub: Device, devices: List<Device>, onCreate: (String, Boo
                 Text("Devices it may use", style = MaterialTheme.typography.labelLarge)
                 devices.filter { it.hasHelper }.forEach { dev ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = dev.name in picked, onCheckedChange = { picked = if (it) picked + dev.name else picked - dev.name })
+                        Checkbox(checked = dev.fleetName in picked, onCheckedChange = { picked = if (it) picked + dev.fleetName else picked - dev.fleetName })
                         Text(dev.name)
                     }
                 }

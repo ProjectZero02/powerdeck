@@ -40,7 +40,7 @@ func TestParseStatus(t *testing.T) {
 }
 
 const whoisJSON = `{"Node": {"StableID": "nPHONE", "Name": "oppo-find-x9-ultra.example-tailnet.ts.net.", "ComputedName": "oppo-find-x9-ultra",
-  "Hostinfo": {"Hostname": "OPPO Find X9 Ultra"}, "User": 1},
+  "Hostinfo": {"Hostname": "Pixel 9 Pro"}, "User": 1},
   "UserProfile": {"ID": 1, "LoginName": "owner@example.com"}, "CapMap": null}`
 
 func TestParseWhoIs(t *testing.T) {
@@ -48,11 +48,11 @@ func TestParseWhoIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.NodeID != "nPHONE" || id.Hostname != "OPPO Find X9 Ultra" || id.UserID != 1 || id.Tagged || id.Shared {
+	if id.NodeID != "nPHONE" || id.Hostname != "Pixel 9 Pro" || id.UserID != 1 || id.Tagged || id.Shared {
 		t.Fatalf("%+v", id)
 	}
-	tagged, _ := ParseWhoIs([]byte(`{"Node": {"StableID": "n2", "Name": "lyra.x.ts.net.", "User": 99, "Tags": ["tag:ai"]}, "UserProfile": {"ID": 99}}`))
-	if !tagged.Tagged || tagged.NodeName != "lyra" {
+	tagged, _ := ParseWhoIs([]byte(`{"Node": {"StableID": "n2", "Name": "atlas.x.ts.net.", "User": 99, "Tags": ["tag:ai"]}, "UserProfile": {"ID": 99}}`))
+	if !tagged.Tagged || tagged.NodeName != "atlas" {
 		t.Errorf("tagged: %+v", tagged)
 	}
 }

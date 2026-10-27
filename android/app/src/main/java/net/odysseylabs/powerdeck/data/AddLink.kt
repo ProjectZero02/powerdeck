@@ -46,7 +46,7 @@ object AddLink {
         return if (codeRe.matches(v)) v.substring(0, 4) + "-" + v.substring(4) else null
     }
 
-    /** A typed Tailscale name or address, e.g. `za-worldo` or `100.101.1.10`. */
+    /** A typed Tailscale name or address, e.g. `workstation` or `100.101.1.10`. */
     fun cleanHost(s: String): String? = s.trim().removePrefix("https://").removePrefix("http://").substringBefore('/')
         .substringBefore(":47321").trimEnd('.').takeIf { it.isNotEmpty() && hostRe.matches(it) }
 }

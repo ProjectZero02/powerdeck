@@ -1,5 +1,38 @@
 package net.odysseylabs.powerdeck
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -50,8 +83,8 @@ class ScreenshotTest {
 
     private val pc = Device("pc", "Gaming-PC", "100.101.1.10", pin = "x", os = "windows", mac = "d8:5e:d3:12:34:56", lan = listOf("192.168.1.0/24"), me = "Pixel")
     private val pve = Device("pve", "pve", "100.101.1.30", pin = "y", os = "linux", guests = true, lan = listOf("192.168.1.0/24"),
-        kvm = KvmLink("nanokvm", "100.101.1.20", "NanoKVM", "admin"))
-    private val nas = Device("nas", "NAS", null, pin = null, kvm = KvmLink("nanokvm", "100.101.1.40", "nas-kvm", "admin"))
+        kvm = KvmLink("nanokvm", "100.101.1.20", "NanoKVM", "admin", ledSeen = true))
+    private val nas = Device("nas", "NAS", null, pin = null, kvm = KvmLink("nanokvm", "100.101.1.40", "nas-kvm", "admin", ledSeen = true))
     private fun status(name: String, os: String, pending: Pending? = null, presence: Presence? = null, guests: Int? = null) = HelperStatus(
         name, os, "2.0.0", 3 * 3600 + 720, pending, presence, null, emptyList(), true, guests, if (guests != null) listOf("public", "private", "agent") else emptyList(),
         updatesPending = os == "windows", checks = listOf(
@@ -103,7 +136,7 @@ class ScreenshotTest {
                 loaded = true, devices = listOf(pc), add = AddStep.Working("pve"),
                 found = listOf(
                     Peer("helper", "pve", null, "100.101.1.30", 47321, "linux", "y"),
-                    Peer("nanokvm", "server-nanokvm", null, "100.101.1.20", 80, null, null),
+                    Peer("nanokvm", "nanokvm", null, "100.101.1.20", 80, null, null),
                 ),
             ),
             AddActions(back = {}), SnackbarHostState(),
@@ -115,7 +148,7 @@ class ScreenshotTest {
             pc, all,
             Detail(
                 events = listOf(
-                    Event(Instant.parse("2026-10-27T07:00:00Z"), "Lyra via pve", "wake Gaming-PC", "sent"),
+                    Event(Instant.parse("2026-10-27T07:00:00Z"), "Atlas via pve", "wake Gaming-PC", "sent"),
                     Event(Instant.parse("2026-10-26T23:00:00Z"), "Schedule", "shutdown", "scheduled"),
                     Event(Instant.parse("2026-10-26T18:00:00Z"), "Pixel", "restart", "scheduled"),
                 ),
@@ -127,4 +160,59 @@ class ScreenshotTest {
     }
 
     @Test fun settings() = shot("settings") { SettingsScreen(Settings(), SettingsActions()) }
+
+    /** The README banner and GitHub social preview: the real screens in phone frames. */
+    @Config(qualifiers = "w1280dp-h640dp-hdpi")
+    @Test fun banner() {
+        compose.setContent { Banner() }
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/banner.png")
+    }
+
+    @Composable
+    private fun Banner() {
+        Box(
+            Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF15123A), Color(0xFF2B1F7A), Color(0xFF5B4CF0)), start = Offset.Zero, end = Offset.Infinite)),
+        ) {
+            Column(Modifier.padding(start = 72.dp, top = 92.dp).width(540.dp)) {
+                Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(84.dp))
+                Spacer(Modifier.height(28.dp))
+                Text("PowerDeck", color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
+                Spacer(Modifier.height(14.dp))
+                Text("Turn your computers on and off from your phone, from anywhere.", color = Color.White.copy(alpha = 0.86f), fontSize = 25.sp, lineHeight = 34.sp)
+                Spacer(Modifier.height(34.dp))
+                listOf(listOf("Windows", "Linux", "Proxmox"), listOf("Wake-on-LAN", "NanoKVM", "Schedules"), listOf("Widget & tiles", "AI agents (MCP)")).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 10.dp)) {
+                        row.forEach { label ->
+                            Text(
+                                label, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.13f)).padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            Phone(x = 640.dp, y = 74.dp, dark = false) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
+            Phone(x = 1000.dp, y = 74.dp, dark = true) { HomeScreen(all, HomeActions(), SnackbarHostState(), false) }
+            Phone(x = 810.dp, y = 44.dp, dark = false) {
+                DeviceScreen(pc, all, Detail(schedules = listOf(pc to Schedule("a", "shutdown", null, "01:00", listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun"), true, true))),
+                    DeviceActions(), SnackbarHostState())
+            }
+        }
+    }
+
+    /** A 411×914 dp screen at 58 %, in a rounded bezel. */
+    @Composable
+    private fun Phone(x: Dp, y: Dp, dark: Boolean, screen: @Composable () -> Unit) {
+        val scale = 0.58f
+        Box(
+            Modifier.offset(x, y).shadow(28.dp, RoundedCornerShape(40.dp)).clip(RoundedCornerShape(40.dp))
+                .background(Color(0xFF0B0B12)).padding(7.dp).clip(RoundedCornerShape(34.dp))
+                .size(411.dp * scale, 914.dp * scale),
+        ) {
+            Box(Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).requiredSize(411.dp, 914.dp)
+                .graphicsLayer { scaleX = scale; scaleY = scale; transformOrigin = TransformOrigin(0f, 0f) }) {
+                PowerDeckTheme(dynamic = false, dark = dark) { Surface(color = MaterialTheme.colorScheme.background) { screen() } }
+            }
+        }
+    }
 }

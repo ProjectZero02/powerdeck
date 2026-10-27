@@ -94,7 +94,7 @@ func ParseStatus(b []byte) (*Status, error) {
 type Identity struct {
 	NodeID   string
 	NodeName string // short MagicDNS name, e.g. "oppo-find-x9-ultra"
-	Hostname string // the device's own name, e.g. "OPPO Find X9 Ultra"
+	Hostname string // the device's own name, e.g. "Pixel 9 Pro"
 	UserID   int64
 	Login    string
 	Tagged   bool

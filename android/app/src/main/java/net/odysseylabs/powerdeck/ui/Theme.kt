@@ -35,8 +35,7 @@ private val Dark = darkColorScheme(
 
 /** Uses the wallpaper colours on Android 12+ (Material You), the PowerDeck palette otherwise. */
 @Composable
-fun PowerDeckTheme(dynamic: Boolean = true, content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun PowerDeckTheme(dynamic: Boolean = true, dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val scheme = when {
         dynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (dark) dynamicDarkColorScheme(LocalContext.current) else dynamicLightColorScheme(LocalContext.current)

@@ -124,7 +124,7 @@ func TestStateAndAgentKey(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || len(st.PairCode) != 9 || st.McpUrl != "http://100.101.1.10:47323/mcp" {
 		t.Fatalf("state: %v %s", err, w.Body.String())
 	}
-	req := httptest.NewRequest("POST", "http://127.0.0.1:47322/api/keys", strings.NewReader(`{"name":"Lyra","scopes":["wake","power"]}`))
+	req := httptest.NewRequest("POST", "http://127.0.0.1:47322/api/keys", strings.NewReader(`{"name":"Atlas","scopes":["wake","power"]}`))
 	req.Header.Set("X-PowerDeck-Key", key)
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)

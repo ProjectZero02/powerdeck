@@ -15,7 +15,7 @@ func TestKeysPersistAndOnlyHashesAreStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	k, secret, err := s.AddKey(NewKey{Name: "Lyra", Kind: KindAutomation, Scopes: []string{ScopeStatus, ScopeWake}, Devices: []string{"Za-Worldo"}}, now)
+	k, secret, err := s.AddKey(NewKey{Name: "Atlas", Kind: KindAutomation, Scopes: []string{ScopeStatus, ScopeWake}, Devices: []string{"Workstation"}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestKeysPersistAndOnlyHashesAreStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := s2.Authenticate(secret, now)
-	if !ok || got.ID != k.ID || !got.Has(ScopeWake) || got.Has(ScopePower) || !got.MayUse("za-worldo") || got.MayUse("pve") {
+	if !ok || got.ID != k.ID || !got.Has(ScopeWake) || got.Has(ScopePower) || !got.MayUse("workstation") || got.MayUse("pve") {
 		t.Fatalf("authenticate after reopen: %+v %v", got, ok)
 	}
 	if _, ok := s2.Authenticate(secret[:len(secret)-1]+"x", now); ok {

@@ -42,7 +42,7 @@ func node(name, os, ip string, online bool) tailscale.Node {
 
 func TestScan(t *testing.T) {
 	st := &tailscale.Status{Peers: []tailscale.Node{
-		node("za-worldo", "windows", "100.101.1.11", true),
+		node("workstation", "windows", "100.101.1.11", true),
 		node("server-nanokvm", "linux", "100.101.1.20", true),
 		node("pikvm", "linux", "100.101.1.21", true),
 		node("pve", "linux", "100.101.1.30", true),
@@ -53,7 +53,7 @@ func TestScan(t *testing.T) {
 	got := Scan(context.Background(), st, f)
 	want := []struct{ kind, name, pin string }{
 		{KindPiKVM, "pikvm", ""}, {KindHelper, "pve", "pin-100.101.1.30"},
-		{KindNanoKVM, "server-nanokvm", ""}, {KindHelper, "za-worldo", "pin-100.101.1.11"},
+		{KindNanoKVM, "server-nanokvm", ""}, {KindHelper, "workstation", "pin-100.101.1.11"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)

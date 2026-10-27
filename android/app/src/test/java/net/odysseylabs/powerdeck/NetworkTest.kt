@@ -85,7 +85,7 @@ class AddLinkTest {
     }
 
     @Test fun cleansTypedNames() {
-        assertEquals("za-worldo", AddLink.cleanHost(" za-worldo "))
+        assertEquals("workstation", AddLink.cleanHost(" workstation "))
         assertEquals("pve.tail1234.ts.net", AddLink.cleanHost("https://pve.tail1234.ts.net:47321/"))
         assertNull(AddLink.cleanHost("a b"))
     }

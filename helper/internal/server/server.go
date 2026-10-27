@@ -95,9 +95,10 @@ func New(d Deps) *API {
 	mux.HandleFunc("POST /v2/wake", s.with(store.ScopeWake, s.wake))
 	mux.HandleFunc("POST /v2/checks/{id}/fix", s.with(store.ScopeAdmin, s.fix))
 	mux.HandleFunc("GET /v2/events", s.with(store.ScopeStatus, s.events))
-	mux.HandleFunc("GET /v2/keys", s.with(store.ScopeAdmin, s.listKeys))
-	mux.HandleFunc("POST /v2/keys", s.with(store.ScopeAdmin, s.addKey))
-	mux.HandleFunc("DELETE /v2/keys/{id}", s.with(store.ScopeAdmin, s.removeKey))
+	// Keys are the owner's: a key from a pairing code mustn't mint wider keys or revoke others.
+	mux.HandleFunc("GET /v2/keys", s.with(store.ScopeAdmin, s.ownersOnly(s.listKeys)))
+	mux.HandleFunc("POST /v2/keys", s.with(store.ScopeAdmin, s.ownersOnly(s.addKey)))
+	mux.HandleFunc("DELETE /v2/keys/{id}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeKey)))
 	mux.HandleFunc("DELETE /v2/key", s.with("", s.revokeOwn))
 	mux.HandleFunc("GET /v2/schedules", s.with(store.ScopeStatus, s.listSchedules))
 	mux.HandleFunc("POST /v2/schedules", s.with(store.ScopeAdmin, s.addSchedule))
@@ -228,6 +229,17 @@ func (s *server) with(scope string, h func(http.ResponseWriter, *http.Request, a
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, c)), c)
+	}
+}
+
+// ownersOnly refuses every key holder.
+func (s *server) ownersOnly(h func(http.ResponseWriter, *http.Request, auth.Caller)) func(http.ResponseWriter, *http.Request, auth.Caller) {
+	return func(w http.ResponseWriter, r *http.Request, c auth.Caller) {
+		if c.Kind != auth.Owner {
+			fail(w, http.StatusForbidden, "scope", "Only your own devices can do that.")
+			return
+		}
+		h(w, r, c)
 	}
 }
 
@@ -458,7 +470,8 @@ func (s *server) wake(w http.ResponseWriter, r *http.Request, c auth.Caller) {
 		return
 	}
 	// A raw MAC could be any device, so keys limited to some devices wake by name (the relay).
-	if c.Key != nil && (len(c.Key.Devices) > 0 || !c.IsAutomation()) {
+	// Pairing-code keys may: a tagged hub has no owner, and a magic packet only ever turns things on.
+	if c.Key != nil && len(c.Key.Devices) > 0 {
 		fail(w, http.StatusForbidden, "device", "This key can't wake other devices directly.")
 		return
 	}
@@ -590,6 +603,11 @@ func (s *server) addSchedule(w http.ResponseWriter, r *http.Request, c auth.Call
 		return
 	}
 	if sc.Action == "wake" {
+		// A wake schedule acts on another device, which only owners may reach.
+		if c.Kind != auth.Owner {
+			fail(w, http.StatusForbidden, "scope", "Only your own devices can schedule waking another device.")
+			return
+		}
 		if _, err := s.Fleet.Peer(sc.Target); err != nil {
 			fail(w, http.StatusBadRequest, "bad_schedule", "This helper doesn't know "+sc.Target+" yet.")
 			return

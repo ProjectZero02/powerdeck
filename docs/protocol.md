@@ -6,7 +6,7 @@ PowerDeck has three kinds of participants, all on the same [Tailscale](https://t
 |---|---|
 | **Helper** (`powerdeck-helper`, Windows or Linux) | Shuts down / restarts its own machine, reports status and setup checks, sends Wake-on-LAN to its LAN, finds other PowerDeck devices on the tailnet |
 | **Phone app** | Lists devices, sends commands, picks a waker for each device |
-| **KVM** (NanoKVM, PiKVM) | Presses a server's power button and reads its power LED. Used through its own web API; nothing is installed on it |
+| **KVM** (NanoKVM) | Presses a computer's power button and reads its power LED. Used through its own web API; nothing is installed on it. (PiKVM is recognised by discovery, but the app doesn't drive it yet.) |
 
 ## Identity and trust
 
@@ -27,8 +27,9 @@ Keys are created in two ways:
 - **Pairing code** (for phones on another Tailscale account, or when the helper's node is tagged so
   it has no owner): the helper shows an 8-character code (`XXXX-XXXX`, Crockford base32, 40 bits,
   single use, 10 minutes, 5 wrong guesses and it's gone). `POST /v2/pair` exchanges it for a key
-  with all scopes, for **this device only**: it can't relay to other devices, use `/mcp`, or send
-  a wake to an arbitrary MAC.
+  with all scopes, for **this device only**: it can't relay to other devices, use `/mcp`, manage
+  keys, or add wake schedules. It may use the raw-MAC `/v2/wake` (a tagged hub has no owner, and a
+  magic packet only turns things on).
 - **Automation keys** (for AI agents and scripts): created by an owner, either from the phone app
   (`POST /v2/keys`) or on the device (`powerdeck-helper key add NAME --scopes …`).
 
@@ -62,7 +63,7 @@ The phone can't list tailnet devices itself (Android apps can't read Tailscale's
 meets **one** helper, then asks it for the rest:
 
 1. **Introduction**: scan the QR code a helper shows (Windows window, or printed by the Linux
-   installer / `powerdeck-helper qr`), or type the device's Tailscale name (MagicDNS), e.g. `za-worldo`.
+   installer / `powerdeck-helper qr`), or type the device's Tailscale name (MagicDNS), e.g. `workstation`.
    QR link: `powerdeck://add?v=2&n=<name>&h=<tailnet IPv4>&p=47321&f=<cert pin>[&c=<pairing code>]`.
 2. **Find**: `GET /v2/peers` on that helper returns every PowerDeck helper and KVM it found on the
    tailnet. The phone offers them as "Found on your tailnet" and the user ticks the ones to add.
@@ -84,12 +85,12 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | POST | `/v2/wake` | `wake` | `{mac}` → `200 {sentOn:[interface names]}`. Sends a magic packet to the helper's LANs |
 | POST | `/v2/checks/{id}/fix` | `admin` | → `200 {check}` after applying the fix |
 | GET | `/v2/schedules` | `status` | → `{schedules:[Schedule]}` |
-| POST | `/v2/schedules` | `admin` | `Schedule` without `id` → `{id}` |
+| POST | `/v2/schedules` | `admin` | `Schedule` without `id` → `{id}`. Wake schedules (another device) are owner-only |
 | DELETE | `/v2/schedules/{id}` | `admin` | → `204` |
 | GET | `/v2/events` | `status` | → `{events:[{at, who, action, result}]}` (last 200) |
-| GET | `/v2/keys` | `admin` | → `{keys:[{id, name, scopes, createdAt, lastUsed}]}` |
-| POST | `/v2/keys` | `admin` | `{name, scopes}` → `{id, key}` (shown once) |
-| DELETE | `/v2/keys/{id}` | `admin` | → `204` |
+| GET | `/v2/keys` | owner | → `{keys:[{id, name, scopes, createdAt, lastUsed}]}` |
+| POST | `/v2/keys` | owner | `{name, scopes, devices?, allowSelf?}` → `{id, key}` (shown once) |
+| DELETE | `/v2/keys/{id}` | owner | → `204` |
 | GET | `/v2/pairing` | `admin` | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{key, status}` |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
@@ -105,15 +106,15 @@ before retrying with `force: true`. Callers without the `force` scope can't over
 
 ```json
 {
-  "name": "Za-Worldo", "os": "windows", "version": "2.0.0", "apiVersion": 2,
+  "name": "Workstation", "os": "windows", "version": "2.0.0", "apiVersion": 2,
   "bootTime": "2026-10-27T06:08:02Z", "uptimeSeconds": 4123,
-  "pending": {"action": "shutdown", "at": "2026-10-27T09:10:00Z", "by": "OPPO Find X9 Ultra"},
+  "pending": {"action": "shutdown", "at": "2026-10-27T09:10:00Z", "by": "Pixel 9 Pro"},
   "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
   "guests": {"running": 3, "names": ["public", "private", "agent"]},
-  "network": {"mac": "c8:7f:54:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
+  "network": {"mac": "02:00:5e:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
   "caps": ["shutdown", "restart", "wake"],
   "checks": [Check],
-  "you": {"kind": "owner", "name": "OPPO Find X9 Ultra", "scopes": ["status", "wake", "power", "force", "admin"]}
+  "you": {"kind": "owner", "name": "Pixel 9 Pro", "scopes": ["status", "wake", "power", "force", "admin"]}
 }
 ```
 
@@ -177,7 +178,7 @@ phone polls until the device's helper (or the KVM's LED) says it's on, and repor
 ## Schedules
 
 ```json
-{"id": "a1b2", "action": "shutdown|restart|wake", "target": "Za-Worldo", "time": "01:00",
+{"id": "a1b2", "action": "shutdown|restart|wake", "target": "Workstation", "time": "01:00",
  "days": ["mon","tue","wed","thu","fri","sat","sun"], "skipIfInUse": true, "enabled": true}
 ```
 
@@ -223,7 +224,7 @@ Rules the helper enforces for automation keys, whatever the agent asks:
 - One shutdown/restart per device per 10 minutes, at most 6 wakes per device per hour.
 - Never the device the agent itself runs on (the helper on that device refuses, since the caller
   shares its IP's node), unless the owner ticks "allow" for that key.
-- Every action is in the device's event log with the key's name, so the phone shows "Lyra shut down Za-Worldo".
+- Every action is in the device's event log with the key's name, so the phone shows "Atlas shut down Workstation".
 
 ## Phone → NanoKVM
 

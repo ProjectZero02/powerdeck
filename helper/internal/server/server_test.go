@@ -30,11 +30,11 @@ import (
 
 // Addresses on the fake tailnet.
 const (
-	phone    = "100.101.1.40:51234" // owner's phone (same Tailscale user)
-	friend   = "100.101.1.60:51234" // another account's phone
-	lyra     = "100.101.1.50:51234" // tagged agent VM
-	lyraTwin = "100.101.1.51:51234" // another tagged node
-	selfAddr = "100.101.1.10:51234" // this device itself
+	phone     = "100.101.1.40:51234" // owner's phone (same Tailscale user)
+	friend    = "100.101.1.60:51234" // another account's phone
+	atlas     = "100.101.1.50:51234" // tagged agent VM
+	atlasTwin = "100.101.1.51:51234" // another tagged node
+	selfAddr  = "100.101.1.10:51234" // this device itself
 )
 
 type fakeTS struct{}
@@ -46,11 +46,11 @@ func (fakeTS) Status(context.Context) (*tailscale.Status, error) {
 func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error) {
 	switch ip.String() {
 	case "100.101.1.40":
-		return tailscale.Identity{NodeID: "nPHONE", NodeName: "oppo", Hostname: "OPPO Find X9 Ultra", UserID: 1}, nil
+		return tailscale.Identity{NodeID: "nPHONE", NodeName: "oppo", Hostname: "Pixel 9 Pro", UserID: 1}, nil
 	case "100.101.1.60":
 		return tailscale.Identity{NodeID: "nFRIEND", NodeName: "friend", Hostname: "Friend's phone", UserID: 7}, nil
 	case "100.101.1.50":
-		return tailscale.Identity{NodeID: "nLYRA", NodeName: "lyra", UserID: 99, Tagged: true}, nil
+		return tailscale.Identity{NodeID: "nATLAS", NodeName: "atlas", UserID: 99, Tagged: true}, nil
 	case "100.101.1.51":
 		return tailscale.Identity{NodeID: "nTWIN", NodeName: "twin", UserID: 99, Tagged: true}, nil
 	case "100.101.1.10":
@@ -142,8 +142,8 @@ func newEnv(t *testing.T) *env {
 			}
 			return nil
 		}})
-	_ = st.PutPeer(store.Peer{Name: "za-worldo", Address: "100.101.1.11", Port: 47321, Pin: "pin", OS: "windows", MAC: "c8:7f:54:00:00:01", LAN: []string{"192.168.1.0/24"}})
-	_ = st.PutPeer(store.Peer{Name: "lyra", Address: "100.101.1.50", Port: 47321, Pin: "pin2", MAC: "aa:00:00:00:00:02", LAN: []string{"192.168.1.0/24"}})
+	_ = st.PutPeer(store.Peer{Name: "workstation", Address: "100.101.1.11", Port: 47321, Pin: "pin", OS: "windows", MAC: "02:00:5e:00:00:01", LAN: []string{"192.168.1.0/24"}})
+	_ = st.PutPeer(store.Peer{Name: "atlas", Address: "100.101.1.50", Port: 47321, Pin: "pin2", MAC: "aa:00:00:00:00:02", LAN: []string{"192.168.1.0/24"}})
 	_ = st.PutPeer(store.Peer{Name: "cabin", Address: "100.101.1.70", Port: 47321, Pin: "pin3", MAC: "aa:00:00:00:00:03", LAN: []string{"10.9.0.0/24"}})
 	e.api = New(Deps{
 		Auth:  &auth.Authenticator{TS: fakeTS{}, Store: st, Now: now, LocalToken: "pdl_local"},
@@ -195,7 +195,7 @@ func (e *env) do(r req) (int, map[string]any) {
 
 func (e *env) agentKey(scopes []string, devices ...string) string {
 	e.t.Helper()
-	code, out := e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "Lyra", "scopes": scopes, "devices": devices}})
+	code, out := e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "Atlas", "scopes": scopes, "devices": devices}})
 	if code != 200 {
 		e.t.Fatalf("create key: %d %v", code, out)
 	}
@@ -225,14 +225,14 @@ func TestOwnerIsTrustedByTailscaleIdentity(t *testing.T) {
 		t.Fatalf("owner status: %d %v", code, out)
 	}
 	you := out["you"].(map[string]any)
-	if you["kind"] != auth.Owner || you["name"] != "OPPO Find X9 Ultra" || out["checks"] == nil || out["network"] == nil {
+	if you["kind"] != auth.Owner || you["name"] != "Pixel 9 Pro" || out["checks"] == nil || out["network"] == nil {
 		t.Errorf("status: %v", out)
 	}
 	if out["uptimeSeconds"].(float64) != 5400 {
 		t.Errorf("uptime %v", out["uptimeSeconds"])
 	}
 	// Another account, a tagged node and an unknown address are nobody.
-	for _, from := range []string{friend, lyra, "100.101.9.9:1"} {
+	for _, from := range []string{friend, atlas, "100.101.9.9:1"} {
 		if code, out := e.do(req{method: "GET", path: "/v2/status", from: from}); code != http.StatusUnauthorized || out["error"] != "not_owner" {
 			t.Errorf("%s: %d %v", from, code, out)
 		}
@@ -260,14 +260,24 @@ func TestPairingCodeForAnotherAccount(t *testing.T) {
 		t.Errorf("status with key: %d %v", code, out)
 	}
 	// A paired key controls this device only: no relaying to the fleet, no MCP, no raw wakes.
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/za-worldo/status", from: friend, key: key}); code != http.StatusForbidden {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/workstation/status", from: friend, key: key}); code != http.StatusForbidden {
 		t.Errorf("paired key relayed: %d", code)
 	}
 	if code, _ := e.do(req{method: "POST", path: "/mcp", from: friend, key: key, body: map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}}); code != http.StatusForbidden {
 		t.Errorf("paired key used MCP: %d", code)
 	}
-	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: friend, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusForbidden {
-		t.Errorf("paired key raw wake: %d", code)
+	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: friend, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusOK {
+		t.Errorf("paired key raw wake (a tagged hub's only way to wake): %d", code)
+	}
+	// It can't mint a wider key, see or revoke the owner's keys, or schedule waking other devices.
+	if code, _ := e.do(req{method: "POST", path: "/v2/keys", from: friend, key: key, body: map[string]any{"name": "x", "scopes": []string{"power"}}}); code != http.StatusForbidden {
+		t.Errorf("paired key minted a key: %d", code)
+	}
+	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: friend, key: key}); code != http.StatusForbidden {
+		t.Errorf("paired key listed keys: %d", code)
+	}
+	if code, _ := e.do(req{method: "POST", path: "/v2/schedules", from: friend, key: key, body: map[string]any{"action": "wake", "target": "workstation", "time": "07:00"}}); code != http.StatusForbidden {
+		t.Errorf("paired key scheduled a wake: %d", code)
 	}
 	if code, _ := e.do(req{method: "DELETE", path: "/v2/key", from: friend, key: key}); code != http.StatusNoContent {
 		t.Errorf("revoke own: %d", code)
@@ -285,10 +295,10 @@ func TestShutdownRespectsPresence(t *testing.T) {
 		t.Fatalf("in use: %d %v", code, out)
 	}
 	code, out = e.do(req{method: "POST", path: "/v2/power/shutdown", from: phone, body: map[string]any{"force": true}})
-	if code != http.StatusAccepted || out["pending"].(map[string]any)["by"] != "OPPO Find X9 Ultra" {
+	if code != http.StatusAccepted || out["pending"].(map[string]any)["by"] != "Pixel 9 Pro" {
 		t.Fatalf("forced: %d %v", code, out)
 	}
-	if !strings.HasPrefix(e.sys.scheduled[0], "shutdown/1m0s/PowerDeck: OPPO Find X9 Ultra asked") {
+	if !strings.HasPrefix(e.sys.scheduled[0], "shutdown/1m0s/PowerDeck: Pixel 9 Pro asked") {
 		t.Errorf("scheduled %v", e.sys.scheduled)
 	}
 	if code, _ := e.do(req{method: "POST", path: "/v2/power/restart", from: phone, body: map[string]any{"force": true}}); code != http.StatusConflict {
@@ -311,57 +321,75 @@ func TestAutomationKeyRules(t *testing.T) {
 	if code, _ := e.do(req{method: "POST", path: "/v2/keys", from: phone, body: map[string]any{"name": "x", "scopes": []string{"force"}}}); code != http.StatusBadRequest {
 		t.Errorf("force scope allowed: %d", code)
 	}
-	key := e.agentKey([]string{"wake", "power"}, "Gaming-PC", "za-worldo", "lyra")
+	key := e.agentKey([]string{"wake", "power"}, "Gaming-PC", "workstation", "atlas")
 
-	// First use binds the key to Lyra's node; it's then useless from anywhere else.
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/status", from: lyra, key: key}); code != 200 || out["name"] != "Gaming-PC" {
+	// First use binds the key to Atlas's node; it's then useless from anywhere else.
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/status", from: atlas, key: key}); code != 200 || out["name"] != "Gaming-PC" {
 		t.Fatalf("status: %d %v", code, out)
 	}
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/status", from: lyraTwin, key: key}); code != http.StatusUnauthorized {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/status", from: atlasTwin, key: key}); code != http.StatusUnauthorized {
 		t.Errorf("key from another node: %d", code)
 	}
 	// No force, and refused while someone is using the PC.
 	e.sys.presence = &power.Presence{Active: true, User: "Alex"}
-	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: lyra, key: key, body: map[string]any{"force": true}}); code != http.StatusForbidden {
+	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: atlas, key: key, body: map[string]any{"force": true}}); code != http.StatusForbidden {
 		t.Errorf("agent force: %d %v", code, out)
 	}
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/shutdown", from: lyra, key: key}); code != http.StatusConflict || out["error"] != "in_use" {
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/Gaming-PC/shutdown", from: atlas, key: key}); code != http.StatusConflict || out["error"] != "in_use" {
 		t.Errorf("agent while in use: %d %v", code, out)
 	}
 	// Devices outside the key's list.
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/cabin/wake", from: lyra, key: key}); code != http.StatusForbidden {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/cabin/wake", from: atlas, key: key}); code != http.StatusForbidden {
 		t.Errorf("device outside key: %d", code)
 	}
 	// Never the device the agent runs on.
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/lyra/shutdown", from: lyra, key: key}); code != http.StatusForbidden || out["error"] != "self" {
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/atlas/shutdown", from: atlas, key: key}); code != http.StatusForbidden || out["error"] != "self" {
 		t.Errorf("agent's own device: %d %v", code, out)
 	}
 	// Relay: shutdown of another helper goes to that helper, named for the agent, with a minute's warning.
-	code, out := e.do(req{method: "POST", path: "/v2/devices/za-worldo/shutdown", from: lyra, key: key})
-	if code != 200 || len(e.calls) != 1 || e.calls[0] != (forwarded{"za-worldo", "POST", "/v2/power/shutdown", "Lyra"}) {
+	code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: atlas, key: key})
+	if code != 200 || len(e.calls) != 1 || e.calls[0] != (forwarded{"workstation", "POST", "/v2/power/shutdown", "Atlas"}) {
 		t.Fatalf("relay: %d %v %+v", code, out, e.calls)
 	}
 	// One shutdown per device per 10 minutes.
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/za-worldo/restart", from: lyra, key: key}); code != http.StatusTooManyRequests {
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/restart", from: atlas, key: key}); code != http.StatusTooManyRequests {
 		t.Errorf("cooldown: %d %v", code, out)
 	}
 	e.clock = e.clock.Add(11 * time.Minute)
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/za-worldo/restart", from: lyra, key: key}); code != 200 {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/workstation/restart", from: atlas, key: key}); code != 200 {
 		t.Errorf("after cooldown: %d", code)
 	}
 	// Admin routes are off limits.
-	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: lyra, key: key}); code != http.StatusForbidden {
+	if code, _ := e.do(req{method: "GET", path: "/v2/keys", from: atlas, key: key}); code != http.StatusForbidden {
 		t.Errorf("agent listing keys: %d", code)
+	}
+}
+
+func TestAgentCantDodgeSelfRuleWithOtherName(t *testing.T) {
+	e := newEnv(t)
+	if err := e.st.PutPeer(store.Peer{Name: "atlas", Device: "atlas-vm", DNSName: "atlas.example.ts.net", Address: "100.101.1.50", Port: 47321, Pin: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	key := e.agentKey([]string{"wake", "power"})
+	for _, name := range []string{"atlas", "atlas-vm", "ATLAS-VM"} {
+		if code, out := e.do(req{method: "POST", path: "/v2/devices/" + name + "/shutdown", from: atlas, key: key}); code != http.StatusForbidden || out["error"] != "self" {
+			t.Errorf("%s: %d %v", name, code, out)
+		}
+	}
+	// A key limited to a device by one name accepts the other.
+	only := e.agentKey([]string{"wake"}, "atlas-vm")
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/atlas/status", from: atlasTwin, key: only}); code == http.StatusForbidden {
+		t.Errorf("alias refused: %d %v", code, out)
 	}
 }
 
 func TestKeyDeviceListAppliesToDirectRoutes(t *testing.T) {
 	e := newEnv(t)
-	key := e.agentKey([]string{"wake", "power"}, "za-worldo")
-	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: lyra, key: key}); code != http.StatusForbidden || out["error"] != "device" {
+	key := e.agentKey([]string{"wake", "power"}, "workstation")
+	if code, out := e.do(req{method: "POST", path: "/v2/power/shutdown", from: atlas, key: key}); code != http.StatusForbidden || out["error"] != "device" {
 		t.Errorf("direct shutdown of an unlisted device: %d %v", code, out)
 	}
-	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: lyra, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusForbidden {
+	if code, _ := e.do(req{method: "POST", path: "/v2/wake", from: atlas, key: key, body: map[string]any{"mac": "aa:bb:cc:dd:ee:ff"}}); code != http.StatusForbidden {
 		t.Errorf("raw wake with a device list: %d", code)
 	}
 	if e.sys.scheduled != nil {
@@ -372,18 +400,18 @@ func TestKeyDeviceListAppliesToDirectRoutes(t *testing.T) {
 func TestStatusOnlyKeyCantActAndWakeQuota(t *testing.T) {
 	e := newEnv(t)
 	key := e.agentKey(nil) // default: status, wake
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/za-worldo/shutdown", from: lyra, key: key}); code != http.StatusForbidden {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: atlas, key: key}); code != http.StatusForbidden {
 		t.Errorf("shutdown without power scope: %d", code)
 	}
 	for i := 0; i < 6; i++ {
-		if code, out := e.do(req{method: "POST", path: "/v2/devices/za-worldo/wake", from: lyra, key: key}); code != 200 {
+		if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/wake", from: atlas, key: key}); code != 200 {
 			t.Fatalf("wake %d: %d %v", i, code, out)
 		}
 	}
-	if code, _ := e.do(req{method: "POST", path: "/v2/devices/za-worldo/wake", from: lyra, key: key}); code != http.StatusTooManyRequests {
+	if code, _ := e.do(req{method: "POST", path: "/v2/devices/workstation/wake", from: atlas, key: key}); code != http.StatusTooManyRequests {
 		t.Errorf("7th wake in an hour: %d", code)
 	}
-	if len(e.wakes) != 6 || e.wakes[0] != "c8:7f:54:00:00:01" {
+	if len(e.wakes) != 6 || e.wakes[0] != "02:00:5e:00:00:01" {
 		t.Errorf("wakes %v", e.wakes)
 	}
 }
@@ -397,25 +425,25 @@ func TestRelayErrors(t *testing.T) {
 		t.Errorf("unknown: %d", code)
 	}
 	e.peerErr = fleet.ErrOffline
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/za-worldo/status", from: phone}); code != 200 || out["online"] != false {
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/status", from: phone}); code != 200 || out["online"] != false {
 		t.Errorf("offline status: %d %v", code, out)
 	}
 	e.peerErr = &peer.Error{Status: 409, Code: "in_use", Message: "Someone is using this device."}
-	if code, out := e.do(req{method: "POST", path: "/v2/devices/za-worldo/shutdown", from: phone}); code != http.StatusConflict || out["error"] != "in_use" {
+	if code, out := e.do(req{method: "POST", path: "/v2/devices/workstation/shutdown", from: phone}); code != http.StatusConflict || out["error"] != "in_use" {
 		t.Errorf("relayed in_use: %d %v", code, out)
 	}
 }
 
 func TestOnBehalfOfOnlyFromOwners(t *testing.T) {
 	e := newEnv(t)
-	h := map[string]string{peer.ForHeader: "Lyra"}
+	h := map[string]string{peer.ForHeader: "Atlas"}
 	_, out := e.do(req{method: "GET", path: "/v2/status", from: phone, header: h})
-	if out["you"].(map[string]any)["name"] != "Lyra via OPPO Find X9 Ultra" {
+	if out["you"].(map[string]any)["name"] != "Atlas via Pixel 9 Pro" {
 		t.Errorf("owner relay name: %v", out["you"])
 	}
 	key := e.agentKey(nil)
-	_, out = e.do(req{method: "GET", path: "/v2/status", from: lyra, key: key, header: map[string]string{peer.ForHeader: "Owner"}})
-	if out["you"].(map[string]any)["name"] != "Lyra" {
+	_, out = e.do(req{method: "GET", path: "/v2/status", from: atlas, key: key, header: map[string]string{peer.ForHeader: "Owner"}})
+	if out["you"].(map[string]any)["name"] != "Atlas" {
 		t.Errorf("key holder spoofed name: %v", out["you"])
 	}
 }
@@ -432,15 +460,15 @@ func mcp(e *env, from, key string, id int, method string, params any) map[string
 
 func TestMCP(t *testing.T) {
 	e := newEnv(t)
-	key := e.agentKey([]string{"wake", "power"}, "za-worldo")
-	init := mcp(e, lyra, key, 1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
+	key := e.agentKey([]string{"wake", "power"}, "workstation")
+	init := mcp(e, atlas, key, 1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
 	if init["result"].(map[string]any)["protocolVersion"] != "2025-06-18" {
 		t.Errorf("initialize: %v", init)
 	}
-	if code, _ := e.do(req{method: "POST", path: "/mcp", from: lyra, key: key, body: map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}}); code != http.StatusAccepted {
+	if code, _ := e.do(req{method: "POST", path: "/mcp", from: atlas, key: key, body: map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}}); code != http.StatusAccepted {
 		t.Errorf("notification: %d", code)
 	}
-	tools := mcp(e, lyra, key, 2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any)
+	tools := mcp(e, atlas, key, 2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any)
 	if len(tools) != 5 {
 		t.Fatalf("tools: %v", tools)
 	}
@@ -450,24 +478,24 @@ func TestMCP(t *testing.T) {
 			t.Error("power_off not marked destructive")
 		}
 	}
-	list := mcp(e, lyra, key, 3, "tools/call", map[string]any{"name": "list_devices", "arguments": map[string]any{}})
+	list := mcp(e, atlas, key, 3, "tools/call", map[string]any{"name": "list_devices", "arguments": map[string]any{}})
 	devs := list["result"].(map[string]any)["structuredContent"].(map[string]any)["devices"].([]any)
-	if len(devs) != 1 || devs[0].(map[string]any)["name"] != "za-worldo" {
+	if len(devs) != 1 || devs[0].(map[string]any)["name"] != "workstation" {
 		t.Errorf("devices limited to the key: %v", devs)
 	}
-	on := mcp(e, lyra, key, 4, "tools/call", map[string]any{"name": "power_on", "arguments": map[string]any{"device": "za-worldo"}})
+	on := mcp(e, atlas, key, 4, "tools/call", map[string]any{"name": "power_on", "arguments": map[string]any{"device": "workstation"}})
 	if on["result"].(map[string]any)["isError"] != false || len(e.wakes) != 1 {
 		t.Errorf("power_on: %v", on)
 	}
-	denied := mcp(e, lyra, key, 5, "tools/call", map[string]any{"name": "power_off", "arguments": map[string]any{"device": "Gaming-PC"}})
+	denied := mcp(e, atlas, key, 5, "tools/call", map[string]any{"name": "power_off", "arguments": map[string]any{"device": "Gaming-PC"}})
 	if denied["result"].(map[string]any)["isError"] != true {
 		t.Errorf("power_off outside key: %v", denied)
 	}
-	if bad := mcp(e, lyra, key, 6, "nope", nil); bad["error"] == nil {
+	if bad := mcp(e, atlas, key, 6, "nope", nil); bad["error"] == nil {
 		t.Errorf("unknown method: %v", bad)
 	}
 	// Without a key the agent's tagged node is nobody.
-	if code, _ := e.do(req{method: "POST", path: "/mcp", from: lyra, body: map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}}); code != http.StatusUnauthorized {
+	if code, _ := e.do(req{method: "POST", path: "/mcp", from: atlas, body: map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}}); code != http.StatusUnauthorized {
 		t.Errorf("mcp without key: %d", code)
 	}
 }
@@ -513,7 +541,7 @@ func TestSchedules(t *testing.T) {
 	if len(e.sys.scheduled) != 0 || !strings.HasPrefix(e.st.Events()[0].Result, "skipped") {
 		t.Errorf("skip: %v %+v", e.sys.scheduled, e.st.Events()[0])
 	}
-	e.api.RunSchedule(context.Background(), store.Schedule{Action: "wake", Target: "za-worldo", Time: "07:00"})
+	e.api.RunSchedule(context.Background(), store.Schedule{Action: "wake", Target: "workstation", Time: "07:00"})
 	if len(e.wakes) != 1 {
 		t.Errorf("wake schedule: %v", e.wakes)
 	}

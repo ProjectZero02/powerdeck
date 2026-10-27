@@ -111,7 +111,7 @@ func (u *ui) guard(next http.Handler) http.Handler {
 			return
 		}
 		if u.AllowLocal != nil && !u.AllowLocal(r.RemoteAddr) {
-			http.Error(w, "PowerDeck's window is only for the person signed in at this PC's screen.", http.StatusForbidden)
+			http.Error(w, "PowerDeck's window is only for the person signed in at this PC's screen. Over Remote Desktop, open PowerDeck as administrator.", http.StatusForbidden)
 			return
 		}
 		h := w.Header()

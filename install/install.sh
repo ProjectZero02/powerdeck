@@ -59,7 +59,7 @@ else
 fi
 ASSET="powerdeck-helper-linux-$ARCH.gz"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${TMPDIR:-/var/tmp}/powerdeck.XXXXXX") # not /tmp, which may be noexec
 trap 'rm -rf "$TMP"' EXIT INT TERM
 fetch() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 -o "$2" "$1"

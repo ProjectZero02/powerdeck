@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: gomod
-    directory: /windows
+    directory: /helper
     schedule: { interval: monthly }
   - package-ecosystem: gradle
     directory: /android

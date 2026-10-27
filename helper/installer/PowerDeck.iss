@@ -73,6 +73,9 @@ begin
   Result := '';
 end;
 
+var
+  SetupFailed: Boolean;
+
 // Register the service, firewall rule and Wake-on-LAN settings, then start the service.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
@@ -82,8 +85,20 @@ begin
   begin
     WizardForm.StatusLabel.Caption := 'Setting up PowerDeck (service, firewall, Wake-on-LAN)...';
     if not Exec(ExpandConstant('{app}\PowerDeck.exe'), 'install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      SetupFailed := True;
       SuppressibleMsgBox('PowerDeck was installed but could not finish setting itself up.' + #13#10 + #13#10 +
         'Details are in ' + ExpandConstant('{tmp}\..\PowerDeck-install.log') + '. Running the installer again usually fixes it.',
         mbError, MB_OK, IDOK);
+    end;
   end;
+end;
+
+// A silent install (install.ps1) learns about a failed setup from the exit code.
+function GetCustomSetupExitCode: Integer;
+begin
+  if SetupFailed then
+    Result := 2
+  else
+    Result := 0;
 end;

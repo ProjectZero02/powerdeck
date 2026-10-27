@@ -17,18 +17,18 @@ body:
     id: part
     attributes:
       label: Which part?
-      options: [Windows app, Android app, Pairing, Server control (NanoKVM), Updates, Other]
+      options: [Android app, Windows helper, Linux / Proxmox helper, Adding devices, Turning on (Wake-on-LAN), NanoKVM, Schedules, AI agents (MCP), Updates, Other]
     validations: { required: true }
   - type: input
     id: versions
     attributes:
       label: Versions
-      description: PowerDeck version (top of the PC window / app Settings), Windows version, Android version
-      placeholder: "PowerDeck 1.0.0, Windows 11 24H2, Android 16"
+      description: PowerDeck version (app Settings → About, or `powerdeck-helper version`), operating systems, Android version
+      placeholder: "PowerDeck 2.0.0, Windows 11 24H2 / Proxmox VE 9, Android 16"
     validations: { required: true }
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: Windows log is `C:\ProgramData\PowerDeck\logs\powerdeck.log`. Paste the relevant lines.
+      description: Windows `C:\ProgramData\PowerDeck\logs\powerdeck.log`, Linux `journalctl -u powerdeck`. Paste the relevant lines.
       render: text

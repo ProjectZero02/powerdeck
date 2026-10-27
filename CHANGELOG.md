@@ -4,7 +4,7 @@
 
 PowerDeck now controls any number of computers.
 
-- **Linux helper** (including Proxmox), next to Windows. One-line install on both (`install.sh`, `install.ps1`), signature-checked.
+- **Linux helper** (including Proxmox), next to Windows. One-line install on both (`install.sh`, `install.ps1`), checked against the release's checksums (and on Linux its Ed25519 signature).
 - **No pairing for your own devices:** a helper trusts phones signed in to the same Tailscale account. Devices on another account use an 8-character code.
 - **Add devices in seconds:** scan one helper's QR code (or type its Tailscale name) and the others it finds on your tailnet, helpers and NanoKVMs, appear to add with one tap.
 - **Wake from anything that's on:** any helper on the same network sends the Wake-on-LAN signal, or a NanoKVM, or the phone itself at home.
@@ -16,8 +16,8 @@ PowerDeck now controls any number of computers.
 - **AI agents (MCP):** let an agent or script check and control devices through an always-on helper, with strict limits and per-key permissions.
 - **Notifications** when a schedule or an agent acts, or a device goes offline.
 - **Widget** with every device, **four Quick Settings tiles**, per-device home-screen shortcuts.
-- **Safer by design:** a NanoKVM presses the power button only when the helper doesn't answer and the power light reads off, and linking one checks the light matches the computer. Keys from a pairing code control only that device. The PC window works only for the person at the screen (or an administrator).
-- Coming from 1.0: install the 2.0 helper over the old one, then add the PC again in the app.
+- **Safer by design:** a NanoKVM presses the power button only when the helper doesn't answer and the power light reads off, and only once it has seen that computer's light on; linking one checks the light matches the computer. Keys from a pairing code control only that device and can't create other keys. The PC window works only for the person at the screen (or an administrator).
+- **Coming from 1.0:** the 1.0 helper updates itself to 2.0, after which the 1.0 app can't reach it. Install the 2.0 app, then add the PC again (scan its code).
 
 ## 1.0.0
 

@@ -25,7 +25,7 @@ const (
 // Caller is an authenticated request's identity.
 type Caller struct {
 	Kind   string
-	Name   string // for logs and the activity history, e.g. "OPPO Find X9 Ultra" or "Lyra"
+	Name   string // for logs and the activity history, e.g. "Pixel 9 Pro" or "Atlas"
 	NodeID string
 	Node   string // short MagicDNS name of the caller's node
 	Scopes []string

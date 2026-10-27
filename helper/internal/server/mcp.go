@@ -153,7 +153,7 @@ func (s *server) listDevices(r *http.Request, c auth.Caller) map[string]any {
 		online[f.Name] = true
 	}
 	for _, p := range s.Store.Peers() {
-		if c.MayUse(p.Name) {
+		if mayUseAny(c, peerNames(p)) {
 			out = append(out, dev{Name: p.Name, OS: p.OS, Online: online[p.Name]})
 		}
 	}
