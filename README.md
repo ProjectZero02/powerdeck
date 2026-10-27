@@ -87,7 +87,7 @@ Tailscale signs devices out every 180 days by default. For a server, or anything
 
 - **On · Off · Restart.** Clean shutdowns with a countdown you can cancel (60 seconds by default; set it, and whether buttons need a 3-second hold, in Settings). On Windows, **Update and shut down** when updates are waiting.
 - **Turn on from anywhere.** Wake-on-LAN, sent by any PowerDeck computer on the same home network (an always-on server is ideal), or by a NanoKVM, or by your phone when it's at home.
-- **NanoKVM.** Wire a [NanoKVM](https://github.com/sipeed/NanoKVM) to any computer's power button to turn it on even where Wake-on-LAN can't, and as a fallback for shutting down. Nothing is installed on the KVM.
+- **NanoKVM.** Wire a [NanoKVM](https://github.com/sipeed/NanoKVM) to any computer's power and reset buttons to turn it on even where Wake-on-LAN can't, to shut it down when its helper doesn't answer, and to **reset a frozen computer**. An always-on PowerDeck computer (a home server, say) drives the KVMs for the app, and learns on its own which cables are connected. Nothing is installed on the KVM.
 - **Someone using it?** Shutdowns and restarts ask first when someone is active or a game is full-screen, and say who.
 - **Proxmox aware.** Shows running VMs. A shutdown stops them cleanly first.
 - **Schedules.** Shut down, restart or wake at set times on chosen days, skipped while the computer is in use.
@@ -122,9 +122,9 @@ Your BIOS also needs Wake-on-LAN enabled. On many boards that's *ErP Ready: Disa
 ## Safe by design
 
 - **Only you.** A helper asks Tailscale who's calling and trusts only its **owner devices**: the phones and computers that scanned its code (the code works once, for 10 minutes) or that you added on the machine with `powerdeck-helper owner add`. Another device on your Tailscale account isn't trusted just for being there. A phone on another account that enters the code can turn that one device on and off, but can't change its settings or reach your other devices. Your computers reach each other with keys the app sets up, which can power them on and off and nothing more.
-- **No accidental power-offs.** A KVM press toggles power, so PowerDeck presses to turn on only when the computer's helper doesn't answer *and* the power light reads off. It won't press at all until it has seen that computer's light on, which proves the LED cable is connected (an unwired LED always reads off). Linking a KVM checks that its light matches the computer. Holding the button down to force a computer off is hidden behind a confirmation.
+- **No accidental power-offs.** A KVM press toggles power, so PowerDeck presses to turn on only when the computer's helper doesn't answer *and* the power light reads off. It won't press at all until it has seen that computer's light on, which proves the LED cable is connected (an unwired LED always reads off). Linking a KVM checks that its light matches the computer. Reset and holding the button down to force a computer off are hidden behind a confirmation, refused while the computer still answers, and only for your own devices, never an agent.
 - **Nothing exposed.** No ports are opened to the internet. Phone-to-helper traffic is HTTPS pinned to that helper's own certificate, inside Tailscale's WireGuard tunnel.
-- **Your NanoKVM password stays on your phone,** encrypted with a key in Android's hardware keystore. The app is excluded from backups.
+- **Your NanoKVM password stays with you,** encrypted on your phone with a key in Android's hardware keystore (the app is excluded from backups), and sealed on the one PowerDeck computer that drives the KVM, with a key apart from its data. [Give PowerDeck its own NanoKVM account](docs/nanokvm-hardening.md) rather than `admin`.
 - **Checked downloads.** Automatic updates and the Linux installer verify an Ed25519 signature; the Windows one-liner checks the release's SHA-256. Android accepts updates only when they're signed with the same key. Every release has SHA-256 checksums and a GitHub build attestation.
 
 Details: [SECURITY.md](SECURITY.md) · protocol: [docs/protocol.md](docs/protocol.md)

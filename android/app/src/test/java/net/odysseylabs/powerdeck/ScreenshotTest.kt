@@ -53,6 +53,7 @@ import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.KvmLink
+import net.odysseylabs.powerdeck.data.KvmWiring
 import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.Pending
 import net.odysseylabs.powerdeck.data.Presence
@@ -252,6 +253,25 @@ class ScreenshotTest {
         compose.onNodeWithText("Laptop").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Pixel 9 Pro (this phone)").assertExists()
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-owners.png")
+    }
+
+    /** Light on, helper silent, the KVM on a hub: Reset is offered, and the wiring the hub learned is shown. */
+    @Test fun deviceFrozenOnHub() {
+        val ws = Device("ws", "Workstation", "100.101.1.11", pin = "w", os = "windows", mac = "02:00:5e:00:00:01",
+            kvm = KvmLink("nanokvm", "kvm-2.tail1234.ts.net", "kvm-2", "admin", ledSeen = true, hub = "pve", machine = "workstation",
+                wiring = KvmWiring("wired", "wired", "unknown")))
+        val state = all.copy(devices = all.devices + ws, states = all.states + ("ws" to DeviceState.On(null)))
+        shot("device-frozen") { DeviceScreen(ws, state, Detail(events = emptyList()), DeviceActions(), SnackbarHostState()) }
+        compose.onNodeWithText("Reset").assertIsDisplayed()
+        compose.onNodeWithText("Driven by pve · signed in as admin").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Checked on the first reset").assertExists()
+        compose.onNodeWithText("Check again").assertExists()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-frozen.png")
+    }
+
+    @Test fun settingsHub() {
+        shot("settings-hub") { SettingsScreen(Settings(), SettingsActions(), hubs = listOf(pc, pve), showHub = true) }
+        compose.onNodeWithText("Automatic: pve").assertExists()
     }
 
     @Test fun settings() = shot("settings") { SettingsScreen(Settings(), SettingsActions()) }

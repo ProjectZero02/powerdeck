@@ -1,6 +1,19 @@
 package net.odysseylabs.powerdeck.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -31,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import net.odysseylabs.powerdeck.BuildConfig
 import net.odysseylabs.powerdeck.data.Device
+import net.odysseylabs.powerdeck.data.HUB_PHONE
 import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.Release
 import net.odysseylabs.powerdeck.data.Settings
@@ -47,6 +61,7 @@ data class SettingsActions(
     val installUpdate: () -> Unit = {},
     val updateDevices: () -> Unit = {},
     val setDevicesAutoUpdate: (Boolean) -> Unit = {},
+    val setKvmHub: (String) -> Unit = {},
     val openProject: () -> Unit = {},
 )
 
@@ -66,12 +81,43 @@ private fun SettingRow(title: String, subtitle: String? = null, onClick: (() -> 
     )
 }
 
+/**
+ * Which device drives the KVMs. It must be always on, and not the computer a KVM is wired to: it
+ * resets frozen machines and checks they come back.
+ */
+@Composable
+private fun HubDialog(current: String, hubs: List<Device>, auto: Device?, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    val options = listOf("" to "Automatic${auto?.let { " (${it.name})" } ?: ""}") + hubs.map { it.id to it.name } + listOf(HUB_PHONE to "This phone only")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("KVM hub") },
+        text = {
+            Column {
+                Text("An always-on device drives your KVMs: it resets a frozen computer and checks it comes back, even when this phone is away.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                options.forEach { (id, label) ->
+                    Row(Modifier.fillMaxWidth().selectable(id == current, role = Role.RadioButton) { onPick(id) }.padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = id == current, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(label)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     settings: Settings,
     a: SettingsActions,
     helpers: List<Pair<Device, HelperUpdate>> = emptyList(),
+    /** The phone's own helpers, any of which can drive the KVMs. */
+    hubs: List<Device> = emptyList(),
+    showHub: Boolean = false,
     update: Release? = null,
     appCheck: AppCheck? = null,
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
@@ -94,6 +140,18 @@ fun SettingsScreen(
             SettingRow("Notifications", "When a schedule or agent acts", trailing = {
                 Switch(checked = settings.notifications, onCheckedChange = a.setNotifications)
             })
+
+            if (showHub) {
+                var picking by remember { mutableStateOf(false) }
+                val auto = hubs.filter { it.os == "linux" }.singleOrNull()
+                Header("KVMs")
+                SettingRow("KVM hub", when (settings.kvmHub) {
+                    HUB_PHONE -> "This phone presses the buttons itself"
+                    "" -> auto?.let { "Automatic: ${it.name}" } ?: "Automatic: this phone (pick an always-on device)"
+                    else -> hubs.firstOrNull { it.id == settings.kvmHub }?.name ?: "A device that's no longer here: this phone"
+                }, onClick = { picking = true })
+                if (picking) HubDialog(settings.kvmHub, hubs, auto, onPick = { picking = false; a.setKvmHub(it) }, onDismiss = { picking = false })
+            }
 
             Header("Updates")
             val outdated = helpers.filter { it.second.available }

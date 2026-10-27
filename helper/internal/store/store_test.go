@@ -204,3 +204,36 @@ func TestPeerKeyKept(t *testing.T) {
 		t.Error("unknown peer")
 	}
 }
+
+func TestKVMLookups(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A KVM named like another machine is found by its name, never as that machine's KVM.
+	_ = s.PutKVM(KVM{Name: "laptop", Machine: "Workstation"})
+	_ = s.PutKVM(KVM{Name: "kvm-2", Machine: "laptop"})
+	if k, ok := s.KVMFor("laptop"); !ok || k.Name != "kvm-2" {
+		t.Errorf("KVMFor(laptop) = %+v %v", k, ok)
+	}
+	if k, ok := s.KVM("laptop"); !ok || k.Machine != "Workstation" {
+		t.Errorf("KVM(laptop) = %+v %v", k, ok)
+	}
+	if _, ok := s.KVMFor("kvm-2"); ok {
+		t.Error("a KVM's name taken for a machine")
+	}
+	// An update that changes nothing doesn't write the state file.
+	path := filepath.Join(dir, "state.json")
+	_ = os.Remove(path)
+	if err := s.UpdateKVM("laptop", func(k *KVM) { k.Machine = "Workstation" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("written without a change: %v", err)
+	}
+	_ = s.UpdateKVM("laptop", func(k *KVM) { k.MAC = "02:00:5e:00:00:0b" })
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("change not written: %v", err)
+	}
+}

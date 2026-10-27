@@ -172,6 +172,29 @@ func (f *Fleet) Wake(name string) ([]string, error) {
 	return f.Deps.Wake(p.MAC, own.LAN)
 }
 
+// Answers reports whether a remembered helper replies, asked twice so a dropped packet doesn't read
+// as silence. Only a PowerDeck reply counts (any certificate: something runs there): a frozen
+// computer's network stack can still accept or refuse connections.
+func (f *Fleet) Answers(ctx context.Context, name string) bool {
+	p, err := f.Peer(name)
+	if err != nil {
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := f.Prober.Helper(ctx, p.Address); err == nil {
+			return true
+		}
+		if i == 0 {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(1500 * time.Millisecond):
+			}
+		}
+	}
+	return false
+}
+
 // Forward calls a remembered helper's API with this helper's peer key for it, on behalf of who.
 func (f *Fleet) Forward(ctx context.Context, name, method, path string, body, out any, who string) error {
 	p, err := f.Peer(name)

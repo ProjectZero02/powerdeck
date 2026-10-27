@@ -77,6 +77,7 @@ import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Peer
+import net.odysseylabs.powerdeck.data.KvmWiring
 import net.odysseylabs.powerdeck.data.OwnerInfo
 import net.odysseylabs.powerdeck.data.Schedule
 import java.time.ZoneId
@@ -90,6 +91,8 @@ data class DeviceActions(
     val restart: () -> Unit = {},
     val cancel: () -> Unit = {},
     val forceOff: () -> Unit = {},
+    val reset: () -> Unit = {},
+    val recheckKvm: () -> Unit = {},
     val fix: (Check) -> Unit = {},
     val addSchedule: (action: String, time: String, days: List<String>, skipIfInUse: Boolean) -> Unit = { _, _, _, _ -> },
     val removeSchedule: (Device, Schedule) -> Unit = { _, _ -> },
@@ -155,6 +158,8 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
     var menu by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var confirmForce by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
+    val hub = d.kvm?.hub?.let { id -> state.devices.firstOrNull { it.id == id } }
     var renaming by remember { mutableStateOf(false) }
     var scheduling by remember { mutableStateOf(false) }
     var linkKvm by remember { mutableStateOf<Peer?>(null) }
@@ -168,6 +173,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                     DropdownMenu(menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
                         DropdownMenuItem(text = { Text("Add to home screen") }, onClick = { menu = false; a.pinShortcut() })
+                        if (hub != null) DropdownMenuItem(text = { Text("Reset (press reset)") }, onClick = { menu = false; confirmReset = true })
                         if (d.kvm != null) DropdownMenuItem(text = { Text("Force off (hold power 12 s)") }, onClick = { menu = false; confirmForce = true })
                         DropdownMenuItem(text = { Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; confirmRemove = true })
                     }
@@ -208,7 +214,14 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                             st is DeviceState.On -> {
                                 if (d.hasHelper || d.kvm != null) HoldButton("Shut down", Icons.Rounded.PowerSettingsNew, true, !busy, Modifier.weight(1f), hold = hold,
                                     onHint = { a.hint("Hold to shut down ${d.name}") }) { a.shutdown(false) }
-                                if (d.hasHelper) HoldButton("Restart", Icons.Rounded.RestartAlt, false, !busy, Modifier.weight(1f), hold = hold, tonal = true,
+                                // The light is on but the helper is silent: it may be frozen, which only a reset fixes.
+                                if (d.hasHelper && status == null && hub != null) FilledTonalButton(onClick = { confirmReset = true }, enabled = !busy,
+                                    modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
+                                    Icon(Icons.Rounded.RestartAlt, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Reset")
+                                }
+                                else if (d.hasHelper) HoldButton("Restart", Icons.Rounded.RestartAlt, false, !busy, Modifier.weight(1f), hold = hold, tonal = true,
                                     onHint = { a.hint("Hold to restart ${d.name}") }, onConfirm = a.restart)
                             }
                             st == DeviceState.Off -> HoldButton("Turn on", Icons.Rounded.PowerSettingsNew, false, !busy, Modifier.weight(1f), hold = false, onConfirm = a.turnOn)
@@ -309,7 +322,18 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             if (d.kvm != null || kvms.isNotEmpty()) Section("Power button") {
                 val k = d.kvm
                 if (k != null) {
-                    Row2(k.name, "Signed in as ${k.user}", trailing = { TextButton(onClick = a.unlinkKvm) { Text("Unlink") } })
+                    Row2(k.name, if (hub != null) "Driven by ${hub.name} · signed in as ${k.user}" else "Signed in as ${k.user}",
+                        trailing = { TextButton(onClick = a.unlinkKvm) { Text("Unlink") } })
+                    k.hubError?.let { e ->
+                        Row2("Only this phone uses it", e, icon = { Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.error) })
+                    }
+                    k.wiring?.takeIf { hub != null }?.let { w ->
+                        WiringRow("Power light", w.led, "Wired", "Reads off while ${d.name} runs: not connected, or the wrong way round",
+                            "Checked once ${d.name} is on")
+                        WiringRow("Power button", w.power, "Works", "A press did nothing: check the cable", "Checked on the first press")
+                        WiringRow("Reset button", w.reset, "Works", "Not connected: a reset forces it off and on instead", "Checked on the first reset")
+                        TextButton(onClick = a.recheckKvm, enabled = !busy, modifier = Modifier.padding(start = 8.dp)) { Text("Check again") }
+                    }
                 } else {
                     Row2("Link a NanoKVM", "Presses the power button when Wake-on-LAN can't")
                     kvms.forEach { p -> TextButton(onClick = { linkKvm = p }, modifier = Modifier.padding(start = 8.dp)) { Text("Link ${p.name}") } }
@@ -399,8 +423,35 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
             dismissButton = { TextButton(onClick = { confirmForce = false }) { Text("Cancel") } },
         )
     }
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset ${d.name}?") },
+            text = { Text("${hub?.name ?: "The hub"} presses ${d.name}'s reset button, then checks that it comes back. Unsaved work is lost. Use only if it's frozen.") },
+            confirmButton = {
+                Button(onClick = { confirmReset = false; a.reset() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Reset") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
+        )
+    }
     if (scheduling) ScheduleDialog(d, status, onSave = { act, t, days, skip -> scheduling = false; a.addSchedule(act, t, days, skip) }, onDismiss = { scheduling = false })
     linkKvm?.let { p -> KvmDialog(p, state.devices, onLink = a.linkKvm, onDismiss = { linkKvm = null }, fixedDevice = d) }
+}
+
+/** One cable of the KVM, as the hub learned it. */
+@Composable
+private fun WiringRow(title: String, state: String, wired: String, notWired: String, unknown: String) {
+    Row2(title, when (state) {
+        KvmWiring.WIRED -> wired
+        KvmWiring.NOT_WIRED -> notWired
+        else -> unknown
+    }, icon = {
+        when (state) {
+            KvmWiring.WIRED -> Icon(Icons.Rounded.CheckCircle, null, tint = OnGreen)
+            KvmWiring.NOT_WIRED -> Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.error)
+            else -> Icon(Icons.Rounded.Info, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    })
 }
 
 @Composable

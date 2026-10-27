@@ -27,14 +27,20 @@ sealed interface AddResult {
 private const val LINK_RETRY_MS = 5 * 60_000L
 
 /** All device logic. Screens, the widget, tiles and the background worker call into this. */
-class PowerDeck(private val ctx: Context, val store: DeviceStore) {
-    private val http = OkHttpClient.Builder()
+class PowerDeck(
+    private val ctx: Context,
+    val store: DeviceStore,
+    /** Tests pass one that resolves Tailscale names to local fakes. */
+    private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
-        .build()
+        .build(),
+    /** Tests stand in for the Tailscale VPN. */
+    private val vpn: (suspend () -> Boolean)? = null,
+) {
 
-    suspend fun tailnet(): Boolean = Tailscale.ensureConnected(ctx, store.currentSettings().autoTailscale)
+    suspend fun tailnet(): Boolean = vpn?.invoke() ?: Tailscale.ensureConnected(ctx, store.currentSettings().autoTailscale)
 
     fun phoneName(): String =
         Settings.Global.getString(ctx.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
@@ -85,7 +91,163 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
         return block(kvm, cookie)
     }
 
-    private suspend fun ledOn(d: Device): Boolean? = runCatching { withKvm(d) { k, c -> k.powerLedOn(c) } }.getOrNull()
+    /** The power light: from the hub when it drives the KVM, else (or when it doesn't answer) read directly. */
+    private suspend fun ledOn(d: Device): Boolean? {
+        if (d.kvm?.hub != null) runCatching { hubMachine(d) }.getOrNull()?.let { m ->
+            learnWiring(d, m.wiring)
+            if (m.led != null) return m.led
+        }
+        return runCatching { withKvm(d) { k, c -> k.powerLedOn(c) } }.getOrNull()
+    }
+
+    // ---- The KVM hub --------------------------------------------------------------------------
+
+    /**
+     * The helper that drives this phone's KVMs: the one picked in Settings, or else the one Linux
+     * helper this phone owns (an always-on server). Null: this phone drives them itself.
+     */
+    suspend fun kvmHub(): Device? {
+        val owned = store.all().filter { it.hasHelper && !it.hasKey }
+        return when (val choice = store.currentSettings().kvmHub) {
+            HUB_PHONE -> null
+            "" -> owned.filter { it.os == "linux" }.singleOrNull()
+            else -> owned.firstOrNull { it.id == choice }
+        }
+    }
+
+    private val hubLock = Mutex()
+    private val hubCache = mutableMapOf<String, Pair<Long, List<HubMachine>>>()
+
+    /** The hub's view of the device, read at most every 5 s (one call serves every device on that hub). */
+    private suspend fun hubMachine(d: Device): HubMachine? {
+        val k = d.kvm ?: return null
+        val hub = k.hub?.let { store.get(it) } ?: return null
+        val list = hubLock.withLock {
+            val now = System.currentTimeMillis()
+            hubCache[hub.id]?.takeIf { now - it.first < 5_000 }?.second
+                ?: client(hub)!!.machines(kvmOnly = true).also { hubCache[hub.id] = now to it }
+        }
+        return list.firstOrNull { it.kvm == k.name }
+    }
+
+    private suspend fun learnWiring(d: Device, w: KvmWiring?) {
+        val k = d.kvm ?: return
+        if (w == null || (w == k.wiring && (k.ledSeen || !w.ledWired))) return
+        // A light the hub has seen on is wired: this phone may press too when the hub can't be reached.
+        store.update(d.id) { it.copy(kvm = it.kvm?.copy(wiring = w, ledSeen = it.kvm.ledSeen || w.ledWired)) }
+    }
+
+    /** Hands a KVM linked on this phone to [hub]. Null when it worked, else why not (also kept on the link). */
+    private suspend fun moveToHub(d: Device, hub: Device): String? {
+        val k = d.kvm ?: return null
+        val pw = store.kvmPassword(d.id) ?: return "Its password isn't on this phone. Link it again."
+        val err = try {
+            val linked = client(hub)!!.addKvm(k.name, k.address, k.user, pw, d.fleetName, d.mac, d.hasHelper)
+            store.setKvmLeftOnHub(hub.id, k.name, false) // back on a hub it was to be removed from
+            store.update(d.id) {
+                it.copy(kvm = it.kvm?.copy(hub = hub.id, machine = linked.machine, wiring = linked.wiring, hubError = null,
+                    ledSeen = it.kvm.ledSeen || linked.wiring?.ledWired == true))
+            }
+            null
+        } catch (e: HelperException.Api) {
+            if (e.status == 404 && e.code == "not_found") "${hub.name} needs PowerDeck 2.2 or later to drive KVMs." else e.message
+        } catch (e: HelperException.Unreachable) {
+            "${hub.name} isn't answering."
+        } catch (e: Exception) {
+            e.message ?: "${hub.name} couldn't take it over."
+        }
+        if (err != null) store.update(d.id) { it.copy(kvm = it.kvm?.copy(hubError = err)) }
+        return err
+    }
+
+    /**
+     * Puts every KVM on the hub (linked before 2.2, or the hub changed), or back on this phone when
+     * there's no hub. A failed move is tried again after LINK_RETRY_MS.
+     */
+    private suspend fun placeKvms(states: Map<String, DeviceState>) {
+        val held = store.all().mapNotNull { d -> d.kvm?.let { it.hub to it.name } }.toSet()
+        for ((hubId, name) in store.kvmsLeftOnHubs()) when {
+            (hubId to name) in held -> store.setKvmLeftOnHub(hubId, name, false)
+            due("kvm:-$name@$hubId") -> leaveHub(hubId, name)
+        }
+        val hub = kvmHub()
+        for (d in store.all()) {
+            val k = d.kvm ?: continue
+            if (k.hub == hub?.id && (hub != null || k.hubError == null)) continue
+            val old = k.hub
+            if (hub == null || hub.id == d.id) { // a hub can't drive the KVM wired to itself
+                old?.let { leaveHub(it, k.name) }
+                store.update(d.id) { it.copy(kvm = it.kvm?.copy(hub = null, machine = null, hubError = null)) }
+                continue
+            }
+            if (states[hub.id] !is DeviceState.On || !due("kvm:${d.id}>${hub.id}")) continue
+            if (moveToHub(d, hub) == null && old != null) leaveHub(old, k.name)
+        }
+    }
+
+    /**
+     * Deletes a KVM (and its password) from a hub that no longer drives it. When the hub doesn't
+     * answer, it's asked again on later refreshes, so it doesn't keep driving the KVM.
+     */
+    private suspend fun leaveHub(hubId: String, name: String) {
+        val c = store.get(hubId)?.let { client(it) }
+        val again = c != null && try {
+            c.removeKvm(name)
+            false
+        } catch (e: HelperException.Unreachable) {
+            true
+        } catch (e: HelperException.Api) {
+            e.status >= 500 // 404: already gone
+        } catch (e: Exception) {
+            true
+        }
+        store.setKvmLeftOnHub(hubId, name, again)
+    }
+
+    private suspend fun due(what: String): Boolean = linkLock.withLock {
+        val now = System.currentTimeMillis()
+        (linkTried[what]?.let { now - it >= LINK_RETRY_MS } ?: true).also { if (it) linkTried[what] = now }
+    }
+
+    /**
+     * Runs an action through the device's hub. Null when there's no hub or it can't be reached: then
+     * the phone acts itself. A refusal comes back as a result, not an exception.
+     */
+    private suspend fun hubAct(d: Device, action: String, force: Boolean = false, stayOff: Boolean = false, press: Boolean = false): HubResult? {
+        val k = d.kvm ?: return null
+        val hub = k.hub?.let { store.get(it) } ?: return null
+        val c = client(hub) ?: return null
+        return try {
+            c.machineAction(k.machine ?: d.fleetName, action, force, stayOff, press)
+        } catch (e: HelperException.Unreachable) {
+            null
+        } catch (e: HelperException.Api) {
+            if (e.code == "no_kvm") { // the hub lost it (reinstalled): link it again on the next refresh
+                store.update(d.id) { it.copy(kvm = it.kvm?.copy(hub = null, machine = null)) }
+                return null
+            }
+            HubResult.from(e.body).copy(ok = false, message = e.message ?: "${hub.name} refused.")
+        } finally {
+            hubLock.withLock { hubCache.remove(hub.id) }
+        }
+    }
+
+    private fun HubResult.outcome() = Outcome(ok, message)
+
+    /** Forgets the hub's view of the wiring, so it's learned again (after re-cabling). */
+    suspend fun recheckKvm(d: Device): Outcome = guarded {
+        val k = d.kvm ?: return@guarded Outcome(false, "${d.name} has no KVM.")
+        val hub = k.hub?.let { store.get(it) } ?: return@guarded Outcome(false, "Only a hub learns the wiring. Pick one in Settings.")
+        val w = client(hub)!!.recheckKvm(k.name)
+        store.update(d.id) { it.copy(kvm = it.kvm?.copy(wiring = w ?: it.kvm.wiring)) }
+        Outcome(true, "${hub.name} checks ${k.name}'s wiring again, from the power light and the next presses.")
+    }
+
+    suspend fun unlinkKvm(d: Device) {
+        val k = d.kvm
+        store.unlinkKvm(d.id)
+        k?.hub?.let { leaveHub(it, k.name) }
+    }
 
     // ---- Adding devices -----------------------------------------------------------------------
 
@@ -164,7 +326,10 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             }
             store.linkKvm(deviceId, KvmLink(kind, address, name, user, ledSeen = seen), password)
             kvmLock.withLock { kvmCookies.remove(address) }
-            Outcome(true, if (seen) "$name linked" else "$name linked. It will press the power button once it has seen the power light on: turn the computer on by hand once.")
+            // The hub drives it from now on; this phone keeps the login for when the hub can't be reached.
+            val hub = kvmHub()?.takeIf { it.id != deviceId }
+            val hubNote = hub?.let { h -> store.get(deviceId)?.let { moveToHub(it, h) }?.let { " ${h.name} couldn't take it over: $it" } ?: " ${h.name} drives it." } ?: ""
+            Outcome(true, (if (seen) "$name linked." else "$name linked. It will press the power button once it has seen the power light on: turn the computer on by hand once.") + hubNote)
         } catch (e: Exception) {
             Outcome(false, e.message ?: "Couldn't log in to the KVM.")
         }
@@ -271,12 +436,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             if (owned.none { it.first.id == a.id }) continue
             for (p in peers.filter { it.isHelper && it.name !in sa.peerKeys!! }) {
                 val b = owned.firstOrNull { it.first.id != a.id && it.first.pin == p.pin }?.first ?: continue
-                val pairId = "${a.id}>${b.id}"
-                val now = System.currentTimeMillis()
-                val due = linkLock.withLock {
-                    (linkTried[pairId]?.let { now - it >= LINK_RETRY_MS } ?: true).also { if (it) linkTried[pairId] = now }
-                }
-                if (!due) continue
+                if (!due("${a.id}>${b.id}")) continue
                 runCatching {
                     val key = client(b)!!.addPeerKey(sa.name.ifBlank { a.name })
                     client(a)!!.setPeerKey(p.name, key)
@@ -290,6 +450,7 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             val name = kvms.firstOrNull { it.address == k.address }?.kvmHost ?: continue
             store.update(d.id) { it.copy(kvm = it.kvm?.copy(address = name)) }
         }
+        placeKvms(states)
     }
 
     // ---- Actions ------------------------------------------------------------------------------
@@ -316,6 +477,11 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     private suspend fun turnOnNow(d: Device): Outcome = guarded {
+        // The hub checks the helper and the light, presses, and falls back to Wake-on-LAN itself.
+        if (d.kvm?.hub != null) hubAct(d, "wake")?.let { r ->
+            // It had no way to wake it: try this phone's side (other helpers, the phone's own LAN).
+            return@guarded if (!r.ok && r.code == "cant_wake" && d.mac != null) wake(d, d.mac) else r.outcome()
+        }
         // A press on a running computer shuts it down, so press only when every sign says it's off:
         // its helper doesn't answer (asked twice) and the power light reads off.
         // A changed identity still means something is running there: never press its button.
@@ -413,6 +579,8 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
             }
         }
         if (restart) return@guarded Outcome(false, "${d.name} can only be restarted through its helper, which isn't answering.")
+        // Through the hub, which reads the light before and after the press (and asks the helper if it's back).
+        if (d.kvm?.hub != null && (!d.hasHelper || pressKvm)) hubAct(d, "shutdown", press = true)?.let { return@guarded it.outcome() }
         when (ledOn(d)) {
             null -> Outcome(false, "Can't reach ${d.kvm?.name ?: "the KVM"}.")
             false -> Outcome(true, "${d.name} is already off.")
@@ -440,13 +608,35 @@ class PowerDeck(private val ctx: Context, val store: DeviceStore) {
     }
 
     /** Emergency: holds the power button for 12 s. Only offered with a KVM, and only while the LED is on. */
-    suspend fun forceOff(d: Device): Outcome = oneAtATime(d.id) { forceOffNow(d) }
+    suspend fun forceOff(d: Device, force: Boolean = false): Outcome = oneAtATime(d.id) { forceOffNow(store.get(d.id) ?: d, force) }
 
-    private suspend fun forceOffNow(d: Device): Outcome = guarded {
+    private suspend fun forceOffNow(d: Device, force: Boolean): Outcome = guarded {
+        if (d.kvm?.hub != null) hubAct(d, "force-off", force = force, stayOff = true)?.let { r ->
+            return@guarded if (r.code == "helper_answers") Outcome(false, r.message, ask = Ask("${d.name} is still answering",
+                "Its helper answers, so it isn't frozen. Forcing it off is like pulling the plug: unsaved work is lost. Shut it down normally instead, or force it off anyway?",
+                "Force off anyway", hubAction = "force-off"))
+            else r.outcome()
+        }
         if (ledOn(d) != true) return@guarded Outcome(false, "${d.name}'s power light is off (or the KVM can't be reached).")
         withKvm(d) { k, c -> k.pressPower(c, 12_000) }
         store.saveSnapshot(d.id, Power.Off)
         Outcome(true, "Held ${d.name}'s power button. It's off.")
+    }
+
+    /**
+     * Presses the reset button through the hub, for a frozen machine. The hub refuses while the
+     * machine's helper answers (unless [force]), then checks that it comes back.
+     */
+    suspend fun reset(d: Device, force: Boolean = false): Outcome = oneAtATime(d.id) { resetNow(store.get(d.id) ?: d, force) }
+
+    private suspend fun resetNow(d: Device, force: Boolean): Outcome = guarded {
+        val hub = d.kvm?.hub?.let { store.get(it) } ?: return@guarded Outcome(false, "Only a PowerDeck hub can reset ${d.name}. Pick one in Settings → KVM hub.")
+        val r = hubAct(d, "reset", force = force)
+            ?: return@guarded Outcome(false, "${hub.name} isn't answering, so it can't reset ${d.name}. Force ${d.name} off instead.")
+        if (r.code == "helper_answers") Outcome(false, r.message, ask = Ask("${d.name} is still answering",
+            "Its helper answers, so it isn't frozen. A reset is like pressing the reset button: unsaved work is lost. Reset anyway?",
+            "Reset anyway", hubAction = "reset"))
+        else r.outcome()
     }
 
     /** Helpers that can send this device's wake signal on a schedule (always-on, on its LAN). */

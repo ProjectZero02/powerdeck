@@ -6,7 +6,7 @@ PowerDeck has three kinds of participants, all on the same [Tailscale](https://t
 |---|---|
 | **Helper** (`powerdeck-helper`, Windows or Linux) | Shuts down / restarts its own machine, reports status and setup checks, sends Wake-on-LAN to its LAN, finds other PowerDeck devices on the tailnet |
 | **Phone app** | Lists devices, sends commands, picks a waker for each device |
-| **KVM** (NanoKVM) | Presses a computer's power button and reads its power LED. Used through its own web API; nothing is installed on it. (PiKVM is recognised by discovery, but the app doesn't drive it yet.) |
+| **KVM** (NanoKVM) | Presses a computer's power and reset buttons and reads its power LED. Driven by a [hub](#kvms-on-the-hub) helper (or, without one, the phone) through the NanoKVM's own web API; nothing is installed on it. (PiKVM is recognised by discovery, but isn't driven yet.) |
 
 ## Identity and trust
 
@@ -138,7 +138,13 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{owner:true, status}` (same account: now an owner device) or `{key, status}` (another account) |
 | DELETE | `/v2/key` | key holder | → `204`; revokes the caller's own key |
-| POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`) on another PowerDeck device it knows, see [Agents](#agents-mcp). `502 peer_refused` when that device doesn't accept this helper (no or a revoked peer key) |
+| POST | `/v2/devices/{name}/{action}` | per action | Relay: the helper performs `action` (`status`, `wake`, `shutdown`, `restart`, `cancel`; `reset`, `force-off` through a KVM here) on another PowerDeck device it knows, see [Agents](#agents-mcp). `502 peer_refused` when that device doesn't accept this helper (no or a revoked peer key). With a KVM here, `wake`, `shutdown` and `restart` go through it too and answer like [`/v2/machines`](#kvms-on-the-hub) (the machine's helper's own reply fields included) |
+| GET | `/v2/kvms` | owner | → `{kvms:[KVM]}`, see [KVMs on the hub](#kvms-on-the-hub). Offered when `caps` has `kvm` |
+| POST | `/v2/kvms` | owner | `{address, password, machine, user?, name?, mac?, model?, helper?}` → `201 {kvm, led}`; logs in and reads the power light before storing it |
+| PATCH | `/v2/kvms/{name}` | owner | `{machine?, mac?, user?, password?, recheck?}` → `{kvm}`. `recheck: true` forgets what was learned about the wiring |
+| DELETE | `/v2/kvms/{name}` | owner | → `204` |
+| GET | `/v2/machines` | `status` | → `{machines:[Machine]}`: the devices the caller may use, with live state; `?kvm=1` only those with a KVM here |
+| POST | `/v2/machines/{name}/{action}` | per action | `{force?, stayOff?, press?}` → `200 Result`, or the error with the Result's fields. `action`: `wake`, `shutdown`, `restart`, `reset`, `force-off` |
 | POST | `/mcp` | owner or automation key | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
 
 `delaySeconds` defaults to 60 (0–600). Without `force`, shutdown/restart is refused with
@@ -157,14 +163,14 @@ before retrying with `force: true`. Callers without the `force` scope can't over
   "presence": {"active": true, "user": "Alex", "idleSeconds": 40, "fullscreen": true},
   "guests": {"running": 3, "names": ["public", "private", "agent"]},
   "network": {"mac": "02:00:5e:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
-  "caps": ["shutdown", "restart", "wake", "uninstall"],
+  "caps": ["shutdown", "restart", "wake", "kvm", "uninstall"],
   "checks": [Check],
   "agents": {"allowed": true, "keys": [{"name": "Atlas", "devices": ["Workstation", "nas"]}]},
   "you": {"kind": "owner", "name": "Pixel 9 Pro", "scopes": ["status", "wake", "power", "force", "admin"]}
 }
 ```
 
-`guests` appears on Proxmox hosts. `agents` and the `uninstall` cap are shown to owners only; `agents.keys` lists the automation keys this helper holds and the devices each may use. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
+`guests` appears on Proxmox hosts. The `kvm` cap means this helper can drive NanoKVMs (`/v2/kvms`, `/v2/machines`; 2.2 and later). `agents` and the `uninstall` cap are shown to owners only; `agents.keys` lists the automation keys this helper holds and the devices each may use. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
 
 ### Check
 
@@ -202,12 +208,13 @@ Every device can have up to three ways to be controlled, and the phone (or a hub
 | Path | On | Off / restart | Status |
 |---|---|---|---|
 | **Helper** on the device | | Clean shutdown/restart (primary) | Primary |
-| **KVM** wired to the device's power button and LED (any number of devices, one KVM each) | Short press, **only while the LED says off** (primary when present) | Short press = the OS's own clean shutdown (fallback when the helper doesn't answer); 12 s press = force off (hidden, emergency) | Power LED (fallback) |
+| **KVM** wired to the device's front panel (power button, reset button, power LED; one KVM per device) | Short press, **only while the LED says off** (primary when present) | Short press = the OS's own clean shutdown (fallback when the helper doesn't answer); reset press, or a 12 s hold then a press, for a frozen device | Power LED (fallback) |
 | **Wake-on-LAN** sent by a waker on the device's LAN | Magic packet (primary without a KVM, fallback with one) | | |
 
 A KVM is linked to a device when it's added ("Which device's power button is this NanoKVM wired
-to?"). The LED check is repeated just before every press, so a press can never turn a running
-machine off by mistake.
+to?"). An always-on helper (the **hub**) then drives it, see [KVMs on the hub](#kvms-on-the-hub); the
+phone drives it itself only when there's no hub. The LED is read before and after every press,
+so a press can never turn a running machine off by mistake.
 
 ### Wakers
 
@@ -220,6 +227,94 @@ For each device the phone remembers its MAC and LAN subnets (from its last statu
 
 The magic packet is sent 3 times, to the subnet broadcast and to 255.255.255.255. Afterwards the
 phone polls until the device's helper (or the KVM's LED) says it's on, and reports how long it took.
+
+## KVMs on the hub
+
+From 2.2 the app hands each NanoKVM to one always-on helper, the **hub** (by default its only Linux
+helper, typically a home server; the app's **Settings → KVM hub** picks another or keeps KVMs on the
+phone). The hub then reaches the NanoKVM over Tailscale with the same [web API](#phone--nanokvm),
+for the app and for [agents](#agents-mcp) alike, and learns the wiring on its own. The app sends the
+NanoKVM password once, over the pinned TLS connection; the hub stores it sealed (see
+[SECURITY.md](../SECURITY.md#where-secrets-live)). Removing the KVM in the app deletes it from the hub.
+When the hub can't be reached, the phone falls back to driving the KVM itself.
+
+A KVM's address must be a `*.ts.net` name or a Tailscale address (`400 not_tailscale` otherwise), so
+its password only travels inside the tailnet. A hub can't drive the KVM wired to itself
+(`422 self`): it couldn't check the result of a reset. One KVM per machine (`409 machine_has_kvm`),
+at most 20 per hub. `helper: true` when linking says the machine runs a PowerDeck helper, which the
+hub must already know (`422 unknown_helper` otherwise): without it a reset couldn't first check
+that the machine stopped answering.
+
+### KVM
+
+```json
+{"name": "kvm-workstation", "address": "http://kvm-workstation.example.ts.net", "user": "powerdeck",
+ "machine": "Workstation", "mac": "02:00:5e:00:00:0a", "firmware": "2.5.2 Beta",
+ "wiring": {"led": "wired", "power": "unknown", "reset": "unknown", "checkedAt": "…"},
+ "addedAt": "2026-10-27T08:00:00Z"}
+```
+
+The password is never returned.
+
+### Wiring is learned, never assumed
+
+Each of `led`, `power` and `reset` is `unknown`, `wired` or `not_wired`. Nothing has to be declared,
+and nothing is pressed on a guess:
+
+| Part | Wired when | Not wired when |
+|---|---|---|
+| Power LED | It reads on once (an unplugged or reversed LED never reads on) | It reads off 3 times, at least 30 s apart, while the machine's helper answers |
+| Power switch | A press or hold changes the LED | A press or hold doesn't (`power_not_wired`, `no_effect`) |
+| Reset switch | The machine's helper answers again within 5 minutes of a reset | It doesn't: the next reset is refused (`reset_not_wired`) unless forced |
+
+The hub reads every KVM's LED every 2 minutes, so the LED is usually learned without anyone pressing
+anything. `PATCH {recheck: true}` (the app's **Check again**) forgets what was learned.
+
+### Machine
+
+```json
+{"name": "Workstation", "helper": true, "os": "windows", "mac": "02:00:5e:00:00:0a",
+ "lan": ["192.168.1.0/24"], "kvm": KVM, "helperAnswers": false, "led": true,
+ "state": "unknown", "actions": ["wake", "shutdown", "restart", "reset", "force-off"]}
+```
+
+`state`: `on` (its helper answers), `off` (a wired LED reads off) or `unknown`. `led` is the power
+light right now (absent without a KVM, `ledError` when it can't be read). `actions` is what the hub
+can do for it now; `reset` and `force-off` appear only while a wired LED reads on.
+
+### Actions
+
+`POST /v2/machines/{name}/{action}` and the relay (`/v2/devices/{name}/{action}`) run the same code:
+
+| Action | What the hub does |
+|---|---|
+| `wake` | Nothing if the helper answers or the LED is on. Else a short power press when a wired LED reads off, checking that the LED comes on; else Wake-on-LAN from the hub's LAN, then from the KVM |
+| `shutdown`, `restart` | Asks the machine's helper (60 s countdown, its in-use check applies). `press: true`, or no helper: a short power press for a clean OS shutdown, only while a wired LED reads on, **owner devices only** (nobody can check whether someone is using the machine). `restart` always needs the helper |
+| `reset` | Refused while the helper answers (`409 helper_answers`) unless `force`. Reads the LED (must be wired and on), presses reset, reads the LED again, then, when the helper wasn't answering, checks in the background that it answers again within 5 minutes |
+| `force-off` | Same checks. Holds power for 12 s, waits for the LED to go off, then (unless `stayOff`) waits 5 s and presses power to start it again, waiting for the LED to come on |
+
+One action per machine at a time (`409 busy`), at most 2 minutes. An action runs to its end even when
+the caller hangs up, so a machine held off is also started again. A KVM whose stored password can't
+be opened (`kvm_credentials`: link it again) still lets the machine's helper wake, shut down or
+restart it. Nothing is learned about the wiring from a reading that failed. **`reset` and `force-off` are for owner devices
+only** (`403 owner_only`), never an automation key or an agent relayed through a hub; agents get them
+with the owner's confirmation in a later release.
+
+Result (also in the error body on failure, with `error` and `message` added):
+
+```json
+{"machine": "Workstation", "action": "reset", "ok": true, "message": "Pressed reset on Workstation. It should answer again in a few minutes.",
+ "steps": [{"at": "…", "do": "read power light before", "led": true},
+           {"at": "…", "do": "press reset 800ms"},
+           {"at": "…", "do": "read power light after", "led": true}]}
+```
+
+`code` on success: `already_on`, `led_on`, `already_off`, or none. Refusals: `helper_answers`,
+`led_unreadable`, `led_untrusted` (the LED reads off and hasn't been seen on), `already_off`,
+`power_not_wired`, `reset_not_wired`, `no_effect`, `didnt_start`, `cant_wake`, `no_helper`,
+`helper_down`, `owner_only`, `busy`, and the KVM's own errors: `kvm_password`, `kvm_locked`,
+`kvm_forbidden` (the account lacks the power permission), `kvm_cert_changed`, `kvm_unreachable`,
+`kvm_failed`. Every action is in the hub's event log with who asked and the outcome.
 
 ## Schedules
 
@@ -278,10 +373,15 @@ Rules the helper enforces for automation keys, whatever the agent asks:
 - Never the device the agent itself runs on (the helper on that device refuses, since the caller
   shares its IP's node), unless the owner ticks "allow" for that key.
 - Every action is in the device's event log with the key's name, so the phone shows "Atlas shut down Workstation".
+- No `reset` or `force-off` (`403 owner_only`), even relayed through an owner device. Where the hub
+  drives a machine's KVM, `power_on` may press its power button (only while a wired LED reads off),
+  and `power_off` goes to the machine's helper; pressing power to shut it down is owner-only.
 
 ## Phone → NanoKVM
 
-The NanoKVM's own web API (firmware 2.x), over Tailscale only. The app reaches a KVM by its
+The NanoKVM's own web API (firmware 2.x), over Tailscale only. The [hub](#kvms-on-the-hub) uses it
+the same way; the phone uses it directly only without a hub, or when the hub can't be reached. The
+app reaches a KVM by its
 **Tailscale (MagicDNS) name**, `<name>.<tailnet>.ts.net`: Android allows plain HTTP only to
 `*.ts.net` names (`network_security_config.xml`), and the app refuses other addresses. KVMs linked
 by IP address before 2.1 are renamed automatically from the helpers' peer lists.
@@ -293,7 +393,12 @@ On `401` the phone logs in again once and retries.
   password is only as private as the channel; Tailscale encrypts it. Token: the `nano-kvm-token`
   cookie (HttpOnly from 2.5; up to 2.4.x also `data.token`).
 - `GET /api/vm/gpio` → `data.pwr` (power LED).
-- `POST /api/vm/gpio` `{type:"power", duration:800}` short press; `duration:12000` force off.
+- `POST /api/vm/gpio` `{type:"power", duration:800}` short press; `duration:12000` force off;
+  `{type:"reset", duration:800}` reset.
+- `GET /api/vm/info` and `GET /api/vm/hardware` → firmware and board version (the hub stores them).
+
+A NanoKVM in HTTPS mode redirects port 80 to HTTPS; the hub follows that once and pins the
+certificate it finds. See [nanokvm-hardening.md](nanokvm-hardening.md) for the account to give PowerDeck.
 - `POST /api/network/wol` `{mac}`.
 
 ## Updates

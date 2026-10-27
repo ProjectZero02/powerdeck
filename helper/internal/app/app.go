@@ -26,10 +26,12 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/guests"
 	"github.com/projectzero02/powerdeck/helper/internal/listen"
 	"github.com/projectzero02/powerdeck/helper/internal/localui"
+	"github.com/projectzero02/powerdeck/helper/internal/machines"
 	"github.com/projectzero02/powerdeck/helper/internal/netinfo"
 	"github.com/projectzero02/powerdeck/helper/internal/pairing"
 	"github.com/projectzero02/powerdeck/helper/internal/power"
 	"github.com/projectzero02/powerdeck/helper/internal/schedule"
+	"github.com/projectzero02/powerdeck/helper/internal/secret"
 	"github.com/projectzero02/powerdeck/helper/internal/server"
 	"github.com/projectzero02/powerdeck/helper/internal/setup"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
@@ -141,9 +143,12 @@ func Run(ctx context.Context, o Options) error {
 		log.Warn("couldn't arm Wake-on-LAN", "err", err)
 	}
 
+	// Every helper can drive NanoKVMs; the app links them to one (the hub).
+	hub := &machines.Hub{Store: st, Box: secret.Default(), Fleet: fl, Self: name, Log: log, Now: now}
+
 	api := server.New(server.Deps{
 		Auth:  &auth.Authenticator{TS: ts, Store: st, Now: now, LocalToken: localToken},
-		Store: st, Pairing: pm, Power: pc, Fleet: fl, Name: name, OS: runtime.GOOS,
+		Store: st, Pairing: pm, Power: pc, Fleet: fl, Machines: hub, Name: name, OS: runtime.GOOS,
 		SelfNode: func(ctx context.Context) string {
 			if s, err := ts.Status(ctx); err == nil {
 				return s.Self.ID
@@ -163,7 +168,7 @@ func Run(ctx context.Context, o Options) error {
 		return &http.Server{
 			Addr: addr, Handler: h,
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 20 * time.Second,
-			WriteTimeout: 40 * time.Second, IdleTimeout: 60 * time.Second,
+			WriteTimeout: 150 * time.Second, IdleTimeout: 60 * time.Second, // a KVM action runs up to 2 minutes (machines.actionTime)
 			ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 		}
 	}
@@ -235,6 +240,7 @@ func Run(ctx context.Context, o Options) error {
 		go func(l listener) { errc <- l.serve(l.ln) }(l)
 	}
 	go fl.Loop(ctx, 5*time.Minute, nil)
+	go hub.Loop(ctx, 2*time.Minute) // learns the wiring from the power light
 	go schedule.Loop(ctx, st.Schedules, api.RunSchedule, now)
 	go updateLoop(ctx, upd, st, pc, log)
 	go func() { // drivers on some Linux systems drop Wake-on-LAN after link changes

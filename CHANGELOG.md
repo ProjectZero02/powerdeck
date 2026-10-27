@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0
+
+KVMs move to an always-on PowerDeck computer, which can now reset a frozen one.
+
+**Update the helper on that computer and the phone app.** Helpers before 2.2 can't hold a KVM; the app then keeps driving it itself, as before.
+
+- **KVM hub.** The app hands each NanoKVM to one always-on helper (by default your only Linux one, for example a home server; pick another, or keep them on the phone, in **Settings → KVM hub**). The phone and agents then go through it, and the phone falls back to the KVM itself when the hub can't be reached. The hub stores the NanoKVM password sealed with a key kept apart from its data (DPAPI on Windows).
+- **Reset a frozen computer.** When a computer's helper stops answering, its page offers **Reset** (a press of the reset button), and **Force off** (a 12-second hold) stays in the menu. Both read the power light before and after, need it to be on, are refused while the computer still answers, and are for your own devices only. After a reset the hub checks that the computer answers again within 5 minutes; a reset button that had no effect is remembered. Through the API, `force-off` can also start the computer again after the hold.
+- **Wiring is learned.** Nothing needs to be declared about how the KVM is connected: the hub learns whether the power light, the power button and the reset button are wired from what it sees, and the device page shows it, with **Check again**.
+- **Shutting down without the helper:** a power press for a clean shutdown, owner only, and only while the light is known to read on.
+- **API:** `/v2/kvms`, `/v2/machines` and `reset`/`force-off` in the relay (owner devices only); the `kvm` cap. See [docs/protocol.md](docs/protocol.md#kvms-on-the-hub) and [docs/nanokvm-hardening.md](docs/nanokvm-hardening.md).
+
 ## 2.1.0
 
 Security groundwork before PowerDeck can reset a frozen computer through a KVM.

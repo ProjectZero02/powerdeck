@@ -24,7 +24,11 @@ data class Settings(
     val notifications: Boolean = true,
     /** How long a shutdown or restart from this phone counts down (the helper allows 0–600). */
     val countdownSeconds: Int = 60,
+    /** Which helper drives the KVMs: "" picks the one Linux helper, [HUB_PHONE] keeps them on this phone, else a device id. */
+    val kvmHub: String = "",
 )
+
+const val HUB_PHONE = "phone"
 
 /** Last known power state of a device, for the widget and tiles (no network round trip). */
 data class Snapshot(val power: Power, val at: Long)
@@ -45,6 +49,8 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
         val autoTs = booleanPreferencesKey("opt.autoTailscale")
         val notify = booleanPreferencesKey("opt.notifications")
         val countdown = intPreferencesKey("opt.countdownSeconds")
+        val kvmHub = stringPreferencesKey("opt.kvmHub")
+        val kvmLeft = stringPreferencesKey("kvm.leftOnHubs") // {"<hub id>\n<KVM name>": true}
         val appUpdate = stringPreferencesKey("app.update") // {"checkedAt": millis, "told": version}
         fun key(id: String) = stringPreferencesKey("secret.key.$id")
         fun kvm(id: String) = stringPreferencesKey("secret.kvm.$id")
@@ -59,7 +65,7 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
     val devices: Flow<List<Device>> = ctx.dataStore.data.map(::parse).distinctUntilChanged()
 
     val settings: Flow<Settings> = ctx.dataStore.data.map { p ->
-        Settings(p[K.confirm] ?: true, p[K.autoTs] ?: true, p[K.notify] ?: true, (p[K.countdown] ?: 60).coerceIn(0, MAX_COUNTDOWN))
+        Settings(p[K.confirm] ?: true, p[K.autoTs] ?: true, p[K.notify] ?: true, (p[K.countdown] ?: 60).coerceIn(0, MAX_COUNTDOWN), p[K.kvmHub] ?: "")
     }.distinctUntilChanged()
 
     val snapshots: Flow<Map<String, Snapshot>> = ctx.dataStore.data.map { p ->
@@ -184,6 +190,17 @@ class DeviceStore(private val ctx: Context, private val box: SecretBox) {
     suspend fun setAutoTailscale(on: Boolean) = ctx.dataStore.edit { it[K.autoTs] = on }
     suspend fun setNotifications(on: Boolean) = ctx.dataStore.edit { it[K.notify] = on }
     suspend fun setCountdown(seconds: Int) = ctx.dataStore.edit { it[K.countdown] = seconds.coerceIn(0, MAX_COUNTDOWN) }
+    suspend fun setKvmHub(choice: String) = ctx.dataStore.edit { it[K.kvmHub] = choice }
+
+    /** KVMs still to delete from a hub that no longer drives them (it wasn't answering): hub id to KVM name. */
+    suspend fun kvmsLeftOnHubs(): List<Pair<String, String>> = map(ctx.dataStore.data.first(), K.kvmLeft).keys().asSequence()
+        .mapNotNull { k -> k.split('\n', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toList()
+
+    suspend fun setKvmLeftOnHub(hub: String, name: String, left: Boolean) = ctx.dataStore.edit { p ->
+        val o = map(p, K.kvmLeft)
+        if (left) o.put("$hub\n$name", true) else o.remove("$hub\n$name")
+        p[K.kvmLeft] = o.toString()
+    }
 
     companion object {
         const val TILE_SLOTS = 4
