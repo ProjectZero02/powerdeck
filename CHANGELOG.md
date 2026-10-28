@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.3
+
+- **PC window setup shows once.** The first-run setup was only marked done by **Done** on its last step, so closing the window part-way (the main screen has the same QR codes) started it over on every open. It's now marked done as soon as it's shown.
+
 ## 2.2.2
 
 - **Phone app updates.** Tapping **Update** more than once (or on both the home screen and in Settings) started downloads that overwrote each other, and the update then failed with "The download is corrupt (checksum mismatch)". Only one download runs now, its button shows it's downloading, each download goes to a file of its own, and a damaged download is retried once. If your phone shows that error on the way to this version, tap **Update** once and wait, or install `PowerDeck.apk` from the release page.
