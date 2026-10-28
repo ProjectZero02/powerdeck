@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.0
+
+The hub now notices when a computer freezes, and says why it thinks so.
+
+**Update the helper on the hub (the always-on computer that drives your KVMs), the helpers on your computers, and the phone app.** A computer's helper before 2.3 still works, but can't tell the hub it's about to sleep or restart, so the hub is more careful before calling it frozen.
+
+- **Frozen or just busy?** Every 30 seconds the hub checks each computer with a KVM: does its PowerDeck answer, does it answer a ping, does its PowerDeck port turn connections away or swallow them, and is its power light on, off or blinking. A computer is called frozen only when, for 3 minutes in a row, nothing answers and the light stays on, and it isn't starting up (10 minutes after it's turned on, restarted or reset), shutting down or restarting (10 minutes; 90 when Windows is installing updates), or possibly asleep. A computer without the helper, or whose power light isn't known to be connected, is never called frozen.
+- **Sleep is learned.** A Windows helper tells the hub how the PC sleeps (Modern Standby or classic, and after how long), and tells it just before it sleeps, shuts down or restarts, and when it wakes. The first time a computer sleeps, the hub learns what its power light does then (off, blinking or on).
+- **App:** a frozen computer's page says **Frozen since** with the time, and shows what the hub saw. **Reset** is still one tap away. A computer that's starting up, installing updates or may be asleep says so instead of "On".
+- **Events for assistants:** `GET /v2/machines/events` streams every computer's state as it changes (Server-Sent Events, with replay after a reconnect), and owners can add **webhooks** that receive `hung` and `recovered` events, signed with HMAC-SHA256 and retried. Machines in `GET /v2/machines` gain `hung`, a `reason`, `since` and the `evidence`. `hungAfterMinutes` (2 to 30) changes the 3 minutes. Frozen and recovered computers are also in the hub's activity log, and the phone notifies about both (it checks about every 15 minutes). See [docs/protocol.md](docs/protocol.md#machine-states-and-events).
+
 ## 2.2.3
 
 - **PC window setup shows once.** The first-run setup was only marked done by **Done** on its last step, so closing the window part-way (the main screen has the same QR codes) started it over on every open. It's now marked done as soon as it's shown.

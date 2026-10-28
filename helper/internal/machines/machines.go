@@ -63,10 +63,21 @@ type Hub struct {
 	OffWait     time.Duration // between a forced off and the power press that follows (5 s)
 	ResetVerify time.Duration // how long a reset machine may take to answer again (5 min)
 	VerifyEvery time.Duration // between checks while verifying a reset (10 s)
+	LEDGap      time.Duration // between the three light readings of one look (0.5 s)
+	AskGap      time.Duration // between the two tries at a silent helper in one look (1.5 s)
+	AsleepAfter time.Duration // after a sleep note, when to read the light asleep (30 s)
+
+	// Watching (Watch). Ping is the hub's ping of a machine's address (replies, no_reply,
+	// unavailable; nil: unavailable); Online is whether Tailscale lists it online (nil: unknown).
+	Ping      func(ctx context.Context, addr string) string
+	Online    func(ctx context.Context, addr string) *bool
+	HungAfter func() time.Duration // the owner's setting (0: the default)
+	Events    *Bus                 // state changes; nil: not published
 
 	mu      sync.Mutex
 	busy    map[string]bool
 	clients map[string]cached
+	tracks  map[string]*Track
 	wg      sync.WaitGroup
 }
 
@@ -427,9 +438,15 @@ type Machine struct {
 	HelperAnswers *bool    `json:"helperAnswers,omitempty"`
 	LED           *bool    `json:"led,omitempty"` // the power light now; absent without a KVM or reading
 	LEDError      string   `json:"ledError,omitempty"`
-	// State: on (helper answers), off (wired LED reads off), unknown (not enough evidence).
+	// State: on (helper answers), off (wired LED reads off), hung (see Track.Step), unknown (not
+	// enough evidence, Reason says why).
 	State   string   `json:"state"`
+	Reason  string   `json:"reason,omitempty"`
+	Asleep  bool     `json:"asleep,omitempty"`
 	Actions []string `json:"actions"` // what the hub can do for it now
+	// Since is when the hub's watch first saw the current state; Evidence is its last look.
+	Since    *time.Time `json:"since,omitempty"`
+	Evidence *Evidence  `json:"evidence,omitempty"`
 }
 
 // HasKVM reports whether a machine has a KVM here.
@@ -529,11 +546,32 @@ func (h *Hub) look(ctx context.Context, m *Machine) {
 	trusted := m.KVM != nil && m.KVM.Wiring.LED == store.Wired
 	switch {
 	case m.Helper && answers:
-		m.State = "on"
+		m.State = StateOn
 	case trusted && led != nil && !*led:
-		m.State = "off"
+		m.State = StateOff
 	default:
-		m.State = "unknown" // phase 3 tells "hung" from "booting" here
+		m.State, m.Reason = StateUnknown, ReasonNoHelper
+		if m.Helper {
+			m.Reason = ReasonLEDNotTrusted
+			if trusted {
+				m.Reason = ReasonChecking
+			}
+		}
+	}
+	// The watch has the history: hung, or why not. What was just seen decides on and off.
+	if tr, ok := h.Tracked(m.Name); ok && m.KVM != nil {
+		if m.State == StateUnknown {
+			m.State, m.Reason = tr.State, tr.Reason
+			if m.State == StateOn || m.State == StateOff { // it changed since the last look
+				m.State, m.Reason = StateUnknown, ReasonChecking
+			}
+		}
+		if m.State == tr.State {
+			since := tr.Since
+			m.Since, m.Asleep = &since, tr.Asleep
+		}
+		ev := tr.Evidence
+		m.Evidence = &ev
 	}
 	m.Actions = []string{"wake"}
 	if m.Helper {
@@ -585,24 +623,6 @@ func (h *Hub) observe(name string, helperUp, led bool) {
 		}
 		w.CheckedAt = now
 	})
-}
-
-// Loop reads every KVM's power light every interval, so the wiring is learned without anyone
-// pressing anything (phase 3 builds hang detection on the same readings).
-func (h *Hub) Loop(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		if len(h.Store.KVMs()) > 0 {
-			_ = h.list(ctx, true)
-		}
-		select {
-		case <-ctx.Done():
-			h.wg.Wait()
-			return
-		case <-t.C:
-		}
-	}
 }
 
 // ---- actions ----
@@ -762,18 +782,23 @@ func (h *Hub) Act(ctx context.Context, name, action string, o Options) Result {
 		c = unusable{e} // the helper can still wake, shut down or restart it
 	}
 	r.kvm = c
+	var out Result
 	switch action {
 	case "wake":
-		return r.wake(hasHelper)
+		out = r.wake(hasHelper)
 	case "shutdown", "restart":
-		return r.powerOff(hasHelper, action, o)
+		out = r.powerOff(hasHelper, action, o)
 	case "reset":
-		return r.reset(hasHelper, o)
+		out = r.reset(hasHelper, o)
 	case "force-off":
-		return r.forceOff(hasHelper, o)
+		out = r.forceOff(hasHelper, o)
 	default:
 		return r.refuse(http.StatusNotFound, "not_found", "Unknown action %s.", action)
 	}
+	if out.OK && action != "shutdown" && out.Code == "" {
+		h.acted(k.Machine) // it's starting: give it time to boot before calling it hung
+	}
+	return out
 }
 
 func (r *run) wake(hasHelper bool) Result {

@@ -62,8 +62,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
+import net.odysseylabs.powerdeck.data.HubMachine
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
 /** "Hold for 3 s to activate": how long Shut down and Restart have to be held. */
 const val HOLD_MILLIS = 3000
@@ -110,7 +114,7 @@ fun describe(state: DeviceState?, now: Long): Pair<String, Tone> = when (state) 
                 val left = Duration.between(Instant.ofEpochMilli(now), p.at).seconds.coerceAtLeast(0)
                 "${if (p.action == "restart") "Restarting" else "Shutting down"} in ${left / 60}:${"%02d".format(left % 60)}" to Tone.Busy
             }
-            s == null -> "On" to Tone.On
+            s == null -> hubNote(state.hub, now) ?: ("On" to Tone.On)
             s.presence?.active == true -> "On · in use${s.presence.user?.let { " by $it" } ?: ""}" to Tone.On
             else -> "On · up ${uptime(s.uptimeSeconds)}" to Tone.On
         }
@@ -128,12 +132,39 @@ fun note(state: DeviceState?, now: Long): Pair<String, Tone>? = when (state) {
         val p = s?.pending
         when {
             p != null -> describe(state, now)
+            s == null -> hubNote(state.hub, now)
             s?.presence?.active == true -> "In use${s.presence.user?.let { " by $it" } ?: ""}" to Tone.On
             else -> null
         }
     }
     else -> null
 }
+
+/**
+ * What the hub that drives a machine's KVM makes of it while its helper is silent and its light is
+ * on, or null when it has nothing to add (see docs/protocol.md, Machine states and events).
+ */
+fun hubNote(m: HubMachine?, now: Long): Pair<String, Tone>? = when {
+    m == null -> null
+    m.hung -> (m.since?.let { "Frozen since " + clockTime(it, now) } ?: "Frozen") to Tone.Warn
+    else -> when (m.reason) {
+        "booting" -> "Starting up" to Tone.Busy
+        "restarting" -> "Restarting" to Tone.Busy
+        "shutting_down" -> "Shutting down" to Tone.Busy
+        "updating" -> "Installing updates" to Tone.Busy
+        "may_be_asleep" -> "May be asleep" to Tone.Unknown
+        "helper_stopped" -> "Running, but PowerDeck on it isn't answering" to Tone.Warn
+        "checking" -> "Not answering" to Tone.Unknown
+        else -> null
+    }
+}
+
+private val shortTime = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+private val shortDateTime = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+
+/** A time of day, with the date when it isn't within the last 20 hours. */
+fun clockTime(at: Instant, now: Long): String =
+    if (Duration.between(at, Instant.ofEpochMilli(now)).toHours() < 20) shortTime.format(at) else shortDateTime.format(at)
 
 @Composable
 fun toneColor(tone: Tone): Color = when (tone) {

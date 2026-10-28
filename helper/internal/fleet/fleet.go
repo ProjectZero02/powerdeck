@@ -104,12 +104,13 @@ func (f *Fleet) remember(ctx context.Context, p discovery.Peer) {
 		Agents  *struct {
 			Allowed bool `json:"allowed"`
 		} `json:"agents"`
+		Sleep *store.Sleep `json:"sleep"`
 	}
 	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	err := f.Call(cctx, rec, "GET", "/v2/status", nil, &st, "")
 	if err == nil {
-		rec.MAC, rec.LAN = st.Network.MAC, st.Network.LAN
+		rec.MAC, rec.LAN, rec.Sleep = st.Network.MAC, st.Network.LAN, st.Sleep
 		rec.NoAgents = st.Agents != nil && !st.Agents.Allowed
 	} else {
 		f.Log.Info("peer status unavailable", "peer", p.Name, "err", err)
@@ -208,6 +209,29 @@ func (f *Fleet) Forward(ctx context.Context, name, method, path string, body, ou
 	}
 	f.keyRefused(p, err)
 	return err
+}
+
+// Tell tells every helper this one holds a peer key for what its machine is about to do (sleep,
+// shutdown, restart) or just did (resume), so a hub watching it doesn't take it for a hang. Best
+// effort: all at once, 1.5 s at most, as Windows gives a sleeping service about 2 s.
+func (f *Fleet) Tell(ctx context.Context, event string, updates bool) {
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, p := range f.Store.Peers() {
+		if p.Key == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(p store.Peer) {
+			defer wg.Done()
+			err := f.Call(ctx, p, "POST", "/v2/note", map[string]any{"event": event, "updates": updates}, nil, "")
+			if err != nil {
+				f.Log.Info("couldn't tell a peer", "peer", p.Name, "event", event, "err", err)
+			}
+		}(p)
+	}
+	wg.Wait()
 }
 
 // keyRefused forgets a peer key the target no longer accepts (it was removed there, or the target

@@ -133,7 +133,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
 | GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto, autoAt?, pausedUntil?}`; `?check=1` asks GitHub first. `autoAt`: when an available release installs on its own |
 | POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown, `502 update_check` when GitHub can't be reached. The helper restarts a few seconds later; `installing` clears itself after 10 minutes if it doesn't, with `error` saying so |
-| POST | `/v2/settings` | owner | `{autoUpdate?, agents?, pauseUpdates?}` → `204`. `autoUpdate` (default on for Windows, off for new Linux installs): check every 6 hours, install a release once it has been public for 72 hours and nothing is counting down (see [Updates](#updates)). `pauseUpdates`: `true` holds automatic installs for 7 days, `false` resumes. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work |
+| POST | `/v2/settings` | owner | `{autoUpdate?, agents?, pauseUpdates?, hungAfterMinutes?}` → `204`. `autoUpdate` (default on for Windows, off for new Linux installs): check every 6 hours, install a release once it has been public for 72 hours and nothing is counting down (see [Updates](#updates)). `pauseUpdates`: `true` holds automatic installs for 7 days, `false` resumes. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work. `hungAfterMinutes` (on a hub; 2 to 30, `0` for the default, 3): how long a machine must look hung before it's called [`hung`](#machine-states-and-events) |
 | POST | `/v2/uninstall` | owner | `{confirm: <this device's name>}` → `202`, then the helper uninstalls itself and deletes its keys and settings. `409 pending` during a countdown. Offered when `caps` has `uninstall` |
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{owner:true, status}` (same account: now an owner device) or `{key, status}` (another account) |
@@ -145,6 +145,12 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | DELETE | `/v2/kvms/{name}` | owner | → `204` |
 | GET | `/v2/machines` | `status` | → `{machines:[Machine]}`: the devices the caller may use, with live state; `?kvm=1` only those with a KVM here |
 | POST | `/v2/machines/{name}/{action}` | per action | `{force?, stayOff?, press?}` → `200 Result`, or the error with the Result's fields. `action`: `wake`, `shutdown`, `restart`, `reset`, `force-off` |
+| GET | `/v2/machines/events` | `status` | Server-Sent Events: each machine's state as it changes, see [Machine states and events](#machine-states-and-events) (2.3 and later) |
+| POST | `/v2/note` | peer key | `{event, updates?}` → `204`: a machine's own helper telling its hub it's about to `sleep`, `shutdown` or `restart`, or did `resume` |
+| GET | `/v2/webhooks` | owner | → `{webhooks:[Webhook]}` (without secrets) |
+| POST | `/v2/webhooks` | owner | `{url, events?}` → `201 {webhook}` with its `secret`, shown this once. `400 bad_url`, `400 bad_event`, `409 too_many` (10 at most) |
+| DELETE | `/v2/webhooks/{id}` | owner | → `204` |
+| POST | `/v2/webhooks/{id}/test` | owner | Sends a made-up `hung` event for a machine called `test` → `{ok, result}` |
 | POST | `/mcp` | owner or automation key | [MCP](https://modelcontextprotocol.io) endpoint for AI agents |
 
 `delaySeconds` defaults to 60 (0–600). Without `force`, shutdown/restart is refused with
@@ -164,13 +170,15 @@ before retrying with `force: true`. Callers without the `force` scope can't over
   "guests": {"running": 3, "names": ["public", "private", "agent"]},
   "network": {"mac": "02:00:5e:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
   "caps": ["shutdown", "restart", "wake", "kvm", "uninstall"],
+  "sleep": {"s3": true, "modernStandby": false, "afterMinutes": 30},
+  "hub": {"hungAfterMinutes": 3},
   "checks": [Check],
   "agents": {"allowed": true, "keys": [{"name": "Atlas", "devices": ["Workstation", "nas"]}]},
   "you": {"kind": "owner", "name": "Pixel 9 Pro", "scopes": ["status", "wake", "power", "force", "admin"]}
 }
 ```
 
-`guests` appears on Proxmox hosts. The `kvm` cap means this helper can drive NanoKVMs (`/v2/kvms`, `/v2/machines`; 2.2 and later). `agents` and the `uninstall` cap are shown to owners only; `agents.keys` lists the automation keys this helper holds and the devices each may use. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell.
+`guests` appears on Proxmox hosts. The `kvm` cap means this helper can drive NanoKVMs (`/v2/kvms`, `/v2/machines`; 2.2 and later). `agents` and the `uninstall` cap are shown to owners only; `agents.keys` lists the automation keys this helper holds and the devices each may use. `updatesPending: true` (Windows) means "Update and shut down" is available. `presence` is omitted when the helper can't tell. `sleep` (Windows, 2.3 and later): whether the PC can sleep the classic way (S3) or uses Modern Standby, and after how many idle minutes on AC power it sleeps on its own (0: never); a hub uses it to tell sleep from a hang. `hub` is shown to owners on a helper that drives KVMs.
 
 ### Check
 
@@ -267,8 +275,10 @@ and nothing is pressed on a guess:
 | Power switch | A press or hold changes the LED | A press or hold doesn't (`power_not_wired`, `no_effect`) |
 | Reset switch | The machine's helper answers again within 5 minutes of a reset | It doesn't: the next reset is refused (`reset_not_wired`) unless forced |
 
-The hub reads every KVM's LED every 2 minutes, so the LED is usually learned without anyone pressing
-anything. `PATCH {recheck: true}` (the app's **Check again**) forgets what was learned.
+The hub reads every KVM's LED every 30 seconds (see [Machine states and events](#machine-states-and-events)),
+so the LED is usually learned without anyone pressing anything. `wiring.ledAsleep` is what the light
+does while the machine sleeps (`off`, `blinking` or `on`), read 30 s after its helper said it was
+going to sleep. `PATCH {recheck: true}` (the app's **Check again**) forgets what was learned.
 
 ### Machine
 
@@ -278,7 +288,8 @@ anything. `PATCH {recheck: true}` (the app's **Check again**) forgets what was l
  "state": "unknown", "actions": ["wake", "shutdown", "restart", "reset", "force-off"]}
 ```
 
-`state`: `on` (its helper answers), `off` (a wired LED reads off) or `unknown`. `led` is the power
+`state`: `on`, `off`, `hung` or `unknown`, with `reason`, `asleep`, `since` and `evidence` from the
+hub's watch (see [Machine states and events](#machine-states-and-events)). `led` is the power
 light right now (absent without a KVM, `ledError` when it can't be read). `actions` is what the hub
 can do for it now; `reset` and `force-off` appear only while a wired LED reads on.
 
@@ -316,6 +327,131 @@ Result (also in the error body on failure, with `error` and `message` added):
 `kvm_forbidden` (the account lacks the power permission), `kvm_cert_changed`, `kvm_unreachable`,
 `kvm_failed`. Every action is in the hub's event log with who asked and the outcome.
 
+## Machine states and events
+
+From 2.3 a hub looks at every machine with a KVM every 30 seconds and tells a hung machine apart from
+one that's booting, asleep, installing updates, or just missing its helper. Each look gathers, at
+once and in 8 s at most:
+
+| Evidence | Values | What it says |
+|---|---|---|
+| `helper` | `answers`, `silent` | The machine's PowerDeck helper answered its status (two tries, 1.5 s apart) |
+| `port` | `refuses`, `accepts`, `no_reply` | A TCP connection to the helper's port. `refuses`: the OS is up and answered. `accepts`: the kernel took it (a hung Windows still does) |
+| `ping` | `replies`, `no_reply`, `unavailable` | `tailscale ping --icmp` to the machine: answered by its own network stack, not by Tailscale alone. `unavailable` when the hub can't ping |
+| `led` | `on`, `off`, `blinking`, `unreadable` | Three readings of the power light 0.5 s apart; on and off in one look is `blinking` |
+| `ledTrusted` | `true`, `false` | The light is [wired](#wiring-is-learned-never-assumed) |
+| `tailnetOnline` | `true`, `false` | Tailscale's control plane lists the machine online. Shown, never decides: a hung PC stays online there for minutes |
+
+What the machine's helper said also counts: its last status (a shutdown or restart counting down,
+Windows updates pending, its [`sleep`](#status) facts) and its notes. A helper tells every hub it
+has a peer key for, just before its machine sleeps, shuts down or restarts, and when it wakes
+(`POST /v2/note`, best effort, 1.5 s). The hub works out which machine from the caller's address,
+so a helper only speaks for its own.
+
+**States:**
+
+- `on`: the helper answers.
+- `off`: a wired light reads off. `asleep: true` when it blinks, or after a `sleep` note.
+- `hung`: for `hungAfter` (3 minutes; the owner's `hungAfterMinutes` setting, 2 to 30) every look
+  saw the helper silent, the port not refusing, ping not replying (or unavailable), and a wired
+  light steadily on; and nothing excused it (below). A machine without a helper or without a wired
+  light is never `hung`.
+- `unknown`, with a `reason`:
+
+| `reason` | When |
+|---|---|
+| `no_helper` | No PowerDeck helper on the machine: nothing can say it's fine |
+| `led_not_trusted` | The light hasn't been seen on yet |
+| `led_unreadable` | The KVM didn't answer this look |
+| `checking` | Silent, light on, for less than `hungAfter` |
+| `helper_stopped` | Silent while ping replies or the port refuses: the machine runs, its helper doesn't |
+| `booting` | Within 10 minutes of the hub waking, restarting, resetting or forcing it off, or of its light coming on |
+| `shutting_down`, `restarting` | Within 10 minutes of a shutdown or restart note or countdown |
+| `updating` | The same, with Windows updates pending: 90 minutes (they install with the light on and the network down) |
+| `may_be_asleep` | After a `sleep` note, or the machine sleeps on its own after `afterMinutes` and its light while asleep is `on` or not learned yet |
+
+Anything that contradicts a hang (the helper answers, ping replies, the port refuses, the light is
+off or blinking) starts the count again. An unreadable light neither counts nor resets it, and a
+gap of more than `hungAfter` between looks (the hub was off) starts it again too.
+
+`since` is when the hub first saw the current state; `evidence` is its last look, with `at`.
+
+### Event stream
+
+`GET /v2/machines/events` (status scope; the machines with a KVM on this hub that the caller may
+use, as in `GET /v2/machines?kvm=1`) is a
+[Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream:
+
+```
+id: 1761638400000123
+event: snapshot
+data: {"machines":[Machine, …]}
+
+id: 1761638430000456
+event: machine
+data: {"id":"1761638430000456","at":"2026-10-28T08:00:30Z","event":"hung","machine":"Workstation","state":"hung","from":"unknown","evidence":{"at":"…","helper":"silent","port":"accepts","ping":"no_reply","led":"on","ledTrusted":true}}
+
+: still here
+```
+
+Each `machine` event is a state change: `event` is the new state, or `recovered` when a `hung`
+machine answers again (`state` is then `on`). `reason` and `asleep` are included when set. IDs
+grow, also across restarts of the hub. Reconnect with `Last-Event-ID` (or `?lastEventId=` for
+clients that can't set headers) to get what came after it, from the last 500 the hub holds; an ID
+it no longer holds gets a fresh snapshot. A comment every 25 s keeps proxies from closing the
+stream. A client that stops reading for 10 s is dropped, and so is one that falls 64 events behind
+(it reconnects and replays). At most 16 streams per hub (`503 busy`).
+
+`hung` and `recovered` also go to the hub's event log (`GET /v2/events`), which the phone
+[notifies](#notifications) about.
+
+### Webhooks
+
+For an assistant that would rather be called than hold a stream open. An owner device adds one:
+
+```json
+POST /v2/webhooks
+{"url": "https://assistant.example.com/powerdeck", "events": ["hung", "recovered"]}
+
+201 {"webhook": {"id": "c0ffee…", "url": "…", "events": ["hung", "recovered"],
+                 "createdBy": "Pixel 9 Pro", "createdAt": "…", "secret": "pdwh_…"}}
+```
+
+`events` defaults to `hung` and `recovered` (any of `on`, `off`, `hung`, `unknown`, `recovered`).
+The URL must be https, or plain http to a Tailscale or loopback address or a `*.ts.net` name
+(WireGuard already encrypts those); no user names in it. The secret is shown this once and stored
+sealed, like KVM passwords. The list shows each webhook's `lastAt` and `lastResult` (`ok`,
+`HTTP 500`, a network error).
+
+Each delivery is a POST of the [event](#event-stream) as JSON, with:
+
+```
+X-PowerDeck-Event: hung
+X-PowerDeck-Delivery: 1761638430000456      (the event's id; the same on every retry)
+X-PowerDeck-Timestamp: 1761638431           (Unix seconds of this attempt)
+X-PowerDeck-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>
+```
+
+Any 2xx is delivered. Otherwise it's tried again after 10 s, 1 minute and 5 minutes, then dropped
+and logged. 10 s per try; redirects aren't followed. A receiver checks the signature over the raw
+body, refuses a timestamp more than 5 minutes off (so an old delivery can't be replayed), and can
+use the delivery ID to ignore repeats:
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, headers, body: bytes) -> bool:
+    ts = headers["X-PowerDeck-Timestamp"]
+    if abs(time.time() - int(ts)) > 300:
+        return False
+    mac = hmac.new(secret.encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest("sha256=" + mac, headers["X-PowerDeck-Signature"])
+```
+
+To check an implementation: secret `pdwh_test`, timestamp `1700000000` and body `{"id":"1"}` sign as
+`sha256=8fc0a23c6a794d26f2a6c83ac48c588dfbbe64deefd997f2bb8cc5b0ac0c0914`
+(`printf '1700000000.{"id":"1"}' | openssl dgst -sha256 -hmac pdwh_test`).
+
 ## Schedules
 
 ```json
@@ -333,7 +469,8 @@ is logged. Each run is an event in the log.
 
 The phone checks each device's `/v2/events` in the background (Android allows about every 15
 minutes) and notifies about things the user didn't do from this phone: an agent or schedule acting,
-a device going offline unexpectedly. Actions started on the phone show live progress instead.
+a device going offline unexpectedly, and (from a 2.3 hub) a machine that
+[looks frozen](#machine-states-and-events) or answers again. Actions started on the phone show live progress instead.
 
 ## Agents (MCP)
 

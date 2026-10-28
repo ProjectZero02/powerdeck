@@ -30,7 +30,8 @@ type fakeFleet struct {
 	forwards []string
 	fwdErr   error
 	wakeErr  error
-	silent   bool // the helper never answers (e.g. not installed yet)
+	silent   bool   // the helper never answers (e.g. not installed yet)
+	status   string // its GET /v2/status reply (default {})
 }
 
 func (f *fakeFleet) Peer(name string) (store.Peer, error) {
@@ -58,13 +59,22 @@ func (f *fakeFleet) Forward(_ context.Context, name, method, path string, body, 
 	f.mu.Lock()
 	b, _ := json.Marshal(body)
 	f.forwards = append(f.forwards, method+" "+path+" "+string(b)+" "+who)
-	err := f.fwdErr
+	err, silent := f.fwdErr, f.silent
 	f.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	if !f.kvm.Up() {
+	if !f.kvm.Up() || silent && method == "GET" {
 		return fleet.ErrOffline
+	}
+	if method == "GET" && path == "/v2/status" {
+		f.mu.Lock()
+		st := f.status
+		f.mu.Unlock()
+		if st == "" {
+			st = "{}"
+		}
+		return json.Unmarshal([]byte(st), out)
 	}
 	return json.Unmarshal([]byte(`{"pending":{"action":"shutdown"}}`), out)
 }

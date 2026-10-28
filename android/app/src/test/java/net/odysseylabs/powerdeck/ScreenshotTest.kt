@@ -52,6 +52,8 @@ import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.HelperUpdate
+import net.odysseylabs.powerdeck.data.HubEvidence
+import net.odysseylabs.powerdeck.data.HubMachine
 import net.odysseylabs.powerdeck.data.KvmLink
 import net.odysseylabs.powerdeck.data.KvmWiring
 import net.odysseylabs.powerdeck.data.Peer
@@ -267,6 +269,25 @@ class ScreenshotTest {
         compose.onNodeWithText("Checked on the first reset").assertExists()
         compose.onNodeWithText("Check again").assertExists()
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-frozen.png")
+    }
+
+    /** The hub calls it hung: the device page says so, with what the hub saw, and still offers Reset. */
+    @Test fun deviceHungOnHub() {
+        val ws = Device("ws", "Workstation", "100.101.1.11", pin = "w", os = "windows", mac = "02:00:5e:00:00:01",
+            kvm = KvmLink("nanokvm", "kvm-2.tail1234.ts.net", "kvm-2", "admin", ledSeen = true, hub = "pve", machine = "workstation",
+                wiring = KvmWiring("wired", "wired", "unknown")))
+        val seen = java.time.Instant.now().minusSeconds(20)
+        val m = HubMachine("workstation", "hung", true, null, "kvm-2", ws.kvm!!.wiring, listOf("reset", "force-off"),
+            since = seen.minusSeconds(200), evidence = HubEvidence(seen, "silent", "accepts", "no_reply", "on", true))
+        val state = all.copy(devices = all.devices + ws, states = all.states + ("ws" to DeviceState.On(null, m)))
+        shot("device-hung") { DeviceScreen(ws, state, Detail(events = emptyList()), DeviceActions(), SnackbarHostState()) }
+        compose.onNodeWithText("Frozen since", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("A reset brings it back; unsaved work is lost").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Reset").assertIsDisplayed()
+        compose.onNodeWithText("What pve sees").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("No reply to ping; takes PowerDeck's connection but says nothing").assertExists()
+        compose.onNodeWithText("Not answering").assertExists()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-hung.png")
     }
 
     @Test fun settingsHub() {

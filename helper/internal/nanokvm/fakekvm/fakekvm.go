@@ -45,6 +45,9 @@ type Options struct {
 	BootDelay      time.Duration // default 30 s (scaled)
 	ShutdownDelay  time.Duration // default 20 s (scaled)
 	TimeScale      float64       // default 1
+	// SleepLED is what the power light does while the computer sleeps: "off" (default),
+	// "blinking" (on and off on alternate readings) or "on" (Modern Standby on many boards).
+	SleepLED string
 }
 
 // Press is one button press the KVM received.
@@ -64,6 +67,8 @@ type Fake struct {
 	mu      sync.Mutex
 	on      bool
 	hung    bool
+	asleep  bool
+	blink   bool // the next reading while asleep and blinking
 	up      bool // the OS is up (the helper would answer)
 	gen     int  // cancels pending boot/shutdown timers
 	reboots int
@@ -154,7 +159,18 @@ func (f *Fake) SetOn(on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gen++
-	f.on, f.up, f.hung = on, on, false
+	f.on, f.up, f.hung, f.asleep = on, on, false, false
+}
+
+// Sleep puts the computer to sleep: nothing answers, the light does Options.SleepLED, and a short
+// power press wakes it.
+func (f *Fake) Sleep() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.on && !f.hung {
+		f.gen++
+		f.asleep, f.up = true, false
+	}
 }
 
 // Hang freezes the OS: the power light stays on, nothing answers, short presses are ignored.
@@ -221,16 +237,18 @@ func (f *Fake) pressed(button string, d time.Duration) {
 		if f.opt.NoResetSwitch || !f.on {
 			return
 		}
-		f.hung = false
+		f.hung, f.asleep = false, false
 		f.reboots++
 		f.bootLocked()
 	case f.opt.NoPowerSwitch:
 	case d >= 4*time.Second: // ATX: holding power cuts it
 		f.gen++
-		f.on, f.up, f.hung = false, false, false
+		f.on, f.up, f.hung, f.asleep = false, false, false, false
 	case !f.on:
 		f.on = true
 		f.bootLocked()
+	case f.asleep:
+		f.asleep, f.up = false, true
 	case f.hung:
 		// A frozen OS doesn't handle the power-button event.
 	default:
@@ -349,6 +367,16 @@ func (f *Fake) getGPIO(w http.ResponseWriter, _ *http.Request) {
 	}
 	f.mu.Lock()
 	pwr := f.on && !f.opt.NoLED
+	if f.asleep && pwr {
+		switch f.opt.SleepLED {
+		case "on":
+		case "blinking":
+			f.blink = !f.blink
+			pwr = f.blink
+		default:
+			pwr = false
+		}
+	}
 	f.mu.Unlock()
 	send(w, 0, "success", map[string]bool{"pwr": pwr, "hdd": false})
 }

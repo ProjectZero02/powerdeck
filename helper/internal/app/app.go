@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,11 +35,13 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/secret"
 	"github.com/projectzero02/powerdeck/helper/internal/server"
 	"github.com/projectzero02/powerdeck/helper/internal/setup"
+	"github.com/projectzero02/powerdeck/helper/internal/sleepinfo"
 	"github.com/projectzero02/powerdeck/helper/internal/store"
 	"github.com/projectzero02/powerdeck/helper/internal/tailscale"
 	"github.com/projectzero02/powerdeck/helper/internal/tlscert"
 	"github.com/projectzero02/powerdeck/helper/internal/update"
 	"github.com/projectzero02/powerdeck/helper/internal/version"
+	"github.com/projectzero02/powerdeck/helper/internal/webhook"
 	"github.com/projectzero02/powerdeck/helper/internal/wol"
 )
 
@@ -67,6 +70,17 @@ type Options struct {
 	AllowLocal func(remote string) bool
 	// Installed: running as the installed service, so the phone may uninstall it.
 	Installed bool
+	// Notes carries what the OS is about to do (sleep, shutdown) or did (resume), from the Windows
+	// service; each is told to the hubs, then Done is closed.
+	Notes <-chan Notice
+	// Stopping reports, as the helper stops, whether the whole system is shutting down (Linux).
+	Stopping func() bool
+}
+
+// Notice is something the OS is about to do, to tell the hubs before it happens.
+type Notice struct {
+	Event string // sleep, shutdown, resume
+	Done  chan struct{}
 }
 
 func uninstall(o Options) func() error {
@@ -144,11 +158,15 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	// Every helper can drive NanoKVMs; the app links them to one (the hub).
-	hub := &machines.Hub{Store: st, Box: secret.Default(), Fleet: fl, Self: name, Log: log, Now: now}
+	hub := &machines.Hub{Store: st, Box: secret.Default(), Fleet: fl, Self: name, Log: log, Now: now,
+		Events: machines.NewBus(now()), Ping: tailnetPing(ts), Online: tailnetOnline(ts),
+		HungAfter: func() time.Duration { return time.Duration(st.Settings().HungAfterMinutes) * time.Minute }}
+	hooks := &webhook.Sender{Store: st, Box: hub.Box, Bus: hub.Events, Log: log, Now: now}
 
 	api := server.New(server.Deps{
 		Auth:  &auth.Authenticator{TS: ts, Store: st, Now: now, LocalToken: localToken},
-		Store: st, Pairing: pm, Power: pc, Fleet: fl, Machines: hub, Name: name, OS: runtime.GOOS,
+		Store: st, Pairing: pm, Power: pc, Fleet: fl, Machines: hub, Webhooks: hooks, Sleep: sleepinfo.Cached(),
+		Name: name, OS: runtime.GOOS,
 		SelfNode: func(ctx context.Context) string {
 			if s, err := ts.Status(ctx); err == nil {
 				return s.Self.ID
@@ -240,7 +258,8 @@ func Run(ctx context.Context, o Options) error {
 		go func(l listener) { errc <- l.serve(l.ln) }(l)
 	}
 	go fl.Loop(ctx, 5*time.Minute, nil)
-	go hub.Loop(ctx, 2*time.Minute) // learns the wiring from the power light
+	go hub.Watch(ctx, 30*time.Second) // hang detection, and the wiring learned from the power light
+	go hooks.Run(ctx)
 	go schedule.Loop(ctx, st.Schedules, api.RunSchedule, now)
 	go updateLoop(ctx, upd, st, pc, log)
 	go func() { // drivers on some Linux systems drop Wake-on-LAN after link changes
@@ -254,9 +273,35 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}()
 
+	// Tell the hubs before sleep or shutdown, so they don't take it for a hang.
+	tell := func(event string) {
+		updates := false
+		if event == "shutdown" {
+			if p := pc.Pending(); p != nil && p.Action == power.Restart {
+				event = "restart"
+			}
+			updates = pc.UpdatesPending()
+		}
+		fl.Tell(context.WithoutCancel(ctx), event, updates)
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case n := <-o.Notes:
+				tell(n.Event)
+				close(n.Done)
+			}
+		}
+	}()
+
 	var runErr error
 	select {
 	case <-ctx.Done():
+		if o.Stopping != nil && o.Stopping() {
+			tell("shutdown")
+		}
 	case runErr = <-errc:
 	}
 	shutCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
@@ -269,6 +314,37 @@ func Run(ctx context.Context, o Options) error {
 	}
 	log.Info("PowerDeck helper stopped")
 	return runErr
+}
+
+// tailnetPing is the hub's ping of a machine: through Tailscale, to its own network stack.
+func tailnetPing(ts *tailscale.Client) func(ctx context.Context, addr string) string {
+	return func(ctx context.Context, addr string) string {
+		ip, err := netip.ParseAddr(addr)
+		if err != nil {
+			return machines.Unavailable
+		}
+		ok, err := ts.Ping(ctx, ip)
+		switch {
+		case err != nil:
+			return machines.Unavailable
+		case ok:
+			return machines.Replies
+		}
+		return machines.NoReply
+	}
+}
+
+func tailnetOnline(ts *tailscale.Client) func(ctx context.Context, addr string) *bool {
+	return func(ctx context.Context, addr string) *bool {
+		ip, err := netip.ParseAddr(addr)
+		if err != nil {
+			return nil
+		}
+		if online, known := ts.Online(ctx, ip); known {
+			return &online
+		}
+		return nil
+	}
 }
 
 // updateLoop checks for updates shortly after start and every 6 hours, and installs them when

@@ -93,7 +93,7 @@ func ParseStatus(b []byte) (*Status, error) {
 // Identity is who a tailnet caller is, from `tailscale whois`.
 type Identity struct {
 	NodeID   string
-	NodeName string // short MagicDNS name, e.g. "oppo-find-x9-ultra"
+	NodeName string // short MagicDNS name, e.g. "pixel-9-pro"
 	Hostname string // the device's own name, e.g. "Pixel 9 Pro"
 	UserID   int64
 	Login    string
@@ -220,6 +220,39 @@ func (c *Client) WhoIs(ctx context.Context, ip netip.Addr) (Identity, error) {
 	c.whois[ip] = cached{id: id, err: err, at: c.now()}
 	c.mu.Unlock()
 	return id, err
+}
+
+// Ping pings a peer's Tailscale address with ICMP through WireGuard, which the peer's own network
+// stack answers (a disco or TSMP ping is answered by tailscaled alone, so it says less about the
+// machine). ErrUnavailable: Tailscale isn't running here, or the address isn't a peer's.
+func (c *Client) Ping(ctx context.Context, ip netip.Addr) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	out, err := c.run(ctx, "ping", "--icmp", "--c", "2", "--timeout", "3s", "--until-direct=false", ip.String())
+	if strings.Contains(string(out), "pong from") {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if s := string(ee.Stderr); strings.Contains(s, "no reply") || strings.Contains(s, "timed out") {
+			return false, nil
+		}
+	}
+	return false, ErrUnavailable
+}
+
+// Online reports whether the control plane lists the peer with this address as online.
+func (c *Client) Online(ctx context.Context, ip netip.Addr) (online, known bool) {
+	st, err := c.Status(ctx)
+	if err != nil {
+		return false, false
+	}
+	for _, p := range st.Peers {
+		if p.IPv4 == ip {
+			return p.Online, true
+		}
+	}
+	return false, false
 }
 
 // Unattended reports Windows' "Run unattended" preference (ForceDaemon).

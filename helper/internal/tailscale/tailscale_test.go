@@ -39,7 +39,7 @@ func TestParseStatus(t *testing.T) {
 	}
 }
 
-const whoisJSON = `{"Node": {"StableID": "nPHONE", "Name": "oppo-find-x9-ultra.example-tailnet.ts.net.", "ComputedName": "oppo-find-x9-ultra",
+const whoisJSON = `{"Node": {"StableID": "nPHONE", "Name": "pixel-9-pro.example-tailnet.ts.net.", "ComputedName": "pixel-9-pro",
   "Hostinfo": {"Hostname": "Pixel 9 Pro"}, "User": 1},
   "UserProfile": {"ID": 1, "LoginName": "owner@example.com"}, "CapMap": null}`
 

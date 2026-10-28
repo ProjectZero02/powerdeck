@@ -41,6 +41,7 @@ const (
 	selfAddr  = "100.101.1.10:51234" // this device itself
 	laptop    = "100.101.1.41:51234" // same Tailscale user, not paired as an owner device
 	hubAddr   = "100.101.1.12:51234" // another helper of the owner, untagged (e.g. a server)
+	wsAddr    = "100.101.1.11:51234" // workstation, the machine with a KVM in the hub tests
 )
 
 type fakeTS struct{}
@@ -57,7 +58,7 @@ func (fakeTS) Status(context.Context) (*tailscale.Status, error) {
 func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error) {
 	switch ip.String() {
 	case "100.101.1.40":
-		return tailscale.Identity{NodeID: "nPHONE", NodeName: "oppo", Hostname: "Pixel 9 Pro", UserID: 1}, nil
+		return tailscale.Identity{NodeID: "nPHONE", NodeName: "pixel-9-pro", Hostname: "Pixel 9 Pro", UserID: 1}, nil
 	case "100.101.1.60":
 		return tailscale.Identity{NodeID: "nFRIEND", NodeName: "friend", Hostname: "Friend's phone", UserID: 7}, nil
 	case "100.101.1.50":
@@ -66,6 +67,8 @@ func (fakeTS) WhoIs(_ context.Context, ip netip.Addr) (tailscale.Identity, error
 		return tailscale.Identity{NodeID: "nTWIN", NodeName: "twin", UserID: 99, Tagged: true}, nil
 	case "100.101.1.41":
 		return tailscale.Identity{NodeID: "nLAPTOP", NodeName: "laptop", Hostname: "Laptop", UserID: 1}, nil
+	case "100.101.1.11":
+		return tailscale.Identity{NodeID: "nWS", NodeName: "workstation", Hostname: "Workstation", UserID: 1}, nil
 	case "100.101.1.12":
 		return tailscale.Identity{NodeID: "nHUB", NodeName: "hub", Hostname: "hub", UserID: 1}, nil
 	case "100.101.1.10":

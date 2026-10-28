@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,5 +131,39 @@ func TestRefusedKeyIsForgotten(t *testing.T) {
 	_ = f.Forward(context.Background(), "pc", "POST", "/v2/power/sleep", nil, nil, "")
 	if p, _ := st.Peer("pc"); p.Key != "pdk_new" {
 		t.Errorf("key dropped on a 409: %+v", p)
+	}
+}
+
+// Tell reaches every helper it holds a key for, at once, and gives up on a slow one in 1.5 s.
+func TestTell(t *testing.T) {
+	st, _ := store.Open(t.TempDir())
+	for _, p := range []store.Peer{{Name: "hub", Key: "pdk_hub"}, {Name: "nas", Key: "pdk_nas"}, {Name: "laptop"}} {
+		if err := st.PutPeer(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	got := map[string]string{}
+	dns := ""
+	f := New(Deps{TS: ts{&dns}, Store: st, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: time.Now,
+		Call: func(ctx context.Context, p store.Peer, method, path string, in, _ any, _ string) error {
+			b, _ := json.Marshal(in)
+			mu.Lock()
+			got[p.Name] = method + " " + path + " " + string(b)
+			mu.Unlock()
+			if p.Name == "nas" {
+				<-ctx.Done() // hangs
+				return ctx.Err()
+			}
+			return nil
+		}})
+	start := time.Now()
+	f.Tell(context.Background(), "restart", true)
+	if d := time.Since(start); d < 1400*time.Millisecond || d > 3*time.Second {
+		t.Errorf("took %v", d)
+	}
+	want := `POST /v2/note {"event":"restart","updates":true}`
+	if len(got) != 2 || got["hub"] != want || got["nas"] != want {
+		t.Errorf("told %v", got)
 	}
 }

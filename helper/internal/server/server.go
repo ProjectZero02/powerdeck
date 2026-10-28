@@ -10,12 +10,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/projectzero02/powerdeck/helper/internal/tailscale"
 	"github.com/projectzero02/powerdeck/helper/internal/update"
 	"github.com/projectzero02/powerdeck/helper/internal/version"
+	"github.com/projectzero02/powerdeck/helper/internal/webhook"
 )
 
 // Deps are the server's collaborators.
@@ -41,7 +44,8 @@ type Deps struct {
 	Pairing  *pairing.Manager
 	Power    *power.Controller
 	Fleet    *fleet.Fleet
-	Machines *machines.Hub // KVMs this helper drives (nil: none)
+	Machines *machines.Hub   // KVMs this helper drives (nil: none)
+	Webhooks *webhook.Sender // posts machine events (nil: not here)
 	Name     string
 	OS       string
 	SelfNode func(ctx context.Context) string // this device's tailnet node ID
@@ -51,6 +55,8 @@ type Deps struct {
 	Guests   func(ctx context.Context) *guests.Info
 	Wake     func(mac string, lans []string) ([]string, error)
 	Update   Updater // nil: updates aren't managed here (tests, development builds)
+	// Sleep reports whether this machine sleeps on its own (nil, or returning nil: not known here).
+	Sleep func() *store.Sleep
 	// Uninstall removes PowerDeck from this device in the background (nil: not supported here).
 	Uninstall func() error
 	// PairLink returns this device's add link (QR payload, with the code) and the current pairing code.
@@ -72,6 +78,8 @@ type server struct {
 	Deps
 	limiter *limiter
 	quota   *quota
+
+	streams atomic.Int32 // open machine event streams
 
 	checksMu sync.Mutex
 	checks   []check.Result // cached: on Windows they run PowerShell, and the app polls every few seconds
@@ -133,6 +141,12 @@ func New(d Deps) *API {
 	mux.HandleFunc("PATCH /v2/kvms/{name}", s.with(store.ScopeAdmin, s.ownersOnly(s.patchKVM)))
 	mux.HandleFunc("DELETE /v2/kvms/{name}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeKVM)))
 	mux.HandleFunc("GET /v2/machines", s.with(store.ScopeStatus, s.listMachines))
+	mux.HandleFunc("GET /v2/machines/events", s.with(store.ScopeStatus, s.machineEvents))
+	mux.HandleFunc("POST /v2/note", s.with(store.ScopeStatus, s.note))
+	mux.HandleFunc("GET /v2/webhooks", s.with(store.ScopeAdmin, s.ownersOnly(s.listWebhooks)))
+	mux.HandleFunc("POST /v2/webhooks", s.with(store.ScopeAdmin, s.ownersOnly(s.addWebhook)))
+	mux.HandleFunc("DELETE /v2/webhooks/{id}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeWebhook)))
+	mux.HandleFunc("POST /v2/webhooks/{id}/test", s.with(store.ScopeAdmin, s.ownersOnly(s.testWebhook)))
 	mux.HandleFunc("POST /v2/machines/{name}/{action}", s.with(store.ScopeStatus, s.machineAction))
 	mux.HandleFunc("POST /mcp", s.with(store.ScopeStatus, s.ownersAndAgents(s.mcp)))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
@@ -310,6 +324,14 @@ func decode(r *http.Request, v any) bool {
 func (s *server) logEvent(who, action, result string) {
 	s.Store.AddEvent(store.Event{At: s.Now(), Who: who, Action: action, Result: result})
 	s.Log.Info("event", "who", who, "action", action, "result", result)
+}
+
+// hungAfter is the hang setting in minutes, with the default applied.
+func hungAfter(st store.Settings) int {
+	if st.HungAfterMinutes > 0 {
+		return st.HungAfterMinutes
+	}
+	return int(machines.DefaultRules.HungAfter / time.Minute)
 }
 
 func (s *server) hello(w http.ResponseWriter, _ *http.Request) {
@@ -506,6 +528,14 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	}
 	if s.Machines != nil {
 		body["caps"] = append(body["caps"].([]string), "kvm") // drives NanoKVMs (/v2/kvms, /v2/machines)
+		if c.Kind == auth.Owner {
+			body["hub"] = map[string]any{"hungAfterMinutes": hungAfter(s.Store.Settings())}
+		}
+	}
+	if sl := s.Sleep; sl != nil {
+		if f := sl(); f != nil {
+			body["sleep"] = f // so a hub can tell sleep from a hang
+		}
 	}
 	if g := s.Guests(ctx); g != nil {
 		body["guests"] = g
@@ -622,10 +652,23 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Call
 		AutoUpdate   *bool `json:"autoUpdate"`
 		Agents       *bool `json:"agents"`
 		PauseUpdates *bool `json:"pauseUpdates"` // true: hold automatic installs for 7 days; false: resume
+		// HungAfterMinutes: how long a machine with a KVM here must look hung (2 to 30; 0: default 3).
+		HungAfterMinutes *int `json:"hungAfterMinutes"`
 	}
 	if !decode(r, &req) {
 		fail(w, http.StatusBadRequest, "bad_request", "Malformed settings.")
 		return
+	}
+	if n := req.HungAfterMinutes; n != nil {
+		if *n != 0 && (*n < 2 || *n > 30) {
+			fail(w, http.StatusBadRequest, "bad_request", "hungAfterMinutes is 2 to 30 (0 for the default, 3).")
+			return
+		}
+		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.HungAfterMinutes = *n }); err != nil {
+			fail(w, http.StatusInternalServerError, "store", err.Error())
+			return
+		}
+		s.logEvent(c.Name, fmt.Sprintf("set hung after to %d minutes", hungAfter(s.Store.Settings())), "ok")
 	}
 	if req.Agents != nil && *req.Agents == s.Store.Settings().NoAgents {
 		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.NoAgents = !*req.Agents }); err != nil {

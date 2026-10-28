@@ -367,7 +367,8 @@ class PowerDeck(
         when (ledOn(d)) {
             true -> {
                 if (!d.hasHelper) seeLed(d) // a helper device is confirmed in helperState, with the helper agreeing
-                DeviceState.On(null)
+                // The hub watches it: frozen, booting, asleep… (read with the light, so no extra call)
+                DeviceState.On(null, if (it.hub != null) runCatching { hubMachine(d) }.getOrNull() else null)
             }
             false -> if (it.ledSeen || d.hasHelper) DeviceState.Off
                 else DeviceState.Problem("Turn it on by hand once so PowerDeck can check its power light")
