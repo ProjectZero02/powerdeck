@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -39,7 +40,25 @@ func platformCommand(cmd string, _ []string, err *error) bool {
 	return true
 }
 
+// systemStopping: on Windows the service hears of shutdowns itself (see runService).
+var systemStopping func() bool
+
 func runService() error {
+	notes := make(chan app.Notice)
+	// notify hands what Windows is about to do to the running helper, which tells the hubs; it
+	// waits for that, briefly, as Windows goes on without it.
+	notify := func(event string) {
+		n := app.Notice{Event: event, Done: make(chan struct{})}
+		select {
+		case notes <- n:
+		case <-time.After(200 * time.Millisecond):
+			return // not running
+		}
+		select {
+		case <-n.Done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 	return winsvc.Run(setup.ServiceName, func(ctx context.Context) error {
 		log, closer, err := applog.Open(setup.DataDir(), nil)
 		if err != nil {
@@ -48,12 +67,12 @@ func runService() error {
 		defer closer.Close()
 		go companionLoop(ctx, log)
 		err = app.Run(ctx, app.Options{DataDir: setup.DataDir(), System: newSystem(log), Reports: reports, Log: log, Installed: true,
-			AllowLocal: func(remote string) bool { return winsvc.LocalCaller(remote, app.UIPort) }})
+			Notes: notes, AllowLocal: func(remote string) bool { return winsvc.LocalCaller(remote, app.UIPort) }})
 		if err != nil {
 			log.Error("PowerDeck exited", "err", err)
 		}
 		return err
-	})
+	}, notify)
 }
 
 func install([]string) error {

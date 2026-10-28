@@ -96,17 +96,41 @@ data class KvmWiring(val led: String, val power: String, val reset: String) {
     }
 }
 
-/** A machine as a hub sees it (GET /v2/machines). [led] null: not read. */
-data class HubMachine(val name: String, val state: String, val led: Boolean?, val ledError: String?, val kvm: String?, val wiring: KvmWiring?, val actions: List<String>) {
+/**
+ * A machine as a hub sees it (GET /v2/machines). [led] null: not read. From 2.3 the hub's watch adds
+ * [state] "hung", a [reason] for "unknown", [since] and its last look ([evidence]).
+ */
+data class HubMachine(
+    val name: String, val state: String, val led: Boolean?, val ledError: String?, val kvm: String?, val wiring: KvmWiring?, val actions: List<String>,
+    val reason: String? = null, val asleep: Boolean = false, val since: Instant? = null, val evidence: HubEvidence? = null,
+) {
+    val hung get() = state == HUNG
+
     companion object {
+        const val HUNG = "hung"
         fun from(o: JSONObject): HubMachine {
             val k = o.optJSONObject("kvm")
             return HubMachine(o.optString("name"), o.optString("state", "unknown"), if (o.has("led") && !o.isNull("led")) o.optBoolean("led") else null,
                 o.optStringOrNull("ledError"), k?.optStringOrNull("name"), k?.optJSONObject("wiring")?.let(KvmWiring::from),
-                o.optJSONArray("actions")?.strings() ?: emptyList())
+                o.optJSONArray("actions")?.strings() ?: emptyList(),
+                o.optStringOrNull("reason"), o.optBoolean("asleep"), o.instant("since"), o.optJSONObject("evidence")?.let(HubEvidence::from))
         }
     }
 }
+
+/**
+ * The hub's last look at a machine: its helper ("answers", "silent"), the helper's port ("refuses",
+ * "accepts", "no_reply"), a ping ("replies", "no_reply", "unavailable") and the power light ("on",
+ * "off", "blinking", "unreadable"). Null: not looked at (no helper).
+ */
+data class HubEvidence(val at: Instant?, val helper: String?, val port: String?, val ping: String?, val led: String?, val ledTrusted: Boolean) {
+    companion object {
+        fun from(o: JSONObject) = HubEvidence(o.instant("at"), o.optStringOrNull("helper"), o.optStringOrNull("port"), o.optStringOrNull("ping"),
+            o.optStringOrNull("led"), o.optBoolean("ledTrusted"))
+    }
+}
+
+private fun JSONObject.instant(k: String) = optStringOrNull(k)?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
 /** What a hub did for an action: its message, and each step with the power light read. */
 data class HubResult(val ok: Boolean, val code: String?, val message: String, val steps: List<String>) {
@@ -239,7 +263,6 @@ data class HelperUpdate(
     val autoAt: Instant? = null, val pausedUntil: Instant? = null,
 ) {
     companion object {
-        private fun JSONObject.instant(k: String) = optStringOrNull(k)?.let { runCatching { Instant.parse(it) }.getOrNull() }
         fun from(o: JSONObject) = HelperUpdate(o.optBoolean("available"), o.optStringOrNull("latest")?.ifEmpty { null },
             o.optBoolean("installing"), o.optBoolean("auto", true), o.optStringOrNull("error")?.ifEmpty { null },
             o.instant("autoAt"), o.instant("pausedUntil"))
@@ -275,7 +298,8 @@ data class Schedule(val id: String, val action: String, val target: String?, val
 /** Live state of a device, as shown on its card. */
 sealed interface DeviceState {
     data object Checking : DeviceState
-    data class On(val status: HelperStatus?) : DeviceState // status null when only a KVM LED says so
+    /** [status] null when only a KVM LED says so; [hub] is then what the hub that drives the KVM makes of it. */
+    data class On(val status: HelperStatus?, val hub: HubMachine? = null) : DeviceState
     data object Off : DeviceState
     data class Problem(val message: String) : DeviceState
 }

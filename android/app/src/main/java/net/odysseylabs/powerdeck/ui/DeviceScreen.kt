@@ -75,6 +75,7 @@ import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
+import net.odysseylabs.powerdeck.data.HubMachine
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.KvmWiring
@@ -143,6 +144,35 @@ private fun Row2(title: String, sub: String? = null, icon: (@Composable () -> Un
         trailingContent = trailing,
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
     )
+}
+
+/** The hub's last look at [name]: each signal in words, so the owner can see why it's called frozen. */
+@Composable
+private fun HubEvidenceSection(name: String, hubName: String, m: HubMachine) {
+    val e = m.evidence ?: return
+    Section("What $hubName sees") {
+        e.helper?.let {
+            Row2("PowerDeck on $name", if (it == "answers") "Answers" else "Not answering")
+        }
+        val network = listOfNotNull(
+            when (e.ping) { "replies" -> "Answers ping"; "no_reply" -> "No reply to ping"; else -> null },
+            when (e.port) {
+                "refuses" -> "turns PowerDeck's connection away (it's up, PowerDeck isn't running)"
+                "accepts" -> "takes PowerDeck's connection but says nothing"
+                "no_reply" -> "nothing on PowerDeck's port"
+                else -> null
+            },
+        )
+        if (network.isNotEmpty()) Row2("Network", network.joinToString("; ").replaceFirstChar(Char::uppercase))
+        Row2("Power light", when (e.led) {
+            "on" -> "On"
+            "off" -> "Off"
+            "blinking" -> "Blinking (asleep)"
+            else -> "Can't be read"
+        } + if (!e.ledTrusted) " · not known to be connected yet" else "")
+        // The card above already says what it makes of it.
+        e.at?.let { at -> Row2("Last checked " + clockTime(at, System.currentTimeMillis()), if (m.hung) "A reset brings it back; unsaved work is lost" else null) }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -236,6 +266,11 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                         }
                     }
                 }
+            }
+
+            // ---- What the hub sees, while the helper is silent and the light is on (frozen, booting…)
+            (st as? DeviceState.On)?.hub?.takeIf { status == null && it.evidence != null && (it.hung || it.reason != null) }?.let { m ->
+                HubEvidenceSection(d.name, hub?.name ?: "The hub", m)
             }
 
             // ---- PowerDeck helper update

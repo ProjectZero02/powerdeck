@@ -3,9 +3,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/projectzero02/powerdeck/helper/internal/cli"
@@ -18,6 +21,15 @@ const defaultCommand = "help"
 func newSystem(*slog.Logger) power.System { return &power.Linux{} }
 
 func platformCommand(string, []string, *error) bool { return false }
+
+// systemStopping reports whether systemd is shutting the system down (rather than stopping or
+// restarting just this service), so the helper can tell its hubs first.
+func systemStopping() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "systemctl", "is-system-running").Output()
+	return strings.TrimSpace(string(out)) == "stopping"
+}
 
 // install sets up the systemd service, then shows the checks and the QR code that adds this
 // device to the app.

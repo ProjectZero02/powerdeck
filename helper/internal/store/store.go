@@ -111,6 +111,7 @@ type Peer struct {
 	MAC      string    `json:"mac,omitempty"`
 	LAN      []string  `json:"lan,omitempty"`
 	NoAgents bool      `json:"noAgents,omitempty"` // it turns agents away (last we heard)
+	Sleep    *Sleep    `json:"sleep,omitempty"`    // whether it sleeps on its own (last we heard)
 	LastSeen time.Time `json:"lastSeen"`
 	// Key is the peer key this helper presents to it (set up by the owner's phone).
 	Key string `json:"key,omitempty"`
@@ -136,6 +137,9 @@ type Settings struct {
 	Tray bool `json:"tray,omitempty"`
 	// SetupDone records that the PC window has shown its first-run setup (once is enough).
 	SetupDone bool `json:"setupDone,omitempty"`
+	// HungAfterMinutes is how long a machine with a KVM here must look hung before it's called hung
+	// (0: the default, 3).
+	HungAfterMinutes int `json:"hungAfterMinutes,omitempty"`
 	// UpdatesPausedUntil holds automatic updates back until then.
 	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitzero"`
 }
@@ -149,6 +153,7 @@ type state struct {
 	Owners    []Owner         `json:"owners,omitempty"`
 	OwnerMode string          `json:"ownerMode,omitempty"`
 	KVMs      []KVM           `json:"kvms,omitempty"`
+	Webhooks  []Webhook       `json:"webhooks,omitempty"`
 }
 
 // fresh is a new install's state.
@@ -270,6 +275,12 @@ func random(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// NewID is a short random ID.
+func NewID() string { return random(9) }
+
+// NewWebhookSecret is a random secret for signing webhook deliveries.
+func NewWebhookSecret() string { return "pdwh_" + random(32) }
+
 // NewKey describes a key to issue.
 type NewKey struct {
 	Name      string
@@ -388,6 +399,9 @@ func (s *Store) PutPeer(p Peer) error {
 		if p.LAN == nil {
 			p.LAN = old.LAN
 		}
+		if p.Sleep == nil {
+			p.Sleep = old.Sleep
+		}
 	}
 	p.LastSeen = p.LastSeen.UTC()
 	s.st.Peers[p.Name] = p
@@ -439,8 +453,11 @@ type Wiring struct {
 	Power string `json:"power"` // the power switch
 	Reset string `json:"reset"` // the reset switch
 	// LEDOffWhileUp counts readings in a row with the LED off while the machine's helper answered.
-	LEDOffWhileUp int       `json:"ledOffWhileUp,omitempty"`
-	CheckedAt     time.Time `json:"checkedAt,omitzero"`
+	LEDOffWhileUp int `json:"ledOffWhileUp,omitempty"`
+	// LEDAsleep is what the light did while the machine slept (on, off, blinking), seen after its
+	// helper said it was going to sleep; empty until then.
+	LEDAsleep string    `json:"ledAsleep,omitempty"`
+	CheckedAt time.Time `json:"checkedAt,omitzero"`
 }
 
 // Wiring states.
@@ -543,6 +560,74 @@ func (s *Store) RemoveKVM(name string) error {
 	return ErrNotFound
 }
 
+// Webhook is an address the hub posts machine events to.
+type Webhook struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url"`
+	Events    []string  `json:"events"`
+	Secret    string    `json:"secret"` // sealed (secret.Box): signs each delivery
+	CreatedBy string    `json:"createdBy,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	// The last delivery: when, and "200" or what went wrong.
+	LastAt     time.Time `json:"lastAt,omitzero"`
+	LastResult string    `json:"lastResult,omitempty"`
+}
+
+// MaxWebhooks bounds the webhook list.
+const MaxWebhooks = 10
+
+// ErrTooManyWebhooks is returned when the webhook list is full.
+var ErrTooManyWebhooks = errors.New("too many webhooks")
+
+// Webhooks lists the webhooks.
+func (s *Store) Webhooks() []Webhook {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Webhook, len(s.st.Webhooks))
+	for i, h := range s.st.Webhooks {
+		h.Events = slices.Clone(h.Events)
+		out[i] = h
+	}
+	return out
+}
+
+// AddWebhook stores a new webhook.
+func (s *Store) AddWebhook(h Webhook) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.st.Webhooks) >= MaxWebhooks {
+		return ErrTooManyWebhooks
+	}
+	s.st.Webhooks = append(s.st.Webhooks, h)
+	return s.saveLocked()
+}
+
+// RemoveWebhook deletes a webhook by ID.
+func (s *Store) RemoveWebhook(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, h := range s.st.Webhooks {
+		if h.ID == id {
+			s.st.Webhooks = slices.Delete(s.st.Webhooks, i, i+1)
+			return s.saveLocked()
+		}
+	}
+	return ErrNotFound
+}
+
+// WebhookDelivered records a delivery's outcome.
+func (s *Store) WebhookDelivered(id string, at time.Time, result string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.st.Webhooks {
+		if s.st.Webhooks[i].ID == id {
+			s.st.Webhooks[i].LastAt, s.st.Webhooks[i].LastResult = at.UTC(), result
+			_ = s.saveLocked()
+			return
+		}
+	}
+}
+
 const maxSchedules = 20
 
 // ErrTooManySchedules is returned when the schedule list is full.
@@ -598,6 +683,13 @@ func (s *Store) UpdateSettings(f func(*Settings)) error {
 	defer s.mu.Unlock()
 	f(&s.st.Settings)
 	return s.saveLocked()
+}
+
+// Sleep is whether a machine can sleep and goes to sleep on its own, as its helper reports it.
+type Sleep struct {
+	S3            bool `json:"s3"`            // classic sleep: the light usually goes off or blinks
+	ModernStandby bool `json:"modernStandby"` // S0 low power idle: the light may stay on
+	AfterMinutes  int  `json:"afterMinutes"`  // idle minutes before it sleeps on mains power; 0 = never
 }
 
 // SetPeerKey stores the key this helper presents to a remembered peer ("" removes it).

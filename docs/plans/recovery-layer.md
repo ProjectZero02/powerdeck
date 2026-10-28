@@ -155,7 +155,7 @@ What can look like a hang and isn't (each one has its own rule below):
 Build:
 1. **Watcher.** The 2-minute loop becomes a 30-second watcher for every machine with a KVM here. Each
    round collects evidence in parallel (8 s at most):
-   - `helper`: answers `hello` (two tries), or silent.
+   - `helper`: answers its status (two tries), or silent.
    - `tcp`: the helper's port refuses (the OS is up and answered, the helper isn't running), accepts
      but never answers (what a hung Windows does: the kernel still accepts), or no reply.
    - `ping`: `tailscale ping --icmp -c 2 --timeout 3s --until-direct=false <Tailscale IP>`. ICMP
@@ -167,17 +167,21 @@ Build:
      light is trusted (phase 2's wiring).
    - `tailnet`: whether Tailscale's control plane lists the node online. Shown, never decides: a
      hung PC stays "online" there for minutes.
-   - The helper's last word: its last `hello` (Windows updates pending, a shutdown or restart
+   - The helper's last word: its last status (Windows updates pending, a shutdown or restart
      counting down) and its notes (next item).
-   Wiring is learned from the same readings as before (no more often: at most every 2 minutes).
+   Wiring is learned from the same readings: a light seen on while the machine runs is wired; seen
+   off while its helper answers counts towards "not wired" at most once every 30 s.
 2. **Notes from a helper to its hubs.** When its machine is about to sleep, shut down or restart, and
-   when it wakes, a helper tells every helper it holds a peer key for, best effort (1.5 s each):
-   `POST /v2/machines/{name}/note {"event": "sleep|shutdown|restart|resume", "updates": true}`.
-   Peer keys only, and only for the caller's own machine. Windows: the service accepts power events
-   (`PBT_APMSUSPEND`, `PBT_APMRESUMEAUTOMATIC`) and pre-shutdown, and reports whether updates are
-   pending. Linux: shutdown and restart. Not relied on: Windows may not send the suspend event on
-   Modern Standby PCs, and two seconds may not be enough, so item 3 covers sleep without it.
-3. **Sleep facts.** A Windows helper's `hello` gains
+   when it wakes, a helper tells every helper it holds a peer key for, all at once, best effort
+   (1.5 s): `POST /v2/note {"event": "sleep|shutdown|restart|resume", "updates": true}`. Peer keys
+   only; the hub works out the machine from the caller's address, so a helper speaks only for its
+   own. Windows: suspend and resume through `PowerRegisterSuspendResumeNotification` (a callback
+   Windows waits for, unlike a service's power events, which are answered as soon as they're
+   queued), and the service's pre-shutdown notice (Windows waits for that too); a shutdown is sent
+   as `restart` when PowerDeck's own restart is counting down, with whether updates are pending.
+   Linux: `shutdown` when systemd is stopping the whole system. Not relied on: Windows may not send
+   the suspend event on Modern Standby PCs, so item 3 covers sleep without it.
+3. **Sleep facts.** A Windows helper's status gains
    `"sleep": {"s3": true, "modernStandby": false, "afterMinutes": 30}` from `GetPwrCapabilities`
    and the active power plan's sleep timeout on AC (`PowerReadACValueIndex`, 0 = never); no
    `powercfg` text, which is translated. The hub keeps the last one it saw. The first `sleep` note
@@ -197,11 +201,14 @@ Build:
        network down);
      - it may be asleep with the light on: a `sleep` note since it last answered, or it can sleep
        on its own (`afterMinutes` > 0) and its light while asleep is on or not learned yet.
+     (These carry the reasons `booting`, `shutting_down`, `restarting`, `updating` and
+     `may_be_asleep`.)
    - Anything that contradicts a hang (helper answers, ping replies, port refuses, light off or
      blinking) starts the count again. An unreadable light neither counts nor resets.
-   - `unknown`: everything else, with a `reason`: `no_helper`, `led_not_trusted`, `booting`,
-     `updating`, `may_be_asleep`, `helper_stopped` (silent while the network answers), `checking`
-     (silent for less than `hungAfter`).
+   - `unknown`: everything else, with a `reason`: `no_helper`, `led_not_trusted`,
+     `led_unreadable`, `booting`, `shutting_down`, `restarting`, `updating`, `may_be_asleep`,
+     `helper_stopped` (silent while the network answers), `checking` (silent for less than
+     `hungAfter`).
    A machine without a helper, or without a trusted light, is never `hung`.
    `GET /v2/machines` and each machine gain `since` (when the state began), `reason`, and
    `evidence` (the last round: each item with its value and time).

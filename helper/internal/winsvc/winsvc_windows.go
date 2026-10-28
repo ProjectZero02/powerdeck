@@ -10,7 +10,8 @@ import (
 )
 
 type handler struct {
-	run func(ctx context.Context) error
+	run    func(ctx context.Context) error
+	notify func(event string)
 }
 
 func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
@@ -19,15 +20,26 @@ func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- h.run(ctx) }()
-	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	accepts := svc.AcceptStop | svc.AcceptShutdown
+	if h.notify != nil {
+		// Pre-shutdown comes while the network is still up, and Windows waits for it.
+		accepts |= svc.AcceptPreShutdown
+		if stop, err := watchSuspend(h.notify); err == nil {
+			defer stop()
+		}
+	}
+	status <- svc.Status{State: svc.Running, Accepts: accepts}
 	for {
 		select {
 		case c := <-req:
 			switch c.Cmd {
 			case svc.Interrogate:
 				status <- c.CurrentStatus
-			case svc.Stop, svc.Shutdown:
+			case svc.PreShutdown, svc.Stop, svc.Shutdown:
 				status <- svc.Status{State: svc.StopPending}
+				if c.Cmd == svc.PreShutdown {
+					h.notify("shutdown")
+				}
 				cancel()
 				<-done
 				return false, 0
@@ -41,7 +53,9 @@ func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<
 	}
 }
 
-// Run blocks, serving the SCM until the service is stopped.
-func Run(name string, run func(ctx context.Context) error) error {
-	return svc.Run(name, &handler{run: run})
+// Run blocks, serving the SCM until the service is stopped. notify, if set, is told "sleep" just
+// before the PC sleeps, "resume" when it wakes and "shutdown" before it shuts down or restarts; it
+// should return within a second or two, as Windows goes on without it.
+func Run(name string, run func(ctx context.Context) error, notify func(event string)) error {
+	return svc.Run(name, &handler{run: run, notify: notify})
 }

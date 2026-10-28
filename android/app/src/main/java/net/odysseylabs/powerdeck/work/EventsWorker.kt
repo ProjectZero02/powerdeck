@@ -88,6 +88,7 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     }
 
     private fun notable(e: Event, d: Device, helpers: Set<String>): Boolean {
+        if (hubWatch(e)) return true
         if (d.me != null && (e.who == d.me || e.who.startsWith("${d.me} via "))) return false
         val verb = e.action.substringBefore(' ').lowercase()
         val target = e.action.substringAfter(' ', "").lowercase()
@@ -97,6 +98,7 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     }
 
     private fun describe(e: Event, d: Device): String {
+        if (hubWatch(e)) return e.action + "." // already a sentence: "Workstation looks frozen: …"
         val verb = e.action.substringBefore(' ')
         val target = e.action.substringAfter(' ', "").ifBlank { d.name }
         val what = when (verb) {
@@ -113,6 +115,10 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     }
 
     companion object {
+        /** A hub (2.3+) saw a machine with a KVM freeze, or answer again after that. */
+        internal fun hubWatch(e: Event) =
+            e.result == "detected" && e.action.contains(" looks frozen") || e.result == "recovered" && e.action.endsWith(" answers again")
+
         private const val NAME = "events"
         private const val CHANNEL = "activity"
         private const val UPDATES = "updates"
