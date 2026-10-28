@@ -193,6 +193,11 @@ func (s *Sender) Send(ctx context.Context, h store.Webhook, e machines.Event) er
 	if err != nil {
 		return fmt.Errorf("the webhook's secret can't be opened: %w", err)
 	}
+	if e.Recovery != nil { // which key proposed it stays on the hub
+		r := *e.Recovery
+		r.ProposerKey = ""
+		e.Recovery = &r
+	}
 	body, err := json.Marshal(e)
 	if err != nil {
 		return err
