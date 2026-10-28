@@ -17,6 +17,7 @@ import net.odysseylabs.powerdeck.ui.hubNote
 import net.odysseylabs.powerdeck.ui.recoveryText
 import net.odysseylabs.powerdeck.ui.uninstallBlocker
 import net.odysseylabs.powerdeck.work.EventsWorker
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,6 +66,18 @@ class UiRulesTest {
         assertTrue(EventsWorker.hubWatch(Event(at, "pve", "Workstation answers again", "recovered")))
         assertFalse(EventsWorker.hubWatch(Event(at, "Pixel 9 Pro", "shutdown Workstation", "ok")))
         assertFalse(EventsWorker.hubWatch(Event(at, "Atlas", "Workstation looks frozen", "ok")))
+    }
+
+    /** One missed background check isn't "went offline": the machine must stay unreachable twice more. */
+    @Test fun offlineNeedsTwoMoreMisses() = runTest {
+        var calls = 0
+        assertFalse(EventsWorker.confirmedOff { calls++; false }) // answers on the first re-check
+        assertEquals(1, calls)
+        val answers = ArrayDeque(listOf(true, false))
+        assertFalse(EventsWorker.confirmedOff { answers.removeFirst() }) // answers on the second
+        calls = 0
+        assertTrue(EventsWorker.confirmedOff { calls++; true })
+        assertEquals(2, calls)
     }
 
     @Test fun parsesARecovery() {
