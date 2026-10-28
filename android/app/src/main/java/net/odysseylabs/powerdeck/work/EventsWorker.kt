@@ -31,6 +31,7 @@ import net.odysseylabs.powerdeck.ui.QuickActionActivity
 import net.odysseylabs.powerdeck.ui.RecoveryText
 import net.odysseylabs.powerdeck.ui.recoveryText
 import net.odysseylabs.powerdeck.ui.Shortcuts
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
@@ -60,7 +61,7 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
                 // On the first run only remember where the log is; don't replay history.
                 if (seen != null) tell(ctx, d, all, quiet(fresh.filter { notable(it, d, helperNames) }).takeLast(3))
                 events.maxOfOrNull { it.at }?.let { deck.store.setSeenEvents(d.id, it.toString()) }
-            } else if (before == Power.On && st == DeviceState.Off) {
+            } else if (before == Power.On && st == DeviceState.Off && confirmedOff { deck.state(d) == DeviceState.Off }) {
                 notify(ctx, d, "${d.name} went offline.")
             }
         }
@@ -176,6 +177,19 @@ class EventsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
          * Drops what a recovery line already says: "looks frozen" when a reset is proposed for that
          * machine, and "answers again" when it's back after one.
          */
+        /**
+         * Whether a device that just missed one check is really off: [probe] answers off [tries] more times,
+         * [pauseMs] apart. A phone waking from Doze often can't reach a peer for a few seconds while
+         * Tailscale reconnects, which on its own said "went offline" about a machine that never was.
+         */
+        internal suspend fun confirmedOff(tries: Int = 2, pauseMs: Long = 20_000, probe: suspend () -> Boolean): Boolean {
+            repeat(tries) {
+                delay(pauseMs)
+                if (!probe()) return false
+            }
+            return true
+        }
+
         internal fun quiet(events: List<Event>): List<Event> {
             fun machines(result: String) = events.filter { it.result == result }.mapNotNull(::recoveryMachine).map(String::lowercase).toSet()
             val proposed = machines(PROPOSED)

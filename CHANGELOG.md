@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.1
+
+**Update the phone app.** The helpers don't change.
+
+- **No more false "went offline".** A phone waking from Doze often can't reach a computer for a few seconds while Tailscale reconnects, and one missed background check was enough to say the computer went offline. Now it checks twice more, 20 seconds apart, and says so only if the computer stayed unreachable.
+
 ## 2.5.0
 
 Assistants get the whole recovery layer over MCP, with a guide for connecting your own.
