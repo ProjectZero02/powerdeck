@@ -251,17 +251,111 @@ Test:
 
 ## Phase 4: recovery with confirmation
 
-Build: reset and force off as **propose → confirm → execute → verify**.
-- Anyone with the right scope can propose (an agent key included). Only an owner device confirms,
-  from a phone notification or an app card that shows the evidence.
-- At most one recovery per machine per 30 minutes.
-- Verify: heartbeat back within 5 minutes, else an alert event.
-- Audit log: who proposed, who confirmed, what happened.
-- Optional auto-confirm after M minutes, off by default, owner only.
-- Waking a machine that's off can stay automatic.
+Today reset and force off are buttons on owner devices, and agents are refused (`owner_only`). The
+hub now sees a hang (phase 3) but can only report it. Phase 4 lets anyone allowed *propose* a
+recovery; only the owner confirms it; then the hub runs it and checks that it worked.
 
-Test: state machine tests (expiry, double confirm, agent can't confirm, rate limit, verify timeout);
-app UI tests for the card; end to end against the fake KVM.
+Build:
+1. **Recoveries** live on the hub, in its state file, so a restart doesn't lose them. The last 50
+   are kept:
+   `{"id", "machine", "action", "state", "reason", "proposedBy", "proposedAt", "confirmedBy",
+   "confirmedAt", "endedAt", "message", "evidence", "steps"}`.
+   - `evidence` is the hub's last look when the recovery was proposed.
+   - `steps` come from the run, with the power light before and after.
+   - **States:**
+     - `proposed` → `running` → `back`, `not_back`, `off` (force off) or `failed`;
+     - or, without running: `declined`, `expired` or `withdrawn`.
+   - **Actions:**
+     - `reset` gets the machine back. It presses the reset button, or, when the hub has learned
+       that the reset switch isn't wired, holds power and starts the machine again.
+     - `force-off` holds power and leaves the machine off.
+2. **Propose:** `POST /v2/machines/{name}/recoveries {"action": "reset", "reason": "..."}`.
+   - Needs the `force` scope. Agent keys and agents relayed through a hub may propose, but the
+     machine's "Allow AI agents" switch applies, as the hub last heard it.
+   - Refused when any of these hold:
+     - no KVM here is wired to it (`no_kvm`);
+     - it has no helper, so success can't be checked (`no_helper`);
+     - the hub's last look says its helper answers (`helper_answers`) or that it is off
+       (`already_off`);
+     - a recovery ran on it in the last 30 minutes (`too_soon`, with `retryAt`).
+   - When a recovery is already open for the machine, that one is returned, so two agents asking
+     make one proposal.
+   - The reason is cut to 200 characters. The owner sees it as the proposer's words: data, never
+     instructions.
+   - **The hub proposes a reset itself** when a machine turns `hung`, if all of these hold:
+     - no recovery is open for it;
+     - none ran in the last 30 minutes;
+     - the owner hasn't declined one during this hang.
+3. **Confirm or decline:** `POST /v2/recoveries/{id}/confirm` and `/decline`.
+   - Owner devices only. Agent keys are refused, and so is an owner hub relaying for an agent
+     (`owner_only`).
+   - The proposer's own key may withdraw its proposal with `decline`.
+   - Confirming twice runs it once: the second confirm gets the recovery as it is.
+   - Confirm answers 202 at once, and the run happens in the background.
+   - An open recovery closes on its own:
+     - `withdrawn` when, before a confirm, the machine answers again, goes off, or is reset or
+       forced off directly;
+     - `expired` after 6 hours.
+4. **Run and verify.** The run goes through the same gate as the buttons: a trusted light that
+   reads on and a helper that doesn't answer.
+   - A machine that came back in the meantime isn't touched: the recovery ends `withdrawn`.
+   - After a reset, or the off-and-on, the recovery is `back` when the machine's helper answers
+     within 5 minutes. Otherwise it is `not_back`, which is an alert.
+   - **At most one recovery runs per machine per 30 minutes.** The owner's own Reset and Force off
+     buttons count towards this. They still work without a proposal: pressing one is the owner
+     confirming.
+   - A recovery still `running` when the hub restarts ends `failed` ("the hub restarted").
+5. **Auto-reset** is an owner setting, `autoResetMinutes`: 0 (off, the default), or 5 to 60.
+   - When set, the hub confirms a `reset` proposal itself after that many minutes, if the machine
+     is still `hung` by the hub's own evidence.
+   - Never for `force-off`.
+6. **Events and audit.**
+   - Each change of a recovery's state is an event: `{"event": "recovery", "machine", "recovery":
+     {...}}`.
+   - On the event stream it's the SSE event `recovery`.
+   - Webhooks get it with the event filter `recovery`, which new webhooks have by default.
+   - The activity log gets one line for each step: who proposed and why, who confirmed or declined,
+     and whether the machine answered again.
+   - `GET /v2/recoveries` (status scope; `?open=1` for open ones only) and
+     `GET /v2/recoveries/{id}`. Both show only machines the caller may see.
+7. **App:**
+   - **Device page:** while a recovery is open, a card shows:
+     - "pve suggests a reset", or "Atlas asks to reset";
+     - what pve sees, and the proposer's reason;
+     - **Reset** and **Not now** buttons.
+
+     While it runs: "Resetting…, waiting up to 5 minutes for it to answer". After: "Back at 14:23",
+     or "Didn't come back", with Force off.
+   - **Notification:** "gaming-pc looks frozen. pve can reset it."
+     - Its **Reset** action works only on an unlocked phone (`setAuthenticationRequired`).
+     - Tapping it opens the device page.
+     - "Didn't come back" is notified too.
+     - For a machine with a reset proposal, this replaces the plain "looks frozen" notification.
+   - **Settings → KVM hub:** "Reset a frozen machine on its own": Off, or after 10, 30 or 60
+     minutes.
+
+Test:
+- State machine tests with a fake clock:
+  - every propose refusal, and an open recovery returned instead of a second one;
+  - confirm by owner devices only: agent key, owner hub relaying for an agent, and the proposer's
+    key are all refused;
+  - a double confirm runs once;
+  - decline, and withdrawal when the machine answers or goes off;
+  - expiry at 6 hours;
+  - the 30-minute limit, counting the direct buttons;
+  - auto-reset after M minutes only while hung, and never for force off;
+  - a confirm after the machine came back presses nothing.
+- End to end against the fake NanoKVM and a fake helper:
+  - hang → hub proposal → confirm → reset → `back`;
+  - a reset that doesn't bring it back → `not_back` event and log line;
+  - reset switch not wired → off and on.
+- A hub restart during a run ends it `failed`.
+- Server: routes, scopes, recovery events on SSE and webhooks.
+- Android:
+  - card states (Robolectric screenshot);
+  - parsing recoveries;
+  - the notification's Reset action needs an unlocked phone and confirms;
+  - no duplicate "looks frozen".
 
 ## Phase 5: assistant API, MCP, docs, hardware checklist
 
