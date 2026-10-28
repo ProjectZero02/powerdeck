@@ -138,14 +138,109 @@ Test:
 
 ## Phase 3: hang detection and events
 
-Build: the hub watches each machine with a KVM. A machine is **hung** when, for N minutes (default
-3): its helper misses heartbeats, `tailscale ping` fails, and the KVM reads the power LED on.
-`off` = LED off; `on` = helper answers; `unknown` = not enough evidence. Extra evidence item:
-"TCP accepts but nothing answers". State with evidence on the API; changes published as events
-over SSE and to webhooks (HMAC-signed).
+Today the hub asks each machine's helper and reads its KVM's power light every 2 minutes: `on` when
+the helper answers, `off` when a trusted light reads off, `unknown` otherwise. Phase 3 tells a hung
+machine apart from one that is booting, asleep, installing updates or just missing its helper, says
+why, and tells whoever listens.
 
-Test: detector table tests with a fake clock and fake helper/ping/KVM; SSE and webhook delivery and
-retry; signature check.
+What can look like a hang and isn't (each one has its own rule below):
+- **Booting** or restarting: helper silent and light on for a few minutes.
+- **Installing Windows updates** during a restart: light on, network down, helper stopped, for up
+  to an hour.
+- **Asleep**: on most boards the light goes off or blinks, but on a Modern Standby PC (and some
+  boards in S3) it stays on while the network sleeps.
+- **The helper stopped** (crashed, uninstalled, updating) while the PC is fine: the network still
+  answers.
+
+Build:
+1. **Watcher.** The 2-minute loop becomes a 30-second watcher for every machine with a KVM here. Each
+   round collects evidence in parallel (8 s at most):
+   - `helper`: answers `hello` (two tries), or silent.
+   - `tcp`: the helper's port refuses (the OS is up and answered, the helper isn't running), accepts
+     but never answers (what a hung Windows does: the kernel still accepts), or no reply.
+   - `ping`: `tailscale ping --icmp -c 2 --timeout 3s --until-direct=false <Tailscale IP>`. ICMP
+     goes through WireGuard to the machine's own network stack, so it needs more of the machine
+     alive than a disco or TSMP ping (both answered by tailscaled alone). *Checked:* a Windows 11 PC
+     with its default firewall answers it. Replies, no reply, or not available (the hub isn't on
+     Tailscale, or the machine has no Tailscale address).
+   - `led`: three readings 0.5 s apart: on, off, blinking (mixed), or unreadable; and whether the
+     light is trusted (phase 2's wiring).
+   - `tailnet`: whether Tailscale's control plane lists the node online. Shown, never decides: a
+     hung PC stays "online" there for minutes.
+   - The helper's last word: its last `hello` (Windows updates pending, a shutdown or restart
+     counting down) and its notes (next item).
+   Wiring is learned from the same readings as before (no more often: at most every 2 minutes).
+2. **Notes from a helper to its hubs.** When its machine is about to sleep, shut down or restart, and
+   when it wakes, a helper tells every helper it holds a peer key for, best effort (1.5 s each):
+   `POST /v2/machines/{name}/note {"event": "sleep|shutdown|restart|resume", "updates": true}`.
+   Peer keys only, and only for the caller's own machine. Windows: the service accepts power events
+   (`PBT_APMSUSPEND`, `PBT_APMRESUMEAUTOMATIC`) and pre-shutdown, and reports whether updates are
+   pending. Linux: shutdown and restart. Not relied on: Windows may not send the suspend event on
+   Modern Standby PCs, and two seconds may not be enough, so item 3 covers sleep without it.
+3. **Sleep facts.** A Windows helper's `hello` gains
+   `"sleep": {"s3": true, "modernStandby": false, "afterMinutes": 30}` from `GetPwrCapabilities`
+   and the active power plan's sleep timeout on AC (`PowerReadACValueIndex`, 0 = never); no
+   `powercfg` text, which is translated. The hub keeps the last one it saw. The first `sleep` note
+   teaches the hub what the light does while that machine sleeps (read 30 s after the note): stored
+   as `wiring.ledAsleep` = off, blinking or on.
+4. **Detector**, a pure function of the evidence history (table-tested):
+   - `on`: the helper answers.
+   - `off`: a trusted light reads off. Blinking, or off after a `sleep` note: `off` with
+     `asleep: true`.
+   - `hung`: for `hungAfter` (default 3 minutes; owner setting, 2 to 30), every round saw the helper
+     silent, the port not refusing, ping not replying (or not available), and a trusted light
+     steadily on; and none of these hold:
+     - booting: 10 minutes after the hub woke, restarted, reset or forced off the machine, or after
+       its light came on;
+     - a shutdown or restart was coming (a note, or a countdown in its last `hello`): 10 minutes,
+       or 90 minutes when Windows updates were pending (they install with the light on and the
+       network down);
+     - it may be asleep with the light on: a `sleep` note since it last answered, or it can sleep
+       on its own (`afterMinutes` > 0) and its light while asleep is on or not learned yet.
+   - Anything that contradicts a hang (helper answers, ping replies, port refuses, light off or
+     blinking) starts the count again. An unreadable light neither counts nor resets.
+   - `unknown`: everything else, with a `reason`: `no_helper`, `led_not_trusted`, `booting`,
+     `updating`, `may_be_asleep`, `helper_stopped` (silent while the network answers), `checking`
+     (silent for less than `hungAfter`).
+   A machine without a helper, or without a trusted light, is never `hung`.
+   `GET /v2/machines` and each machine gain `since` (when the state began), `reason`, and
+   `evidence` (the last round: each item with its value and time).
+5. **Events.** Each state change is an event: `{"id", "at", "machine", "state", "from", "reason",
+   "evidence"}`, plus `recovered` when a hung machine answers again. The last 500 are kept in
+   memory; `hung` and `recovered` also go to the activity log.
+   - `GET /v2/machines/events` (status scope): Server-Sent Events. Starts with a `snapshot` of every
+     machine; with `Last-Event-ID`, replays what came after it instead (a snapshot when that's no
+     longer held). A comment every 25 s keeps proxies open. The server's 150 s write timeout is
+     lifted for this stream only, with a 10 s deadline per write: a client that stops reading is
+     dropped. At most 16 streams.
+   - **Webhooks** (owner devices): `GET/POST /v2/webhooks`, `DELETE /v2/webhooks/{id}`,
+     `POST /v2/webhooks/{id}/test`. The URL is https, or http to a Tailscale or loopback address
+     (WireGuard already encrypts those). Event filter (default `hung`, `recovered`). The secret is
+     shown once when it's created and sealed at rest like KVM passwords. Each delivery is the event
+     as JSON with `X-PowerDeck-Event`, `X-PowerDeck-Delivery` (the event id),
+     `X-PowerDeck-Timestamp` and `X-PowerDeck-Signature: sha256=<hex HMAC-SHA256(secret,
+     timestamp + "." + body)>`. Any 2xx is delivered; otherwise retried after 10 s, 1 min and
+     5 min, then dropped and logged. 10 s timeout, redirects not followed. The list shows each
+     hook's last result.
+   - `docs/protocol.md` gains "Machine states and events", with how to check a signature.
+6. **App:** a hung machine shows as hung on its device page, with the evidence and since when. The
+   recovery card comes in phase 4.
+
+Test:
+- Detector table tests with a fake clock: hung after `hungAfter` and not before; each
+  contradiction starts the count again; an unreadable light holds it; boot grace; shutdown and
+  restart notes; 90 minutes with updates; Modern Standby and a light that stays on in sleep;
+  blinking; no helper or untrusted light is never hung; recovered.
+- Watcher end to end against the fake NanoKVM, a fake helper, a fake pinger, and real TCP
+  listeners: one that accepts and never answers, one that's closed.
+- Notes: accepted from the machine's own peer key only.
+- Sleep facts on the Windows CI runner (values logged); the power-event handler's mapping in a
+  unit test (a CI runner can't be put to sleep: the hardware checklist covers a real one).
+- SSE: snapshot first, events in order, `Last-Event-ID` replay, heartbeat, stream limit, a client
+  that stops reading is dropped.
+- Webhooks: signature checked by an independent implementation, retries on a fake clock, URL
+  rules, the secret never in a reply and sealed at rest, owner devices only.
+- Android: Robolectric test for the hung state and its evidence on the device page.
 
 ## Phase 4: recovery with confirmation
 
