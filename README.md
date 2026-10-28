@@ -131,7 +131,13 @@ Details: [SECURITY.md](SECURITY.md) · protocol: [docs/protocol.md](docs/protoco
 
 ## AI agents (MCP)
 
-Let an AI agent or a script check and control your devices through [MCP](https://modelcontextprotocol.io). In the app, open an always-on device (a home server is ideal), tap **Set up** next to **Allow AI agents to use this device**, then **Create a key**. Choose which devices it may use and whether it may shut them down, then paste the config it shows into your agent:
+**The quick way:** paste this into your agent (Claude, Codex, Cursor, …) and it walks you through the rest:
+
+```text
+Read https://github.com/ProjectZero02/powerdeck/blob/main/docs/connect-your-agent.md and help me connect you to PowerDeck.
+```
+
+Or by hand: let an AI agent or a script check and control your devices through [MCP](https://modelcontextprotocol.io). In the app, open an always-on device (a home server is ideal), tap **Set up** next to **Allow AI agents to use this device**, then **Create a key**. Choose which devices it may use and whether it may shut them down, then paste the config it shows into your agent:
 
 ```json
 {"mcpServers": {"powerdeck": {"type": "http", "url": "http://<server's tailnet address>:47323/mcp",
