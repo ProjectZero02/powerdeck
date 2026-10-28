@@ -134,7 +134,7 @@ type Settings struct {
 	NoAgents bool `json:"noAgents,omitempty"`
 	// Tray shows PowerDeck's icon in the Windows notification area.
 	Tray bool `json:"tray,omitempty"`
-	// SetupDone records that the PC window's first-run setup was finished or skipped.
+	// SetupDone records that the PC window has shown its first-run setup (once is enough).
 	SetupDone bool `json:"setupDone,omitempty"`
 	// UpdatesPausedUntil holds automatic updates back until then.
 	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitzero"`

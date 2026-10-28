@@ -194,8 +194,6 @@ function showStep(n) {
 }
 
 function finishSetup() {
-  setting({ setupDone: true }).catch(() => {});
-  if (state) state.settings.setupDone = true;
   showStep(0);
   refresh();
 }
@@ -219,6 +217,8 @@ async function refresh() {
     started = true;
     link($("app-link"), s.appUrl);
     link($("app-link-home"), s.appUrl);
+    // Setup is shown once: closing the window part-way counts too, since home has the same codes.
+    if (!settings.setupDone) setting({ setupDone: true }).catch(() => {});
     showStep(settings.setupDone ? 0 : 1);
   }
 
