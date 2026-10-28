@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.5.0
+
+Assistants get the whole recovery layer over MCP, with a guide for connecting your own.
+
+**Update the helper on the hub.** The phone app and the computers' helpers don't need 2.5.
+
+- **New MCP tools on the hub.** `list_machines` and `get_events` show what the hub sees, including frozen computers and the evidence. `propose_reset` and `propose_force_off` ask you to reset a computer, or force it off, and `get_recovery` follows the request to the end. `withdraw_recovery` takes back the agent's own request. There's still no way for an agent to confirm: only your phone does. The hub's MCP instructions tell the model the rules. A helper with no KVM linked lists only the 5 device tools.
+- **Which key asked stays private.** Other keys no longer see which key proposed a recovery (`proposerKey`): not in `GET /v2/machines`, not on the event stream, not over MCP. Webhooks never carry it.
+- **`powerdeck-helper webhook add|list|test|rm`** on the hub. Until now a webhook could only be added through the API.
+- **Guides:**
+  - [Integrating an assistant](docs/integrating-an-assistant.md): keys, MCP, REST with a pinned certificate, the event stream and webhooks, a recovery step by step, what to do with each result, the rules, and running your own copy. Its examples run against a test hub in CI, so they stay true.
+  - [Hardware test](docs/hardware-test.md): a checklist for a real NanoKVM and computer, from the power light to a real freeze and a reset that doesn't work.
+- The app's **Full guide on GitHub** link (Allow AI agents) opens the assistant guide.
+
 ## 2.4.0
 
 A frozen computer can now be reset with one tap from a notification, and an assistant can ask for a reset that you confirm.

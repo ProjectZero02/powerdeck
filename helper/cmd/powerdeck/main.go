@@ -9,6 +9,8 @@
 //	key list | key rm ID       manage automation keys (AI agents, scripts)
 //	owner list | owner add NAME | owner rm NODE
 //	                           the owner devices (phones, computers) that manage this device
+//	webhook add URL [--events hung,recovered,recovery] | webhook list | webhook test ID | webhook rm ID
+//	                           where a hub posts machine events (an assistant's endpoint)
 //	run [--dry-run]            run in the foreground (development; --dry-run only logs power actions)
 //	version
 //
@@ -60,13 +62,15 @@ func main() {
 		err = key(args)
 	case "owner":
 		err = owner(args)
+	case "webhook":
+		err = webhook(args)
 	case "run":
 		err = runForeground(args)
 	case "version", "--version", "-v":
 		fmt.Println(version.Version)
 	default:
 		if !platformCommand(cmd, args, &err) {
-			fmt.Fprintln(os.Stderr, "usage: powerdeck-helper install|uninstall|status|qr|key|owner|run|version")
+			fmt.Fprintln(os.Stderr, "usage: powerdeck-helper install|uninstall|status|qr|key|owner|webhook|run|version")
 			os.Exit(2)
 		}
 	}
@@ -236,6 +240,79 @@ func owner(args []string) error {
 		return client().Do("DELETE", "/v2/owners/"+args[1], nil, nil)
 	default:
 		return fmt.Errorf("usage: owner list|add|rm")
+	}
+}
+
+func webhook(args []string) error {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	switch args[0] {
+	case "list":
+		var r struct {
+			Webhooks []struct {
+				ID, URL, LastResult string
+				Events              []string
+				LastAt              time.Time
+			}
+		}
+		if err := client().Do("GET", "/v2/webhooks", nil, &r); err != nil {
+			return err
+		}
+		if len(r.Webhooks) == 0 {
+			fmt.Println("No webhooks. Add one with: webhook add URL")
+		}
+		for _, h := range r.Webhooks {
+			last := "not sent yet"
+			if !h.LastAt.IsZero() {
+				last = h.LastAt.Local().Format("2006-01-02 15:04") + " " + h.LastResult
+			}
+			fmt.Printf("%s  %s  %s  (%s)\n", h.ID, h.URL, strings.Join(h.Events, ","), last)
+		}
+		return nil
+	case "add":
+		fs := flag.NewFlagSet("webhook add", flag.ExitOnError)
+		events := fs.String("events", "", "on, off, hung, unknown, recovered, recovery (comma-separated; default hung,recovered,recovery)")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fmt.Errorf("usage: webhook add URL [--events hung,recovered,recovery]")
+		}
+		_ = fs.Parse(args[2:])
+		var r struct {
+			Webhook struct {
+				ID, Secret string
+				Events     []string
+			}
+		}
+		if err := client().Do("POST", "/v2/webhooks", map[string]any{"url": args[1], "events": split(*events)}, &r); err != nil {
+			return err
+		}
+		fmt.Printf("Webhook %s for %s.\n\nSecret (shown once; the receiver checks X-PowerDeck-Signature with it):\n\n  %s\n\n",
+			r.Webhook.ID, strings.Join(r.Webhook.Events, ", "), r.Webhook.Secret)
+		fmt.Println("Send a test event with: webhook test " + r.Webhook.ID)
+		return nil
+	case "test":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: webhook test ID")
+		}
+		var r struct {
+			OK     bool
+			Result string
+		}
+		if err := client().Do("POST", "/v2/webhooks/"+args[1]+"/test", nil, &r); err != nil {
+			return err
+		}
+		if !r.OK {
+			return fmt.Errorf("the test event wasn't delivered: %s", r.Result)
+		}
+		fmt.Println("Delivered a test event (machine \"test\", hung).")
+		return nil
+	case "rm", "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: webhook rm ID")
+		}
+		return client().Do("DELETE", "/v2/webhooks/"+args[1], nil, nil)
+	default:
+		return fmt.Errorf("usage: webhook add|list|test|rm")
 	}
 }
 

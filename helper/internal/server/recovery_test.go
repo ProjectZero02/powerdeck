@@ -223,6 +223,20 @@ func TestMCPHub(t *testing.T) {
 	if out, isErr := tool(e, agent, "propose_reset", map[string]any{}); !isErr || out["error"] != "bad_request" {
 		t.Errorf("no machine: %v", out)
 	}
+	if out, isErr := tool(e, e.agentKey([]string{"status", "wake"}, "workstation"), "propose_reset", map[string]any{"machine": "workstation"}); !isErr || out["error"] != "scope" {
+		t.Errorf("without power: %v", out)
+	}
+	if out, isErr := tool(e, e.agentKey([]string{"status", "power"}, "Gaming-PC"), "propose_reset", map[string]any{"machine": "workstation"}); !isErr || out["error"] != "device" {
+		t.Errorf("a machine not on the key: %v", out)
+	}
+	p, _ := e.st.Peer("workstation")
+	p.NoAgents = true
+	_ = e.st.PutPeer(p)
+	if out, isErr := tool(e, agent, "propose_reset", map[string]any{"machine": "workstation"}); !isErr || out["error"] != "agents_off" {
+		t.Errorf("agents off: %v", out)
+	}
+	p.NoAgents = false
+	_ = e.st.PutPeer(p)
 	out, isErr = tool(e, agent, "propose_reset", map[string]any{"machine": "workstation", "reason": "Atlas can't reach it"})
 	r := recoveryOf(out)
 	if isErr || out["created"] != true || r["state"] != "proposed" || r["agent"] != true || r["proposerKey"] == nil {
@@ -297,14 +311,21 @@ func TestMCPHub(t *testing.T) {
 	}
 }
 
-// A helper that isn't a hub lists only its own tools.
+// A helper without a KVM linked isn't the hub: it lists only the device tools.
 func TestMCPNoHub(t *testing.T) {
 	e := newEnv(t)
 	key := e.agentKey([]string{"status", "power"}, "workstation")
-	if init := mcp(e, atlas, key, 1, "initialize", nil)["result"].(map[string]any); strings.Contains(init["instructions"].(string), "propose_reset") {
+	if out := mcp(e, atlas, key, 1, "tools/call", map[string]any{"name": "list_machines", "arguments": map[string]any{}}); out["error"] == nil {
+		t.Errorf("list_machines without machines to watch: %v", out)
+	}
+	e.withHub(fakekvm.Options{On: true})
+	if init := mcp(e, atlas, key, 2, "initialize", nil)["result"].(map[string]any); strings.Contains(init["instructions"].(string), "propose_reset") {
 		t.Errorf("instructions: %v", init["instructions"])
 	}
-	if out := mcp(e, atlas, key, 2, "tools/call", map[string]any{"name": "list_machines", "arguments": map[string]any{}}); out["error"] == nil {
-		t.Errorf("list_machines without a hub: %v", out)
+	if tools := mcp(e, atlas, key, 3, "tools/list", nil)["result"].(map[string]any)["tools"].([]any); len(tools) != 5 {
+		t.Errorf("tools without a KVM: %d", len(tools))
+	}
+	if out, isErr := tool(e, key, "list_machines", nil); isErr || len(out["machines"].([]any)) != 0 {
+		t.Errorf("list_machines without a KVM: %v", out)
 	}
 }

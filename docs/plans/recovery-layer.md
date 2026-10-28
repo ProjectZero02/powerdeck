@@ -372,7 +372,8 @@ Build:
    working:
    - `list_devices`, `get_status`, `power_on`, `power_off` (shutdown or restart) and `cancel`.
 
-   On a hub (a helper that drives KVMs) these are added; a helper that isn't a hub doesn't list them:
+   On the hub (a helper with a KVM linked) these are added. Other helpers don't list them, though
+   they still answer (a KVM linked during a session doesn't take tools away from an agent):
    - `list_machines` (read-only): the machines with a KVM here that the key may use, each with its
      state (`on`, `off`, `hung`, `unknown`), `reason`, `since`, the hub's `evidence`, `actions` and
      open `recovery`. This is the plan's `machines`.
@@ -394,9 +395,10 @@ Build:
    - No tool confirms or declines: only the owner's devices can.
    - `initialize` tells the agent the rules: propose once and tell the user; never retry a refused
      action; and a reason is shown to the owner, so write it for them.
-2. **Fix: the event stream sends a recovery's `proposerKey`** to every watcher. The REST views and
-   `get_events` already hide it from everyone but the owner and the key that proposed. The stream
-   will hide it the same way.
+2. **Fix: a recovery's `proposerKey` reaches other keys.** The recovery routes hide it from
+   everyone but the owner and the key that proposed, but `GET /v2/machines` (a machine's
+   `recovery`), the event stream's snapshot and its `recovery` events sent it to every watcher.
+   They and `get_events` now hide it the same way, and webhooks never carry it.
 3. **docs/integrating-an-assistant.md**, for an assistant's developer:
    - **Use the owner's hub.** Covers:
      - the agent key: what each permission allows, which devices it covers, and that it's bound to
@@ -434,7 +436,11 @@ Build:
    - **A reset switch that isn't wired** (unplug it for one try): `not_back`, then the next reset
      uses off and on.
    - **Agent path:** propose from an agent key over MCP, confirm on the phone.
-5. **README:** the AI agents section lists the new tools and links the guide.
+5. **README:** the AI agents section lists the new tools and links the guide. The app's **Full
+   guide on GitHub** link (Allow AI agents) opens the guide.
+6. **`powerdeck-helper webhook add|list|test|rm`** on the hub. Found while writing the guide: a
+   webhook could only be added through the API from an owner device, so the guide had nothing to
+   tell the owner to run.
 
 Test:
 - **MCP tools against the fake KVM:**

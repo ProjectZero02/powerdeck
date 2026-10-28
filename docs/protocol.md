@@ -423,7 +423,9 @@ data: {"id":"1761638430000789","at":"…","event":"recovery","machine":"Workstat
 
 ### Webhooks
 
-For an assistant that would rather be called than hold a stream open. An owner device adds one:
+For an assistant that would rather be called than hold a stream open. An owner device adds one
+(on the hub itself: `powerdeck-helper webhook add URL [--events …]`, then `webhook list`, `test`,
+`rm`):
 
 ```json
 POST /v2/webhooks
@@ -495,7 +497,8 @@ back. The hub proposes a reset itself when a machine turns [`hung`](#machine-sta
 - `evidence` is the hub's last look when it was proposed; `steps` are the run's, as in an
   [action's result](#actions).
 - `agent: true` when an AI agent proposed it; `direct: true` for the owner's own button.
-- `proposerKey` (the proposing key's ID) is shown to owners and to that key only.
+- `proposerKey` (the proposing key's ID) is shown to owners and to that key only, wherever a
+  recovery appears (machines, the event stream, MCP); webhooks never carry it.
 
 | `state` | Means |
 |---|---|
@@ -622,6 +625,23 @@ The hub serves MCP (streamable HTTP, stateless JSON-RPC `tools/list` and `tools/
 | `power_off` | destructive | Shut down or restart (`{device, restart?}`); always the visible 60 s countdown |
 | `cancel` | | Cancel a pending shutdown/restart |
 
+The hub (a helper with a KVM linked) also lists, from 2.5:
+
+| Tool | Annotations | Does | Same as |
+|---|---|---|---|
+| `list_machines` | read-only | The watched machines the key may use: [Machine](#machine), recovery included | `GET /v2/machines?kvm=1` |
+| `propose_reset` | idempotent | `{machine, reason?}`: [propose](#rules) a reset. `{recovery, created, message}`; `created: false` when one was open already | `POST /v2/machines/{name}/recoveries` |
+| `propose_force_off` | idempotent | The same, `force-off` | `… {"action": "force-off"}` |
+| `get_recovery` | read-only | `{id}`: `{recovery}` | `GET /v2/recoveries/{id}` |
+| `withdraw_recovery` | idempotent | `{id}`: withdraw the key's own proposal | `POST /v2/recoveries/{id}/decline` |
+| `get_events` | read-only | `{after?}`: the [events](#event-stream) after that ID, oldest first, at most 100 (`more: true`: call again with `latest`). Without `after`, or with one the hub no longer holds (`missed: true`), the last 20. `{events, latest}` | the event stream |
+
+There's no tool to confirm: only the owner's devices do (`403 owner_only`). A refusal is a tool
+result with `isError: true` and `{"error", "message"}` plus the REST reply's other fields
+(`retryAt`). The `initialize` instructions describe these rules to the model.
+[integrating-an-assistant.md](integrating-an-assistant.md) walks through a recovery with real
+answers.
+
 Rules the helper enforces for automation keys, whatever the agent asks:
 
 - Only the devices and scopes on the key. Shutdown/restart need the `power` scope, granted per key.
@@ -631,8 +651,8 @@ Rules the helper enforces for automation keys, whatever the agent asks:
   shares its IP's node), unless the owner ticks "allow" for that key.
 - Every action is in the device's event log with the key's name, so the phone shows "Atlas shut down Workstation".
 - No `reset` or `force-off` (`403 owner_only`), even relayed through an owner device. From 2.4 an
-  agent [proposes](#recoveries) one (`POST /v2/machines/{name}/recoveries`, `power` scope) and the
-  owner confirms it on the phone. Where the hub
+  agent [proposes](#recoveries) one (`propose_reset`, or `POST /v2/machines/{name}/recoveries`;
+  `power` scope) and the owner confirms it on the phone. Where the hub
   drives a machine's KVM, `power_on` may press its power button (only while a wired LED reads off),
   and `power_off` goes to the machine's helper; pressing power to shut it down is owner-only.
 
