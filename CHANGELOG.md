@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Connect your agent in one line.** Paste the line in the README into your agent and it walks you through making a key and adding PowerDeck ([docs/connect-your-agent.md](docs/connect-your-agent.md)).
+
 ## 2.5.1
 
 **Update the phone app.** The helpers don't change.
