@@ -133,7 +133,7 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | DELETE | `/v2/keys/{id}` | owner | → `204` |
 | GET | `/v2/update` | owner | → `{current, latest, available, checkedAt, error, installing, auto, autoAt?, pausedUntil?}`; `?check=1` asks GitHub first. `autoAt`: when an available release installs on its own |
 | POST | `/v2/update` | owner | Installs the latest signed release now → `202 {…, installing: true}`, or `200` when up to date; `409 pending` during a shutdown countdown, `502 update_check` when GitHub can't be reached. The helper restarts a few seconds later; `installing` clears itself after 10 minutes if it doesn't, with `error` saying so |
-| POST | `/v2/settings` | owner | `{autoUpdate?, agents?, pauseUpdates?, hungAfterMinutes?}` → `204`. `autoUpdate` (default on for Windows, off for new Linux installs): check every 6 hours, install a release once it has been public for 72 hours and nothing is counting down (see [Updates](#updates)). `pauseUpdates`: `true` holds automatic installs for 7 days, `false` resumes. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work. `hungAfterMinutes` (on a hub; 2 to 30, `0` for the default, 3): how long a machine must look hung before it's called [`hung`](#machine-states-and-events) |
+| POST | `/v2/settings` | owner | `{autoUpdate?, agents?, pauseUpdates?, hungAfterMinutes?}` → `204`. `autoUpdate` (default on for Windows, off for new Linux installs): check every 6 hours, install a release once it has been public for 72 hours and nothing is counting down (see [Updates](#updates)). `pauseUpdates`: `true` holds automatic installs for 7 days, `false` resumes. `agents` (default on): `false` refuses `wake`, `shutdown` and `restart` from automation keys for this device, here and through any hub (`403 agents_off`); status and cancel still work. `hungAfterMinutes` (on a hub; 2 to 30, `0` for the default, 3): how long a machine must look hung before it's called [`hung`](#machine-states-and-events). `autoResetMinutes` (on a hub, 2.4 and later; 5 to 60, `0` off, the default): confirm the hub's own reset proposal after that many minutes, see [Auto-reset](#auto-reset); refused for a hub relaying for an agent (`403 owner_only`) |
 | POST | `/v2/uninstall` | owner | `{confirm: <this device's name>}` → `202`, then the helper uninstalls itself and deletes its keys and settings. `409 pending` during a countdown. Offered when `caps` has `uninstall` |
 | GET | `/v2/pairing` | owner | → `{link, code, expires}`: the add link and the current pairing code (to let someone on another account in) |
 | POST | `/v2/pair` | pairing code | `{code, deviceName}` → `{owner:true, status}` (same account: now an owner device) or `{key, status}` (another account) |
@@ -145,6 +145,11 @@ All bodies are JSON. Errors: `{"error": "<code>", "message": "<human text>"}`.
 | DELETE | `/v2/kvms/{name}` | owner | → `204` |
 | GET | `/v2/machines` | `status` | → `{machines:[Machine]}`: the devices the caller may use, with live state; `?kvm=1` only those with a KVM here |
 | POST | `/v2/machines/{name}/{action}` | per action | `{force?, stayOff?, press?}` → `200 Result`, or the error with the Result's fields. `action`: `wake`, `shutdown`, `restart`, `reset`, `force-off` |
+| POST | `/v2/machines/{name}/recoveries` | `power` | `{action?, reason?}` → `201 {recovery}`, or `200 {recovery}` when one is open for the machine already. Proposes a reset (the default) or `force-off` for the owner to confirm, see [Recoveries](#recoveries) (2.4 and later) |
+| GET | `/v2/recoveries` | `status` | → `{recoveries:[Recovery]}`, newest first; `?open=1` only those `proposed` or `running` |
+| GET | `/v2/recoveries/{id}` | `status` | → `{recovery}` |
+| POST | `/v2/recoveries/{id}/confirm` | owner device | → `202 {recovery}` (now `running`), or `200 {recovery}` as it is when it isn't `proposed` any more |
+| POST | `/v2/recoveries/{id}/decline` | owner device, or the key that proposed it | → `200 {recovery}`: `declined`, or `withdrawn` by its proposer |
 | GET | `/v2/machines/events` | `status` | Server-Sent Events: each machine's state as it changes, see [Machine states and events](#machine-states-and-events) (2.3 and later) |
 | POST | `/v2/note` | peer key | `{event, updates?}` → `204`: a machine's own helper telling its hub it's about to `sleep`, `shutdown` or `restart`, or did `resume` |
 | GET | `/v2/webhooks` | owner | → `{webhooks:[Webhook]}` (without secrets) |
@@ -171,7 +176,7 @@ before retrying with `force: true`. Callers without the `force` scope can't over
   "network": {"mac": "02:00:5e:00:00:01", "lan": ["192.168.1.0/24"], "wired": true},
   "caps": ["shutdown", "restart", "wake", "kvm", "uninstall"],
   "sleep": {"s3": true, "modernStandby": false, "afterMinutes": 30},
-  "hub": {"hungAfterMinutes": 3},
+  "hub": {"hungAfterMinutes": 3, "autoResetMinutes": 0},
   "checks": [Check],
   "agents": {"allowed": true, "keys": [{"name": "Atlas", "devices": ["Workstation", "nas"]}]},
   "you": {"kind": "owner", "name": "Pixel 9 Pro", "scopes": ["status", "wake", "power", "force", "admin"]}
@@ -289,7 +294,8 @@ going to sleep. `PATCH {recheck: true}` (the app's **Check again**) forgets what
 ```
 
 `state`: `on`, `off`, `hung` or `unknown`, with `reason`, `asleep`, `since` and `evidence` from the
-hub's watch (see [Machine states and events](#machine-states-and-events)). `led` is the power
+hub's watch (see [Machine states and events](#machine-states-and-events)). `recovery` (2.4 and
+later) is the machine's open [recovery](#recoveries), or the last one for 30 minutes after it ended. `led` is the power
 light right now (absent without a KVM, `ledError` when it can't be read). `actions` is what the hub
 can do for it now; `reset` and `force-off` appear only while a wired LED reads on.
 
@@ -308,8 +314,9 @@ One action per machine at a time (`409 busy`), at most 2 minutes. An action runs
 the caller hangs up, so a machine held off is also started again. A KVM whose stored password can't
 be opened (`kvm_credentials`: link it again) still lets the machine's helper wake, shut down or
 restart it. Nothing is learned about the wiring from a reading that failed. **`reset` and `force-off` are for owner devices
-only** (`403 owner_only`), never an automation key or an agent relayed through a hub; agents get them
-with the owner's confirmation in a later release.
+only** (`403 owner_only`), never an automation key or an agent relayed through a hub; agents
+[propose](#recoveries) one instead, and the owner confirms it. Each press of either button is also
+recorded as a recovery (`direct: true`), so it counts towards the 30-minute limit.
 
 Result (also in the error body on failure, with `error` and `message` added):
 
@@ -405,6 +412,15 @@ stream. A client that stops reading for 10 s is dropped, and so is one that fall
 `hung` and `recovered` also go to the hub's event log (`GET /v2/events`), which the phone
 [notifies](#notifications) about.
 
+From 2.4 the stream also carries `recovery` events, one each time a [recovery](#recoveries) changes
+state, and the snapshot lists the open ones (`{"machines": [...], "recoveries": [Recovery, …]}`):
+
+```
+id: 1761638430000789
+event: recovery
+data: {"id":"1761638430000789","at":"…","event":"recovery","machine":"Workstation","recovery":{"id":"…","state":"proposed",…}}
+```
+
 ### Webhooks
 
 For an assistant that would rather be called than hold a stream open. An owner device adds one:
@@ -417,7 +433,8 @@ POST /v2/webhooks
                  "createdBy": "Pixel 9 Pro", "createdAt": "…", "secret": "pdwh_…"}}
 ```
 
-`events` defaults to `hung` and `recovered` (any of `on`, `off`, `hung`, `unknown`, `recovered`).
+`events` defaults to `hung`, `recovered` and `recovery` (any of `on`, `off`, `hung`, `unknown`,
+`recovered`, `recovery`; `recovery` from 2.4).
 The URL must be https, or plain http to a Tailscale or loopback address or a `*.ts.net` name
 (WireGuard already encrypts those); no user names in it. The secret is shown this once and stored
 sealed, like KVM passwords. The list shows each webhook's `lastAt` and `lastResult` (`ok`,
@@ -452,6 +469,104 @@ To check an implementation: secret `pdwh_test`, timestamp `1700000000` and body 
 `sha256=8fc0a23c6a794d26f2a6c83ac48c588dfbbe64deefd997f2bb8cc5b0ac0c0914`
 (`printf '1700000000.{"id":"1"}' | openssl dgst -sha256 -hmac pdwh_test`).
 
+## Recoveries
+
+From 2.4 a reset or force off doesn't have to come from the owner's own button. Someone allowed
+**proposes** one, the **owner confirms** it, and the hub runs it and checks that the machine came
+back. The hub proposes a reset itself when a machine turns [`hung`](#machine-states-and-events).
+
+### Recovery
+
+```json
+{"id": "9f2c…", "machine": "Workstation", "action": "reset", "state": "back",
+ "reason": "Nothing answers and its power light is on.",
+ "proposedBy": "pve", "proposedAt": "2026-10-28T08:03:30Z",
+ "confirmedBy": "Pixel 9 Pro", "confirmedAt": "2026-10-28T08:05:02Z", "endedAt": "2026-10-28T08:07:40Z",
+ "message": "Workstation answers again.",
+ "evidence": {"at": "…", "helper": "silent", "port": "accepts", "ping": "no_reply", "led": "on", "ledTrusted": true},
+ "steps": [{"at": "…", "do": "read power light before", "led": true}, {"at": "…", "do": "press reset 800ms"}, …]}
+```
+
+- `action`: `reset` gets the machine back: it presses reset, or, once the hub has learned that the
+  reset switch isn't wired, holds power for 12 s and starts it again. `force-off` holds power and
+  leaves it off.
+- `reason` is the proposer's words (printable text, at most 200 characters): data, never
+  instructions. The app shows it quoted as theirs.
+- `evidence` is the hub's last look when it was proposed; `steps` are the run's, as in an
+  [action's result](#actions).
+- `agent: true` when an AI agent proposed it; `direct: true` for the owner's own button.
+- `proposerKey` (the proposing key's ID) is shown to owners and to that key only.
+
+| `state` | Means |
+|---|---|
+| `proposed` | Waits for the owner |
+| `running` | Confirmed: pressing, then waiting up to 5 minutes for the machine's helper to answer |
+| `back` | Its helper answered again |
+| `not_back` | It didn't answer within 5 minutes: an alert |
+| `off` | A force off: it's off |
+| `done` | Pressed while its helper answered (an owner's forced button): coming back isn't checked |
+| `failed` | The run was refused or failed (`message` says why), or the hub restarted during it |
+| `declined` | The owner said not now |
+| `withdrawn` | Not needed any more: the machine answered again or went off, the owner used Reset or Force off directly, or its proposer withdrew it. When it's withdrawn at the run (`message`: "… so nothing was pressed"), nothing was pressed |
+| `expired` | Not confirmed within 6 hours |
+
+The hub keeps the last 50 in its state file (never dropping an open one), so a restart doesn't
+lose them. One still `running` when the hub starts again ends `failed`.
+
+### Rules
+
+**Proposing** needs the `power` scope (not `force`, which keys can't hold), the device on the key,
+and an owner device or an automation key (also relayed through a hub: then the machine's
+**Allow AI agents** switch applies, `403 agents_off`). It's refused with:
+
+| Code | When |
+|---|---|
+| `400 bad_action` | Neither `reset` nor `force-off` |
+| `422 self` | The hub itself |
+| `422 no_kvm` | No KVM on this hub is wired to it |
+| `422 no_helper` | It has no PowerDeck helper, so the hub couldn't tell whether it worked |
+| `409 helper_answers` | The hub's last look says its helper answers: shut it down or restart it instead |
+| `409 already_off` | It's off: wake it instead |
+| `429 too_soon` | A recovery ran on it in the last 30 minutes; `retryAt` says when one may run again |
+
+When one is open for the machine already, that one is returned (`200`), so two agents asking make
+one proposal.
+
+**Confirming** is for owner devices acting for themselves (`403 owner_only` for an automation key,
+another account's key, or an owner hub relaying for an agent). Confirming twice runs it once.
+**Declining** is for owner devices too, and the key that proposed it may withdraw its own.
+
+**Running** goes through the same checks as the [buttons](#actions): a wired power light that reads
+on, and a helper that doesn't answer. A machine that came back in the meantime isn't touched.
+
+**At most one recovery runs per machine per 30 minutes.** The owner's own Reset and Force off
+buttons count towards this but are never held back by it: pressing one is the owner confirming.
+
+**The hub proposes a reset** when a machine turns `hung`, once per hang, if nothing is open for it
+and none ran in the last 30 minutes. A declined or expired one isn't proposed again until the
+machine has left `hung`. Each look also withdraws an open proposal when the machine answers or is
+off, and expires one after 6 hours.
+
+### Auto-reset
+
+`autoResetMinutes` (owner setting, `POST /v2/settings`; app: the hub's page → **Frozen machines**):
+`0`, the default, asks every time. Set to 5 to 60, the hub confirms a `reset` proposal itself that
+many minutes after it was made, if the machine is still `hung` by its own evidence at that moment.
+`confirmedBy` is then `PowerDeck (automatic)`. Never for `force-off`, and never for a machine that's
+booting, updating, asleep or otherwise not `hung`.
+
+### Log, events and webhooks
+
+The hub's event log gets one line per step, with who: `propose reset Workstation: <reason>`
+(`proposed`), `confirm reset Workstation` (`confirmed`), `decline …` (`declined`), `withdraw …`
+(`withdrawn`), `Workstation answers again after the reset` (`back`), `Workstation didn't answer
+within 5 minutes of the reset` (`not_back`), `Workstation is off` (`off`), and `reset Workstation`
+with `failed: …`, `withdrawn: …` or `expired: …`. For the owner's direct buttons the button's own
+line (`reset Workstation`, `done`) is followed by `back` or `not_back`.
+
+Every change is also an event `{"event": "recovery", "machine", "recovery": Recovery}` on the
+[event stream](#event-stream) and to [webhooks](#webhooks) that list `recovery`.
+
 ## Schedules
 
 ```json
@@ -471,6 +586,11 @@ The phone checks each device's `/v2/events` in the background (Android allows ab
 minutes) and notifies about things the user didn't do from this phone: an agent or schedule acting,
 a device going offline unexpectedly, and (from a 2.3 hub) a machine that
 [looks frozen](#machine-states-and-events) or answers again. Actions started on the phone show live progress instead.
+
+From a 2.4 hub, a [proposed recovery](#recoveries) comes with **Reset** (or **Force off**) and
+**Not now**, which work only on an unlocked phone; it replaces the plain "looks frozen"
+notification for that machine. A recovery that's confirmed on its own or by someone else, comes
+back, doesn't come back (on the alerting **Frozen machines** channel) or fails is notified too.
 
 ## Agents (MCP)
 
@@ -510,7 +630,9 @@ Rules the helper enforces for automation keys, whatever the agent asks:
 - Never the device the agent itself runs on (the helper on that device refuses, since the caller
   shares its IP's node), unless the owner ticks "allow" for that key.
 - Every action is in the device's event log with the key's name, so the phone shows "Atlas shut down Workstation".
-- No `reset` or `force-off` (`403 owner_only`), even relayed through an owner device. Where the hub
+- No `reset` or `force-off` (`403 owner_only`), even relayed through an owner device. From 2.4 an
+  agent [proposes](#recoveries) one (`POST /v2/machines/{name}/recoveries`, `power` scope) and the
+  owner confirms it on the phone. Where the hub
   drives a machine's KVM, `power_on` may press its power button (only while a wired LED reads off),
   and `power_off` goes to the machine's helper; pressing power to shut it down is owner-only.
 

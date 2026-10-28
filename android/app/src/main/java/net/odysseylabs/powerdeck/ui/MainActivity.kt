@@ -208,6 +208,8 @@ private fun App(vm: MainViewModel, activity: MainActivity) {
                     updateHelper = { vm.updateHelper(d) },
                     pauseUpdates = { vm.pauseUpdates(d, it) },
                     removeOwner = { vm.removeOwner(d, it) },
+                    answerRecovery = { r, yes -> vm.answerRecovery(d, r, yes) },
+                    setAutoReset = { vm.setAutoReset(d, it) },
                 ),
                 snackbar,
             )

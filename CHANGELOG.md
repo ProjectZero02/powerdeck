@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.4.0
+
+A frozen computer can now be reset with one tap from a notification, and an assistant can ask for a reset that you confirm.
+
+**Update the helper on the hub and the phone app.** The computers' own helpers don't need 2.4.
+
+- **The hub suggests a reset.** When a computer is called frozen, the hub proposes a reset. Its page shows a card: what the hub saw, and **Reset** or **Not now**. The phone also notifies you, with **Reset** and **Not now** buttons that work only once the phone is unlocked. While the reset runs the card says so. After it, the card says the computer is back, or that it didn't answer within 5 minutes, with **Force off**. You're notified either way.
+- **Assistants propose, you confirm.** An AI agent can't reset or force off a computer itself. With the `power` scope it can now ask (`POST /v2/machines/{name}/recoveries`, with its reason), and you confirm on the phone. Its reason is shown quoted, as its words. The computer's **Allow AI agents** switch still applies. Two agents asking make one request.
+- **Safety rules on the hub:**
+  - At most one reset or force off per computer every 30 minutes. Your own Reset and Force off buttons count towards this, but are never held back.
+  - A request is dropped when the computer answers again or goes off, and expires after 6 hours.
+  - The reset presses nothing if the computer came back in the meantime.
+  - A reset that's still running when the hub restarts is marked failed.
+  - Every step is in the hub's activity log, with who did it.
+- **Reset on its own (optional, off by default).** On the hub's page, **Frozen machines → Reset a frozen machine on its own**: after 10, 30 or 60 minutes without an answer from you, the hub resets a computer that is still frozen. It never forces one off on its own.
+- **API:**
+  - `GET /v2/recoveries`, plus confirm and decline for each one.
+  - `recovery` events on the event stream and to webhooks (new webhooks get them by default).
+  - Machines gain a `recovery` field.
+  - The `autoResetMinutes` setting.
+  - See [docs/protocol.md](docs/protocol.md#recoveries).
+
 ## 2.3.0
 
 The hub now notices when a computer freezes, and says why it thinks so.

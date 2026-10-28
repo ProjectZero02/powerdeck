@@ -95,7 +95,23 @@ func (w *watchEnv) eventNames() string {
 	defer w.mu.Unlock()
 	var out []string
 	for _, e := range w.events {
-		out = append(out, e.Event)
+		if e.Event != EventRecovery {
+			out = append(out, e.Event)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// recoveryStates lists the recovery events' states, in order.
+func (w *watchEnv) recoveryStates() string {
+	time.Sleep(20 * time.Millisecond)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for _, e := range w.events {
+		if e.Event == EventRecovery {
+			out = append(out, e.Recovery.State)
+		}
 	}
 	return strings.Join(out, ",")
 }
@@ -147,6 +163,10 @@ func TestWatchFindsAHangAndTheRecovery(t *testing.T) {
 	}
 	if got := w.eventNames(); got != "unknown,hung,recovered" {
 		t.Errorf("events %s", got)
+	}
+	// The hub proposed a reset when it saw the hang; the owner's own button made it moot.
+	if got := w.recoveryStates(); got != "proposed,withdrawn,running,back" {
+		t.Errorf("recoveries %s", got)
 	}
 }
 

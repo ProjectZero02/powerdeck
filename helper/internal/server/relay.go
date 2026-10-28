@@ -24,7 +24,7 @@ type discoveryPeer = discovery.Peer
 var actionScope = map[string]string{
 	"status": store.ScopeStatus, "wake": store.ScopeWake,
 	"shutdown": store.ScopePower, "restart": store.ScopePower, "cancel": store.ScopePower,
-	// Through a KVM on this helper. Owner devices only until recovery needs a confirmation (phase 4).
+	// Through a KVM on this helper. Owner devices only; anyone else proposes a recovery.
 	"reset": store.ScopeForce, "force-off": store.ScopeForce,
 }
 
@@ -48,6 +48,11 @@ func (s *server) actWith(ctx context.Context, c auth.Caller, device, action stri
 	scope, ok := actionScope[action]
 	if !ok {
 		return nil, &apiError{Status: http.StatusNotFound, Code: "not_found", Message: "Unknown action " + action + "."}
+	}
+	recovery := action == "reset" || action == "force-off"
+	if recovery && (c.Kind != auth.Owner || c.ForAgent()) { // an agent relayed by a hub is still an agent
+		return nil, &apiError{Status: http.StatusForbidden, Code: "owner_only",
+			Message: "Only the owner's devices can reset a machine or force it off. Propose it instead (POST /v2/machines/" + device + "/recoveries): the owner confirms."}
 	}
 	if !c.Has(scope) {
 		return nil, &apiError{Status: http.StatusForbidden, Code: "scope", Message: "This key isn't allowed to " + action + "."}
@@ -76,11 +81,6 @@ func (s *server) actWith(ctx context.Context, c auth.Caller, device, action stri
 		if e := s.agentsAllowed(ctx, device, false); e != nil {
 			return nil, e
 		}
-	}
-	recovery := action == "reset" || action == "force-off"
-	if recovery && (c.Kind != auth.Owner || c.ForAgent()) { // an agent relayed by a hub is still an agent
-		return nil, &apiError{Status: http.StatusForbidden, Code: "owner_only",
-			Message: "Only the owner's devices can reset a machine or force it off."}
 	}
 	if c.ForAgent() {
 		ctx = peer.ForAgent(ctx) // the device checks its own switch too

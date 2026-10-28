@@ -147,6 +147,11 @@ func New(d Deps) *API {
 	mux.HandleFunc("POST /v2/webhooks", s.with(store.ScopeAdmin, s.ownersOnly(s.addWebhook)))
 	mux.HandleFunc("DELETE /v2/webhooks/{id}", s.with(store.ScopeAdmin, s.ownersOnly(s.removeWebhook)))
 	mux.HandleFunc("POST /v2/webhooks/{id}/test", s.with(store.ScopeAdmin, s.ownersOnly(s.testWebhook)))
+	mux.HandleFunc("POST /v2/machines/{name}/recoveries", s.with(store.ScopeStatus, s.proposeRecovery))
+	mux.HandleFunc("GET /v2/recoveries", s.with(store.ScopeStatus, s.listRecoveries))
+	mux.HandleFunc("GET /v2/recoveries/{id}", s.with(store.ScopeStatus, s.getRecovery))
+	mux.HandleFunc("POST /v2/recoveries/{id}/confirm", s.with(store.ScopeStatus, s.confirmRecovery))
+	mux.HandleFunc("POST /v2/recoveries/{id}/decline", s.with(store.ScopeStatus, s.declineRecovery))
 	mux.HandleFunc("POST /v2/machines/{name}/{action}", s.with(store.ScopeStatus, s.machineAction))
 	mux.HandleFunc("POST /mcp", s.with(store.ScopeStatus, s.ownersAndAgents(s.mcp)))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
@@ -529,7 +534,8 @@ func (s *server) statusBody(ctx context.Context, c auth.Caller) map[string]any {
 	if s.Machines != nil {
 		body["caps"] = append(body["caps"].([]string), "kvm") // drives NanoKVMs (/v2/kvms, /v2/machines)
 		if c.Kind == auth.Owner {
-			body["hub"] = map[string]any{"hungAfterMinutes": hungAfter(s.Store.Settings())}
+			st := s.Store.Settings()
+			body["hub"] = map[string]any{"hungAfterMinutes": hungAfter(st), "autoResetMinutes": st.AutoResetMinutes}
 		}
 	}
 	if sl := s.Sleep; sl != nil {
@@ -654,6 +660,8 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Call
 		PauseUpdates *bool `json:"pauseUpdates"` // true: hold automatic installs for 7 days; false: resume
 		// HungAfterMinutes: how long a machine with a KVM here must look hung (2 to 30; 0: default 3).
 		HungAfterMinutes *int `json:"hungAfterMinutes"`
+		// AutoResetMinutes: confirm the hub's own reset of a hung machine after this (5 to 60; 0: never).
+		AutoResetMinutes *int `json:"autoResetMinutes"`
 	}
 	if !decode(r, &req) {
 		fail(w, http.StatusBadRequest, "bad_request", "Malformed settings.")
@@ -669,6 +677,25 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, c auth.Call
 			return
 		}
 		s.logEvent(c.Name, fmt.Sprintf("set hung after to %d minutes", hungAfter(s.Store.Settings())), "ok")
+	}
+	if n := req.AutoResetMinutes; n != nil {
+		if c.ForAgent() {
+			fail(w, http.StatusForbidden, "owner_only", "Only the owner's devices can turn automatic resets on or off.")
+			return
+		}
+		if *n != 0 && (*n < 5 || *n > 60) {
+			fail(w, http.StatusBadRequest, "bad_request", "autoResetMinutes is 5 to 60 (0 turns automatic resets off).")
+			return
+		}
+		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.AutoResetMinutes = *n }); err != nil {
+			fail(w, http.StatusInternalServerError, "store", err.Error())
+			return
+		}
+		what := "turned automatic resets off"
+		if *n > 0 {
+			what = fmt.Sprintf("set automatic resets after %d minutes", *n)
+		}
+		s.logEvent(c.Name, what, "ok")
 	}
 	if req.Agents != nil && *req.Agents == s.Store.Settings().NoAgents {
 		if err := s.Store.UpdateSettings(func(st *store.Settings) { st.NoAgents = !*req.Agents }); err != nil {

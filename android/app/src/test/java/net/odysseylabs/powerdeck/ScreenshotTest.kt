@@ -54,6 +54,7 @@ import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.HelperUpdate
 import net.odysseylabs.powerdeck.data.HubEvidence
 import net.odysseylabs.powerdeck.data.HubMachine
+import net.odysseylabs.powerdeck.data.HubRecovery
 import net.odysseylabs.powerdeck.data.KvmLink
 import net.odysseylabs.powerdeck.data.KvmWiring
 import net.odysseylabs.powerdeck.data.Peer
@@ -67,6 +68,8 @@ import android.Manifest
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.assertIsDisplayed
@@ -92,6 +95,7 @@ import net.odysseylabs.powerdeck.ui.PowerDeckTheme
 import net.odysseylabs.powerdeck.ui.SettingsActions
 import net.odysseylabs.powerdeck.ui.SettingsScreen
 import net.odysseylabs.powerdeck.ui.UiState
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -288,6 +292,74 @@ class ScreenshotTest {
         compose.onNodeWithText("No reply to ping; takes PowerDeck's connection but says nothing").assertExists()
         compose.onNodeWithText("Not answering").assertExists()
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-hung.png")
+    }
+
+    private val ws = Device("ws", "Workstation", "100.101.1.11", pin = "w", os = "windows", mac = "02:00:5e:00:00:01",
+        kvm = KvmLink("nanokvm", "kvm-2.tail1234.ts.net", "kvm-2", "admin", ledSeen = true, hub = "pve", machine = "workstation",
+            wiring = KvmWiring("wired", "wired", "unknown")))
+
+    private fun hungWith(r: HubRecovery): UiState {
+        val seen = Instant.now().minusSeconds(20)
+        val m = HubMachine("workstation", "hung", true, null, "kvm-2", ws.kvm!!.wiring, listOf("reset", "force-off"),
+            since = seen.minusSeconds(200), evidence = HubEvidence(seen, "silent", "accepts", "no_reply", "on", true), recovery = r)
+        return all.copy(devices = all.devices + ws, states = all.states + ("ws" to DeviceState.On(null, m)))
+    }
+
+    private val proposal = HubRecovery("r1", "workstation", "reset", HubRecovery.PROPOSED, "Nothing answers and its power light is on.", "pve", false,
+        Instant.now().minusSeconds(10), null, null, null, null, false)
+
+    /** The hub proposes a reset: the card asks, with Reset and Not now; the plain Reset button gives way to it. */
+    @Test fun deviceRecoveryProposed() {
+        var answered: Boolean? = null
+        shot("device-recovery") {
+            DeviceScreen(ws, hungWith(proposal), Detail(events = emptyList()), DeviceActions(answerRecovery = { _, yes -> answered = yes }), SnackbarHostState())
+        }
+        compose.onNodeWithText("pve suggests a reset").assertIsDisplayed()
+        compose.onNodeWithText("Not now").assertIsDisplayed()
+        compose.onAllNodesWithText("Reset").assertCountEquals(1)
+        compose.onNodeWithText("Restart").assertDoesNotExist() // its helper can't answer
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/device-recovery.png")
+        compose.onNodeWithText("Reset").performClick()
+        assertEquals(true, answered)
+    }
+
+    @Test fun deviceRecoveryRunning() {
+        val r = proposal.copy(state = HubRecovery.RUNNING, confirmedBy = "Pixel", confirmedAt = Instant.now())
+        shot("device-recovery-running") { DeviceScreen(ws, hungWith(r), Detail(events = emptyList()), DeviceActions(), SnackbarHostState()) }
+        compose.onNodeWithText("Resetting Workstation…").assertIsDisplayed()
+        compose.onNodeWithText("Resetting").assertIsDisplayed() // the state line
+        compose.onNodeWithText("Reset").assertDoesNotExist()
+        compose.onNodeWithText("Restart").assertDoesNotExist()
+    }
+
+    @Test fun deviceRecoveryNotBack() {
+        val r = proposal.copy(state = HubRecovery.NOT_BACK, endedAt = Instant.now())
+        shot("device-recovery-not-back") { DeviceScreen(ws, hungWith(r), Detail(events = emptyList()), DeviceActions(), SnackbarHostState()) }
+        compose.onNodeWithText("Workstation didn't come back").assertIsDisplayed()
+        compose.onNodeWithText("Force off").assertIsDisplayed()
+    }
+
+    /** The hub's own page: whether it resets a frozen machine on its own. */
+    @Test fun hubAutoReset() {
+        val hub = status("pve", "linux", guests = 3).copy(autoResetMinutes = 0)
+        val state = all.copy(devices = all.devices + ws, states = all.states + ("pve" to DeviceState.On(hub)))
+        var set: Int? = null
+        shot("hub-auto-reset") { DeviceScreen(pve, state, Detail(events = emptyList()), DeviceActions(setAutoReset = { set = it }), SnackbarHostState()) }
+        compose.onNodeWithText("Reset a frozen machine on its own").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("pve asks you first, here and in a notification").assertExists()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/hub-auto-reset.png")
+        compose.onNodeWithText("After 10 min").performScrollTo().performClick()
+        assertEquals(10, set)
+    }
+
+    /** Not on a helper that drives no KVM. */
+    @Test fun noAutoResetWithoutMachines() {
+        val hub = status("pve", "linux", guests = 3).copy(autoResetMinutes = 0)
+        compose.setContent {
+            PowerDeckTheme(dynamic = false) { DeviceScreen(pve, all.copy(states = all.states + ("pve" to DeviceState.On(hub))), Detail(events = emptyList()), DeviceActions(), SnackbarHostState()) }
+        }
+        compose.onNodeWithText("AI agents").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Reset a frozen machine on its own").assertDoesNotExist()
     }
 
     @Test fun settingsHub() {

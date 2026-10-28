@@ -83,6 +83,9 @@ func (s *server) machineEvents(w http.ResponseWriter, r *http.Request, c auth.Ca
 		if !s.mayWatch(c, e.Machine) {
 			return nil
 		}
+		if e.Event == machines.EventRecovery {
+			return send("recovery", e.ID, e)
+		}
 		return send("machine", e.ID, e)
 	}
 
@@ -97,13 +100,18 @@ func (s *server) machineEvents(w http.ResponseWriter, r *http.Request, c auth.Ca
 			newest = recent[0].ID
 			last, _ = strconv.ParseInt(newest, 10, 64)
 		}
-		ms := []machines.Machine{}
+		ms, recs := []machines.Machine{}, []machines.Recovery{}
 		for _, m := range s.Machines.KVMMachines(r.Context()) {
 			if s.mayWatch(c, m.Name) {
 				ms = append(ms, m)
 			}
 		}
-		if send("snapshot", newest, map[string]any{"machines": ms}) != nil {
+		for _, rec := range s.Machines.Recoveries(true) {
+			if s.mayWatch(c, rec.Machine) {
+				recs = append(recs, viewRecovery(c, rec))
+			}
+		}
+		if send("snapshot", newest, map[string]any{"machines": ms, "recoveries": recs}) != nil {
 			return
 		}
 	}

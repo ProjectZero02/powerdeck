@@ -640,6 +640,33 @@ class PowerDeck(
         else r.outcome()
     }
 
+    /**
+     * Answers a reset or force off that [d]'s hub or an agent proposed: [confirm] has the hub run it
+     * (it answers at once, then checks [d] comes back); otherwise it's declined.
+     */
+    suspend fun answerRecovery(d: Device, id: String, confirm: Boolean): Outcome = oneAtATime(d.id) {
+        guarded {
+            val hub = d.kvm?.hub?.let { store.get(it) } ?: return@guarded Outcome(false, "${d.name} has no hub any more.")
+            val c = client(hub) ?: return@guarded Outcome(false, "${hub.name} has no helper.")
+            try {
+                val r = if (confirm) c.confirmRecovery(id) else c.declineRecovery(id)
+                val what = if (r.forceOff) "force ${d.name} off" else "reset ${d.name}"
+                when (r.state) {
+                    HubRecovery.RUNNING -> Outcome(true, if (r.forceOff) "Forcing ${d.name} off." else "Resetting ${d.name}. ${hub.name} checks it answers within 5 minutes.")
+                    HubRecovery.DECLINED -> Outcome(true, "OK, ${hub.name} won't $what.")
+                    HubRecovery.EXPIRED -> Outcome(false, "That request expired. Nothing was pressed.")
+                    HubRecovery.WITHDRAWN -> Outcome(true, r.message ?: "It isn't needed any more. Nothing was pressed.")
+                    HubRecovery.FAILED, HubRecovery.NOT_BACK -> Outcome(false, r.message ?: "It didn't work.")
+                    else -> Outcome(true, r.message ?: "Done.")
+                }
+            } catch (e: HelperException.Api) {
+                if (e.code == "not_found") Outcome(false, "${hub.name} no longer has that request.") else throw e
+            } finally {
+                hubLock.withLock { hubCache.remove(hub.id) }
+            }
+        }
+    }
+
     /** Helpers that can send this device's wake signal on a schedule (always-on, on its LAN). */
     suspend fun wakeHosts(d: Device): List<Device> =
         store.all().filter { it.id != d.id && it.hasHelper && (d.lan.isEmpty() || Lan.overlaps(it.lan, d.lan)) }

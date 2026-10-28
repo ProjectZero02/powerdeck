@@ -20,6 +20,7 @@ import net.odysseylabs.powerdeck.data.AddLink
 import net.odysseylabs.powerdeck.data.AddResult
 import net.odysseylabs.powerdeck.data.Check
 import net.odysseylabs.powerdeck.data.Device
+import net.odysseylabs.powerdeck.data.HubRecovery
 import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.KeyInfo
@@ -192,6 +193,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun forceOff(d: Device) = act(d) { deck.forceOff(d).also { o -> ask(d, o) } }
     fun reset(d: Device) = act(d) { deck.reset(d).also { o -> ask(d, o) } }
     fun recheckKvm(d: Device) = act(d) { deck.recheckKvm(d) }
+    /** Confirms or declines a reset or force off that [d]'s hub or an agent proposed. */
+    fun answerRecovery(d: Device, r: HubRecovery, confirm: Boolean) = act(d) { deck.answerRecovery(d, r.id, confirm) }
 
     private fun ask(d: Device, o: Outcome) {
         o.ask?.let { a -> _state.update { it.copy(force = ForcePrompt(d, false, a)) } }
@@ -453,6 +456,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 { _messages.send(it.message ?: "Couldn't reach ${d.name}; try again when it's on.") },
             )
+        }
+    }
+
+    /** Has hub [d] reset a machine that stays frozen [minutes] without asking; 0 turns it off. */
+    fun setAutoReset(d: Device, minutes: Int) {
+        viewModelScope.launch {
+            deck.withHelper(d) { setAutoReset(minutes) }
+                .onSuccess { _messages.send(if (minutes == 0) "${d.name} asks you before each reset." else "${d.name} resets a machine that stays frozen $minutes minutes.") }
+                .onFailure { _messages.send(it.message ?: "Couldn't change it.") }
+            refreshNow()
         }
     }
 

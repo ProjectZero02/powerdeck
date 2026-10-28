@@ -99,6 +99,7 @@ func (h *Hub) watch(ctx context.Context, k store.KVM) {
 	if changed && from != "" {
 		h.publish(k.Machine, from, now)
 	}
+	h.recoveryRound(k.Machine, now)
 }
 
 // track is the detector's memory for a machine (h.mu held).

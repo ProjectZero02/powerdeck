@@ -160,7 +160,8 @@ func Run(ctx context.Context, o Options) error {
 	// Every helper can drive NanoKVMs; the app links them to one (the hub).
 	hub := &machines.Hub{Store: st, Box: secret.Default(), Fleet: fl, Self: name, Log: log, Now: now,
 		Events: machines.NewBus(now()), Ping: tailnetPing(ts), Online: tailnetOnline(ts),
-		HungAfter: func() time.Duration { return time.Duration(st.Settings().HungAfterMinutes) * time.Minute }}
+		HungAfter: func() time.Duration { return time.Duration(st.Settings().HungAfterMinutes) * time.Minute },
+		AutoReset: func() time.Duration { return time.Duration(st.Settings().AutoResetMinutes) * time.Minute }}
 	hooks := &webhook.Sender{Store: st, Box: hub.Box, Bus: hub.Events, Log: log, Now: now}
 
 	api := server.New(server.Deps{

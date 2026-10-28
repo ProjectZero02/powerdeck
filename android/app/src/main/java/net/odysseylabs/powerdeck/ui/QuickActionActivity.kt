@@ -3,6 +3,7 @@ package net.odysseylabs.powerdeck.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import androidx.core.app.NotificationManagerCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -47,22 +48,33 @@ import androidx.compose.runtime.collectAsState
 
 /**
  * The small dialog the widget, tiles and shortcuts open: checks the device, then turns it on straight
- * away, or asks before shutting it down.
+ * away, or asks before shutting it down. A notification's Reset or Not now opens it to answer the
+ * hub's proposal, then it says how that went.
  */
 class QuickActionActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_DEVICE = "device"
+        private const val EXTRA_RECOVERY = "recovery"
+        private const val EXTRA_CONFIRM = "confirm"
+        private const val EXTRA_NOTIFICATION = "notification"
         fun intent(ctx: Context, deviceId: String): Intent =
             Intent(ctx, QuickActionActivity::class.java)
                 .setAction("net.odysseylabs.powerdeck.QUICK")
                 .putExtra(EXTRA_DEVICE, deviceId)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+
+        /** Confirms or declines recovery [recoveryId] of [deviceId], and clears [notification]. */
+        fun answer(ctx: Context, deviceId: String, recoveryId: String, confirm: Boolean, notification: Int): Intent =
+            intent(ctx, deviceId).setAction("net.odysseylabs.powerdeck.RECOVERY")
+                .putExtra(EXTRA_RECOVERY, recoveryId).putExtra(EXTRA_CONFIRM, confirm).putExtra(EXTRA_NOTIFICATION, notification)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val id = intent.getStringExtra(EXTRA_DEVICE) ?: return finish()
-        setContent { PowerDeckTheme { QuickAction(id, deck, ::finish) } }
+        val answer = intent.getStringExtra(EXTRA_RECOVERY)?.let { it to intent.getBooleanExtra(EXTRA_CONFIRM, false) }
+        if (answer != null) NotificationManagerCompat.from(this).cancel(intent.getIntExtra(EXTRA_NOTIFICATION, 0))
+        setContent { PowerDeckTheme { QuickAction(id, deck, ::finish, answer) } }
     }
 }
 
@@ -76,7 +88,7 @@ private sealed interface QuickStep {
 }
 
 @Composable
-private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
+private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit, answer: Pair<String, Boolean>? = null) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     var step by remember { mutableStateOf<QuickStep>(QuickStep.Checking) }
@@ -107,6 +119,7 @@ private fun QuickAction(id: String, deck: PowerDeck, close: () -> Unit) {
             step = QuickStep.Done(Outcome(false, "Tailscale isn't connected. Open Tailscale and connect."))
             return@LaunchedEffect
         }
+        if (answer != null) return@LaunchedEffect perform({ deck.answerRecovery(d, answer.first, answer.second) })
         when (val s = deck.state(d)) {
             is DeviceState.On -> step = QuickStep.AskOff(d.hasHelper, s.status?.pending)
             DeviceState.Off -> step = QuickStep.AskOn

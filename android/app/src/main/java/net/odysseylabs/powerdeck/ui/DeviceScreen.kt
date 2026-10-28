@@ -30,6 +30,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -76,6 +77,7 @@ import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.Event
 import net.odysseylabs.powerdeck.data.HelperStatus
 import net.odysseylabs.powerdeck.data.HubMachine
+import net.odysseylabs.powerdeck.data.HubRecovery
 import net.odysseylabs.powerdeck.data.KeyInfo
 import net.odysseylabs.powerdeck.data.Peer
 import net.odysseylabs.powerdeck.data.KvmWiring
@@ -114,6 +116,8 @@ data class DeviceActions(
     val updateHelper: () -> Unit = {},
     val pauseUpdates: (Boolean) -> Unit = {},
     val removeOwner: (OwnerInfo) -> Unit = {},
+    val answerRecovery: (HubRecovery, confirm: Boolean) -> Unit = { _, _ -> },
+    val setAutoReset: (minutes: Int) -> Unit = {},
 )
 
 private val DAYS = listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -175,6 +179,41 @@ private fun HubEvidenceSection(name: String, hubName: String, m: HubMachine) {
     }
 }
 
+/** A reset or force off on [d]'s hub: proposed (Reset or Not now), running, or how it ended. */
+@Composable
+private fun RecoveryCard(r: HubRecovery, t: RecoveryText, busy: Boolean, answer: (Boolean) -> Unit, forceOff: () -> Unit) {
+    val warn = t.tone == Tone.Warn
+    Card(shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
+        containerColor = if (warn) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = if (warn) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (r.running) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Icon(if (warn) Icons.Rounded.WarningAmber else Icons.Rounded.CheckCircle, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Text(t.title, style = MaterialTheme.typography.titleMedium)
+            }
+            t.detail?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp)) }
+            if (r.proposed) Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { answer(false) }, enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
+                    Text("Not now")
+                }
+                Button(onClick = { answer(true) }, enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) {
+                    Icon(if (r.forceOff) Icons.Rounded.PowerSettingsNew else Icons.Rounded.RestartAlt, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (r.forceOff) "Force off" else "Reset")
+                }
+            }
+            if (r.state == HubRecovery.NOT_BACK) OutlinedButton(onClick = forceOff, enabled = !busy, modifier = Modifier.padding(top = 16.dp).height(48.dp),
+                shape = RoundedCornerShape(16.dp)) { Text("Force off") }
+        }
+    }
+}
+
+/** The minutes a hub may wait before it resets a frozen machine on its own; 0 is off (it asks). */
+private val AUTO_RESET = listOf(0, 10, 30, 60)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, snackbar: SnackbarHostState) {
@@ -190,6 +229,7 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
     var confirmForce by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     val hub = d.kvm?.hub?.let { id -> state.devices.firstOrNull { it.id == id } }
+    val recovery = (st as? DeviceState.On)?.hub?.recovery
     var renaming by remember { mutableStateOf(false) }
     var scheduling by remember { mutableStateOf(false) }
     var linkKvm by remember { mutableStateOf<Peer?>(null) }
@@ -245,11 +285,14 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                                 if (d.hasHelper || d.kvm != null) HoldButton("Shut down", Icons.Rounded.PowerSettingsNew, true, !busy, Modifier.weight(1f), hold = hold,
                                     onHint = { a.hint("Hold to shut down ${d.name}") }) { a.shutdown(false) }
                                 // The light is on but the helper is silent: it may be frozen, which only a reset fixes.
-                                if (d.hasHelper && status == null && hub != null) FilledTonalButton(onClick = { confirmReset = true }, enabled = !busy,
-                                    modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
-                                    Icon(Icons.Rounded.RestartAlt, null, Modifier.size(18.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Reset")
+                                // A proposed or running recovery has its own card (and Reset button) below.
+                                if (d.hasHelper && status == null && hub != null) {
+                                    if (recovery?.open != true) FilledTonalButton(onClick = { confirmReset = true }, enabled = !busy,
+                                        modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(16.dp)) {
+                                        Icon(Icons.Rounded.RestartAlt, null, Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Reset")
+                                    }
                                 }
                                 else if (d.hasHelper) HoldButton("Restart", Icons.Rounded.RestartAlt, false, !busy, Modifier.weight(1f), hold = hold, tonal = true,
                                     onHint = { a.hint("Hold to restart ${d.name}") }, onConfirm = a.restart)
@@ -265,6 +308,13 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                             Text("Update and shut down")
                         }
                     }
+                }
+            }
+
+            // ---- A reset or force off someone proposed, or one running (the hub checks it comes back)
+            recovery?.let { r ->
+                recoveryText(r, d.name, hub?.name ?: "The hub", now, hub?.fleetName ?: "")?.let { t ->
+                    RecoveryCard(r, t, busy, answer = { a.answerRecovery(r, it) }, forceOff = { confirmForce = true })
                 }
             }
 
@@ -386,6 +436,21 @@ fun DeviceScreen(d: Device, state: UiState, detail: Detail, a: DeviceActions, sn
                             onClick = { a.setTile(if (slot == i) null else i) },
                             label = { Text("Tile ${i + 1}${if (other != null && slot != i) " ($other)" else ""}") },
                         )
+                    }
+                }
+            }
+
+            // ---- A hub's frozen machines: it asks first, or resets on its own after a while (owners only)
+            val auto = status?.autoResetMinutes
+            if (auto != null && state.devices.any { it.kvm?.hub == d.id }) Section("Frozen machines") {
+                Row2("Reset a frozen machine on its own", when (auto) {
+                    0 -> "${d.name} asks you first, here and in a notification"
+                    else -> "After $auto minutes without an answer from you, ${d.name} presses its reset button. At most once every 30 minutes"
+                })
+                FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (AUTO_RESET + auto).distinct().sorted().forEach { m ->
+                        FilterChip(selected = auto == m, onClick = { if (auto != m) a.setAutoReset(m) }, enabled = !busy,
+                            label = { Text(if (m == 0) "Off" else "After $m min") })
                     }
                 }
             }

@@ -6,21 +6,25 @@ import (
 	"time"
 )
 
-// Event is a machine's state changing, as the hub saw it.
+// Event is a machine's state changing, as the hub saw it, or a recovery's.
 type Event struct {
 	ID       string    `json:"id"`
 	At       time.Time `json:"at"`
-	Event    string    `json:"event"` // the new state, or "recovered" (hung, then answering)
+	Event    string    `json:"event"` // the new state, "recovered" (hung, then answering) or "recovery"
 	Machine  string    `json:"machine"`
-	State    string    `json:"state"`
-	From     string    `json:"from"`
+	State    string    `json:"state,omitempty"`
+	From     string    `json:"from,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
 	Asleep   bool      `json:"asleep,omitempty"`
-	Evidence Evidence  `json:"evidence"`
+	Evidence Evidence  `json:"evidence,omitzero"`
+	Recovery *Recovery `json:"recovery,omitempty"` // a recovery event: the recovery as it is now
 }
 
+// EventRecovery is a recovery's state changing.
+const EventRecovery = "recovery"
+
 // EventNames are what an event can be (webhook filters use them).
-var EventNames = []string{StateOn, StateOff, StateHung, StateUnknown, "recovered"}
+var EventNames = []string{StateOn, StateOff, StateHung, StateUnknown, "recovered", EventRecovery}
 
 // maxHeld is how many events the bus keeps for replay.
 const maxHeld = 500
