@@ -21,13 +21,19 @@ func (s *server) noHub(w http.ResponseWriter) bool {
 	return false
 }
 
-func hubError(w http.ResponseWriter, err error) {
+func hubError(w http.ResponseWriter, err error) { failErr(w, hubErr(err)) }
+
+// hubErr is a hub error as the API answers it.
+func hubErr(err error) *apiError {
 	var e *machines.Error
 	if errors.As(err, &e) {
-		failErr(w, &apiError{Status: e.Status, Code: e.Code, Message: e.Message, Extra: e.Extra})
-		return
+		var extra any
+		if e.Extra != nil {
+			extra = e.Extra
+		}
+		return &apiError{Status: e.Status, Code: e.Code, Message: e.Message, Extra: extra}
 	}
-	fail(w, http.StatusInternalServerError, "internal", err.Error())
+	return &apiError{Status: http.StatusInternalServerError, Code: "internal", Message: err.Error()}
 }
 
 func (s *server) listKVMs(w http.ResponseWriter, _ *http.Request, _ auth.Caller) {
@@ -96,21 +102,22 @@ func (s *server) listMachines(w http.ResponseWriter, r *http.Request, c auth.Cal
 	if s.noHub(w) {
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"machines": s.machinesFor(r.Context(), c, r.URL.Query().Get("kvm") == "1")})
+}
+
+// machinesFor is the machines c may use, with live state; kvmOnly: just those with a KVM here.
+func (s *server) machinesFor(ctx context.Context, c auth.Caller, kvmOnly bool) []machines.Machine {
 	list := s.Machines.List
-	if r.URL.Query().Get("kvm") == "1" {
+	if kvmOnly {
 		list = s.Machines.KVMMachines
 	}
 	out := []machines.Machine{}
-	for _, m := range list(r.Context()) {
-		names := []string{m.Name}
-		if p, err := s.Fleet.Peer(m.Name); err == nil {
-			names = peerNames(p)
-		}
-		if mayUseAny(c, names) {
-			out = append(out, m)
+	for _, m := range list(ctx) {
+		if s.mayWatch(c, m.Name) {
+			out = append(out, viewMachine(c, m))
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"machines": out})
+	return out
 }
 
 type machineRequest struct {

@@ -60,7 +60,7 @@ import androidx.compose.ui.unit.dp
 import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.KeyInfo
 
-const val AGENTS_GUIDE = "https://github.com/ProjectZero02/powerdeck#ai-agents-mcp"
+const val AGENTS_GUIDE = "https://github.com/ProjectZero02/powerdeck/blob/main/docs/integrating-an-assistant.md"
 
 data class AgentsActions(
     val back: () -> Unit = {},

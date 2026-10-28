@@ -140,13 +140,16 @@ Let an AI agent or a script check and control your devices through [MCP](https:/
 
 Port 47323 is plain HTTP for agents that can't pin a self-signed certificate. It's only reachable over Tailscale, which encrypts it end to end. If your agent can pin a certificate, use `https://<server>:47321/mcp` instead.
 
-Tools: `list_devices`, `get_status`, `power_on`, `power_off`, `cancel`. Whatever the agent asks for, the helper enforces these limits:
+Tools: `list_devices`, `get_status`, `power_on`, `power_off`, `cancel`. On the hub that drives your NanoKVMs, also `list_machines` and `get_events` (what the hub sees, including frozen machines), `propose_reset` and `propose_force_off` (ask you to reset a frozen machine), `get_recovery` and `withdraw_recovery`. Whatever the agent asks for, the helper enforces these limits:
 - only the devices and permissions on its key;
 - never while someone is using the computer, and always with the 60-second countdown;
 - at most one shutdown per device per 10 minutes;
-- never the computer the agent itself runs on.
+- never the computer the agent itself runs on;
+- an agent never resets or forces off a computer itself. It asks, and nothing is pressed until you tap **Reset** on your phone.
 
 The key works only from the first device that uses it. Every action appears in History and in a notification on your phone. Each device's **Allow AI agents** switch turns agents away from it at any time: they can still see whether it's on, but can't turn it on or off.
+
+Connecting your own assistant, with REST, live events and webhooks too: [docs/integrating-an-assistant.md](docs/integrating-an-assistant.md). Testing it all on real hardware: [docs/hardware-test.md](docs/hardware-test.md).
 
 ## Troubleshooting
 

@@ -151,12 +151,12 @@ func TestRecoveryEventsByDefault(t *testing.T) {
 	s, rc, _, _ := setup(t)
 	stop := run(t, s)
 	s.Bus.Publish(machines.Event{Event: machines.EventRecovery, Machine: "gaming-pc",
-		Recovery: &machines.Recovery{ID: "r1", Machine: "gaming-pc", Action: "reset", State: machines.RecoveryNotBack}})
+		Recovery: &machines.Recovery{ID: "r1", Machine: "gaming-pc", Action: "reset", State: machines.RecoveryNotBack, ProposerKey: "k1"}})
 	waitFor(t, func() bool { return rc.count() == 1 })
 	stop()
 	var got machines.Event
 	if err := json.Unmarshal(rc.body[0], &got); err != nil || rc.got[0].Header.Get("X-PowerDeck-Event") != "recovery" ||
-		got.Recovery == nil || got.Recovery.State != "not_back" || strings.Contains(string(rc.body[0]), `"evidence"`) {
+		got.Recovery == nil || got.Recovery.State != "not_back" || strings.Contains(string(rc.body[0]), `"evidence"`) || strings.Contains(string(rc.body[0]), "proposerKey") {
 		t.Errorf("%s %v", rc.body[0], err)
 	}
 }
