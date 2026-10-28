@@ -264,6 +264,21 @@ class HelperClient(
         HubResult.from(call("POST", "/v2/machines/${path(machine)}/$action",
             JSONObject().put("force", force).put("stayOff", stayOff).put("press", press), timeoutSeconds = 150)) // the hub bounds an action to 2 minutes
 
+    // ---- Recoveries (a hub, 2.4+): proposed by an agent or the hub, confirmed here ----
+
+    /** Runs a proposed reset or force off. The hub answers at once; the machine's [HubMachine.recovery] tells how it went. */
+    suspend fun confirmRecovery(id: String): HubRecovery = HubRecovery.from(call("POST", "/v2/recoveries/${path(id)}/confirm").getJSONObject("recovery"))
+
+    suspend fun declineRecovery(id: String): HubRecovery = HubRecovery.from(call("POST", "/v2/recoveries/${path(id)}/decline").getJSONObject("recovery"))
+
+    suspend fun recoveries(open: Boolean = true): List<HubRecovery> =
+        call("GET", "/v2/recoveries" + if (open) "?open=1" else "").optJSONArray("recoveries").list(HubRecovery::from)
+
+    /** Resets a machine that stays frozen this many minutes without asking (10 to 60); 0 turns it off. */
+    suspend fun setAutoReset(minutes: Int) {
+        call("POST", "/v2/settings", JSONObject().put("autoResetMinutes", minutes))
+    }
+
     private fun path(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

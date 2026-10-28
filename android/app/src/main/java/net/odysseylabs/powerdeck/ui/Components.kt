@@ -63,6 +63,7 @@ import kotlinx.coroutines.launch
 import net.odysseylabs.powerdeck.data.Device
 import net.odysseylabs.powerdeck.data.DeviceState
 import net.odysseylabs.powerdeck.data.HubMachine
+import net.odysseylabs.powerdeck.data.HubRecovery
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -146,6 +147,7 @@ fun note(state: DeviceState?, now: Long): Pair<String, Tone>? = when (state) {
  */
 fun hubNote(m: HubMachine?, now: Long): Pair<String, Tone>? = when {
     m == null -> null
+    m.recovery?.running == true -> (if (m.recovery.forceOff) "Forcing it off" else "Resetting") to Tone.Busy
     m.hung -> (m.since?.let { "Frozen since " + clockTime(it, now) } ?: "Frozen") to Tone.Warn
     else -> when (m.reason) {
         "booting" -> "Starting up" to Tone.Busy
@@ -155,6 +157,43 @@ fun hubNote(m: HubMachine?, now: Long): Pair<String, Tone>? = when {
         "may_be_asleep" -> "May be asleep" to Tone.Unknown
         "helper_stopped" -> "Running, but PowerDeck on it isn't answering" to Tone.Warn
         "checking" -> "Not answering" to Tone.Unknown
+        else -> null
+    }
+}
+
+/** What a recovery card says. */
+data class RecoveryText(val title: String, val detail: String?, val tone: Tone)
+
+/**
+ * The card for a reset or force off on [device], run by [hub] (which calls itself [hubSelf]), or null
+ * when there's nothing to say: declined, expired, or not needed any more. Someone else's reason is
+ * their words, so it's quoted as theirs.
+ */
+fun recoveryText(r: HubRecovery, device: String, hub: String, now: Long, hubSelf: String = hub): RecoveryText? {
+    val reset = !r.forceOff
+    val at = r.endedAt?.let { " at " + clockTime(it, now) } ?: ""
+    return when (r.state) {
+        HubRecovery.PROPOSED -> {
+            val byHub = r.proposedBy.equals(hubSelf, ignoreCase = true) || r.proposedBy.equals(hub, ignoreCase = true)
+            val who = if (byHub) hub else r.proposedBy
+            RecoveryText(
+                if (reset) "$who suggests a reset" else "$who asks to force $device off",
+                listOfNotNull(
+                    r.reason?.let { if (byHub) it else "“$it”" },
+                    if (reset) "A reset is like pressing its reset button: unsaved work is lost. $hub then checks it answers within 5 minutes."
+                    else "Like pulling the plug: unsaved work is lost, and it stays off.",
+                ).joinToString("\n"),
+                Tone.Warn,
+            )
+        }
+        HubRecovery.RUNNING -> if (reset) RecoveryText("Resetting $device…", "$hub waits up to 5 minutes for it to answer.", Tone.Busy)
+            else RecoveryText("Forcing $device off…", "Holding its power button for 12 seconds.", Tone.Busy)
+        HubRecovery.BACK -> RecoveryText("$device is back", "It answered$at, after the ${if (reset) "reset" else "force off"}.", Tone.On)
+        HubRecovery.NOT_BACK -> RecoveryText("$device didn't come back",
+            "It didn't answer within 5 minutes of the reset. Force it off and on, or check it in person.", Tone.Warn)
+        HubRecovery.OFF -> RecoveryText("$device is off", "Forced off$at.", Tone.Off)
+        HubRecovery.DONE -> RecoveryText(if (reset) "Reset $device" else "Forced $device off", r.message, Tone.On)
+        HubRecovery.FAILED -> RecoveryText(if (reset) "The reset didn't work" else "Couldn't force $device off", r.message, Tone.Warn)
         else -> null
     }
 }

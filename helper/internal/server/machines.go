@@ -24,7 +24,7 @@ func (s *server) noHub(w http.ResponseWriter) bool {
 func hubError(w http.ResponseWriter, err error) {
 	var e *machines.Error
 	if errors.As(err, &e) {
-		fail(w, e.Status, e.Code, e.Message)
+		failErr(w, &apiError{Status: e.Status, Code: e.Code, Message: e.Message, Extra: e.Extra})
 		return
 	}
 	fail(w, http.StatusInternalServerError, "internal", err.Error())

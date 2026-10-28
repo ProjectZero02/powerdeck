@@ -72,13 +72,19 @@ type Hub struct {
 	Ping      func(ctx context.Context, addr string) string
 	Online    func(ctx context.Context, addr string) *bool
 	HungAfter func() time.Duration // the owner's setting (0: the default)
-	Events    *Bus                 // state changes; nil: not published
+	AutoReset func() time.Duration // the owner's setting: confirm the hub's own reset after this (0: never)
+	Events    *Bus                 // state changes and recoveries; nil: not published
 
 	mu      sync.Mutex
 	busy    map[string]bool
 	clients map[string]cached
 	tracks  map[string]*Track
 	wg      sync.WaitGroup
+
+	rmu        sync.Mutex // recoveries (recovery.go); never held while taking mu
+	recs       []Recovery
+	recsLoaded bool
+	asked      map[string]bool // machines the hub proposed a reset for during this hang
 }
 
 type cached struct {
@@ -91,12 +97,13 @@ type Error struct {
 	Status  int
 	Code    string
 	Message string
+	Extra   map[string]any // more fields for the reply
 }
 
 func (e *Error) Error() string { return e.Message }
 
 func fail(status int, code, format string, a ...any) *Error {
-	return &Error{status, code, fmt.Sprintf(format, a...)}
+	return &Error{Status: status, Code: code, Message: fmt.Sprintf(format, a...)}
 }
 
 func dur(d, def time.Duration) time.Duration {
@@ -447,6 +454,8 @@ type Machine struct {
 	// Since is when the hub's watch first saw the current state; Evidence is its last look.
 	Since    *time.Time `json:"since,omitempty"`
 	Evidence *Evidence  `json:"evidence,omitempty"`
+	// Recovery is its open recovery, or the last one if it ended in the last 30 minutes.
+	Recovery *Recovery `json:"recovery,omitempty"`
 }
 
 // HasKVM reports whether a machine has a KVM here.
@@ -500,6 +509,11 @@ func (h *Hub) list(ctx context.Context, kvmOnly bool) []Machine {
 		}(&out[i])
 	}
 	wg.Wait()
+	for i := range out {
+		if out[i].KVM != nil {
+			out[i].Recovery = h.latest(out[i].Name)
+		}
+	}
 	return out
 }
 
@@ -645,6 +659,8 @@ type Result struct {
 	Steps   []Step         `json:"steps"`
 	Helper  map[string]any `json:"helper,omitempty"` // the machine's helper's reply (shutdown, restart)
 	Status  int            `json:"-"`                // HTTP status when not OK
+
+	verifying bool // Options.Back will be called
 }
 
 // Options change how an action runs.
@@ -654,6 +670,10 @@ type Options struct {
 	StayOff bool   // force off without powering on again
 	Press   bool   // shutdown: press the power button (the OS shuts down cleanly) if the helper doesn't answer
 	Agent   bool   // on behalf of an AI agent (relayed to the machine's helper)
+	// Back, when set, is called once the hub knows whether the machine answered again after a reset
+	// or an off-and-on (within ResetVerify). Not called when that can't be checked: no helper, or it
+	// answered all along.
+	Back func(back bool)
 }
 
 type run struct {
@@ -742,8 +762,16 @@ var Actions = []string{"wake", "shutdown", "restart", "reset", "force-off"}
 const actionTime = 2 * time.Minute
 
 // Act runs one action on a machine with a KVM here. One action per machine at a time. The caller
-// checks permissions (internal/server's act).
+// checks permissions (internal/server's act). A reset or force off is recorded as a recovery that
+// its caller confirmed.
 func (h *Hub) Act(ctx context.Context, name, action string, o Options) Result {
+	if action == "reset" || action == "force-off" {
+		return h.direct(ctx, name, action, o)
+	}
+	return h.act(ctx, name, action, o)
+}
+
+func (h *Hub) act(ctx context.Context, name, action string, o Options) Result {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actionTime)
 	defer cancel()
 	res := &Result{Machine: name, Action: action, Steps: []Step{}}
@@ -983,36 +1011,48 @@ func (r *run) reset(hasHelper bool, o Options) Result {
 	}
 	r.led("after")              // stays on through a reset on most boards: the result shows when the helper is back
 	if hasHelper && !answered { // a machine that answered all along can't show whether the reset worked
-		r.h.verifyReset(r.k.Name, m)
+		r.verifyBack(true, o.Back)
 		return r.done(true, "", "Pressed reset on %s. It should answer again in a few minutes.", m)
 	}
 	return r.done(true, "", "Pressed reset on %s.", m)
 }
 
-// verifyReset waits in the background for the machine's helper and records whether the reset
-// switch works.
-func (h *Hub) verifyReset(kvm, machine string) {
+// verifyBack waits in the background for the machine's helper to answer again, then calls back (if
+// set). After a reset it also records whether the reset switch works.
+func (r *run) verifyBack(reset bool, back func(bool)) {
+	h, kvm, machine := r.h, r.k.Name, r.k.Machine
+	if !reset && back == nil {
+		return // nothing to learn and nobody waiting
+	}
+	r.res.verifying = back != nil
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		deadline := h.now().Add(dur(h.ResetVerify, 5*time.Minute))
-		for h.now().Before(deadline) {
-			time.Sleep(dur(h.VerifyEvery, 10*time.Second))
+		up := false
+		every := dur(h.VerifyEvery, 10*time.Second)
+		for i := time.Duration(0); !up && i < dur(h.ResetVerify, 5*time.Minute)/every; i++ {
+			time.Sleep(every)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			up := h.Fleet.Answers(ctx, machine)
+			up = h.Fleet.Answers(ctx, machine)
 			cancel()
-			if up {
-				_ = h.Store.UpdateKVM(kvm, func(k *store.KVM) { k.Wiring.Reset = store.Wired })
-				h.log().Info("reset worked: the machine answers again", "machine", machine)
-				return
-			}
 		}
-		_ = h.Store.UpdateKVM(kvm, func(k *store.KVM) {
-			if k.Wiring.Reset != store.Wired {
-				k.Wiring.Reset = store.NotWired
-			}
-		})
-		h.log().Warn("the machine didn't answer within the time after a reset", "machine", machine)
+		if up {
+			h.log().Info("the machine answers again", "machine", machine)
+		} else {
+			h.log().Warn("the machine didn't answer in time", "machine", machine)
+		}
+		if reset {
+			_ = h.Store.UpdateKVM(kvm, func(k *store.KVM) {
+				if up {
+					k.Wiring.Reset = store.Wired
+				} else if k.Wiring.Reset != store.Wired {
+					k.Wiring.Reset = store.NotWired
+				}
+			})
+		}
+		if back != nil {
+			back(up)
+		}
 	}()
 }
 
@@ -1028,7 +1068,8 @@ func (h *Hub) Wait() { h.wg.Wait() }
 
 func (r *run) forceOff(hasHelper bool, o Options) Result {
 	m := r.k.Machine
-	if _, res := r.gate(hasHelper, o, "forcing it off"); res != nil {
+	answered, res := r.gate(hasHelper, o, "forcing it off")
+	if res != nil {
 		return *res
 	}
 	if err := r.press(nanokvm.Power, 12*time.Second); err != nil {
@@ -1055,6 +1096,9 @@ func (r *run) forceOff(hasHelper bool, o Options) Result {
 	}
 	if ok, _ := r.waitLED(true); !ok {
 		return r.refuse(http.StatusBadGateway, "didnt_start", "%s is off, but didn't start again. Wake it, or press its power button.", m)
+	}
+	if hasHelper && !answered {
+		r.verifyBack(false, o.Back)
 	}
 	return r.done(true, "", "Switched %s off and on again. It's starting.", m)
 }

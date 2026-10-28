@@ -258,20 +258,22 @@ recovery; only the owner confirms it; then the hub runs it and checks that it wo
 Build:
 1. **Recoveries** live on the hub, in its state file, so a restart doesn't lose them. The last 50
    are kept:
-   `{"id", "machine", "action", "state", "reason", "proposedBy", "proposedAt", "confirmedBy",
-   "confirmedAt", "endedAt", "message", "evidence", "steps"}`.
+   `{"id", "machine", "action", "state", "reason", "proposedBy", "agent", "proposedAt",
+   "confirmedBy", "confirmedAt", "endedAt", "message", "evidence", "steps", "direct"}`.
    - `evidence` is the hub's last look when the recovery was proposed.
    - `steps` come from the run, with the power light before and after.
    - **States:**
-     - `proposed` → `running` → `back`, `not_back`, `off` (force off) or `failed`;
+     - `proposed` → `running` → `back`, `not_back`, `off` (force off), `done` (an owner's forced
+       button, pressed while the helper answered: coming back can't be checked) or `failed`;
      - or, without running: `declined`, `expired` or `withdrawn`.
    - **Actions:**
      - `reset` gets the machine back. It presses the reset button, or, when the hub has learned
        that the reset switch isn't wired, holds power and starts the machine again.
      - `force-off` holds power and leaves the machine off.
 2. **Propose:** `POST /v2/machines/{name}/recoveries {"action": "reset", "reason": "..."}`.
-   - Needs the `force` scope. Agent keys and agents relayed through a hub may propose, but the
-     machine's "Allow AI agents" switch applies, as the hub last heard it.
+   - Needs the `power` scope, not `force`: agent keys can't hold `force`, which also overrides
+     "someone is using it", and the owner confirms anyway. Agent keys and agents relayed through a
+     hub may propose, but the machine's "Allow AI agents" switch applies, as the hub last heard it.
    - Refused when any of these hold:
      - no KVM here is wired to it (`no_kvm`);
      - it has no helper, so success can't be checked (`no_helper`);
@@ -303,7 +305,8 @@ Build:
      within 5 minutes. Otherwise it is `not_back`, which is an alert.
    - **At most one recovery runs per machine per 30 minutes.** The owner's own Reset and Force off
      buttons count towards this. They still work without a proposal: pressing one is the owner
-     confirming.
+     confirming. Each press is recorded as a recovery (`direct: true`), kept only if something was
+     pressed.
    - A recovery still `running` when the hub restarts ends `failed` ("the hub restarted").
 5. **Auto-reset** is an owner setting, `autoResetMinutes`: 0 (off, the default), or 5 to 60.
    - When set, the hub confirms a `reset` proposal itself after that many minutes, if the machine
@@ -331,8 +334,9 @@ Build:
      - Tapping it opens the device page.
      - "Didn't come back" is notified too.
      - For a machine with a reset proposal, this replaces the plain "looks frozen" notification.
-   - **Settings → KVM hub:** "Reset a frozen machine on its own": Off, or after 10, 30 or 60
-     minutes.
+   - **The hub's own page → Frozen machines:** "Reset a frozen machine on its own": Off, or after
+     10, 30 or 60 minutes. (It's the hub's setting, so it sits with the hub, shown once it drives a
+     KVM; Settings → KVM hub only picks which helper is the hub.)
 
 Test:
 - State machine tests with a fake clock:

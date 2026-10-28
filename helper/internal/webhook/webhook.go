@@ -40,7 +40,7 @@ import (
 )
 
 // DefaultEvents are what a webhook gets unless it asks for others.
-var DefaultEvents = []string{machines.StateHung, "recovered"}
+var DefaultEvents = []string{machines.StateHung, "recovered", machines.EventRecovery}
 
 // Retries are the waits before each new try after a failed delivery.
 var Retries = []time.Duration{10 * time.Second, time.Minute, 5 * time.Minute}

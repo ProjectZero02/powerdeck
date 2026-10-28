@@ -140,6 +140,8 @@ type Settings struct {
 	// HungAfterMinutes is how long a machine with a KVM here must look hung before it's called hung
 	// (0: the default, 3).
 	HungAfterMinutes int `json:"hungAfterMinutes,omitempty"`
+	// AutoResetMinutes lets the hub confirm its own reset of a hung machine after that long (0: never).
+	AutoResetMinutes int `json:"autoResetMinutes,omitempty"`
 	// UpdatesPausedUntil holds automatic updates back until then.
 	UpdatesPausedUntil time.Time `json:"updatesPausedUntil,omitzero"`
 }
@@ -154,6 +156,8 @@ type state struct {
 	OwnerMode string          `json:"ownerMode,omitempty"`
 	KVMs      []KVM           `json:"kvms,omitempty"`
 	Webhooks  []Webhook       `json:"webhooks,omitempty"`
+	// Recoveries are the hub's, kept as it writes them (internal/machines).
+	Recoveries json.RawMessage `json:"recoveries,omitempty"`
 }
 
 // fresh is a new install's state.
@@ -626,6 +630,21 @@ func (s *Store) WebhookDelivered(id string, at time.Time, result string) {
 			return
 		}
 	}
+}
+
+// Recoveries returns what the hub stored with PutRecoveries.
+func (s *Store) Recoveries() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.st.Recoveries)
+}
+
+// PutRecoveries stores the hub's recoveries.
+func (s *Store) PutRecoveries(b json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Recoveries = slices.Clone(b)
+	return s.saveLocked()
 }
 
 const maxSchedules = 20

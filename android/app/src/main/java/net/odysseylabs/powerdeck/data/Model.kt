@@ -98,11 +98,13 @@ data class KvmWiring(val led: String, val power: String, val reset: String) {
 
 /**
  * A machine as a hub sees it (GET /v2/machines). [led] null: not read. From 2.3 the hub's watch adds
- * [state] "hung", a [reason] for "unknown", [since] and its last look ([evidence]).
+ * [state] "hung", a [reason] for "unknown", [since] and its last look ([evidence]); from 2.4 its open
+ * [recovery], or the last one for 30 minutes after it ended.
  */
 data class HubMachine(
     val name: String, val state: String, val led: Boolean?, val ledError: String?, val kvm: String?, val wiring: KvmWiring?, val actions: List<String>,
     val reason: String? = null, val asleep: Boolean = false, val since: Instant? = null, val evidence: HubEvidence? = null,
+    val recovery: HubRecovery? = null,
 ) {
     val hung get() = state == HUNG
 
@@ -113,8 +115,42 @@ data class HubMachine(
             return HubMachine(o.optString("name"), o.optString("state", "unknown"), if (o.has("led") && !o.isNull("led")) o.optBoolean("led") else null,
                 o.optStringOrNull("ledError"), k?.optStringOrNull("name"), k?.optJSONObject("wiring")?.let(KvmWiring::from),
                 o.optJSONArray("actions")?.strings() ?: emptyList(),
-                o.optStringOrNull("reason"), o.optBoolean("asleep"), o.instant("since"), o.optJSONObject("evidence")?.let(HubEvidence::from))
+                o.optStringOrNull("reason"), o.optBoolean("asleep"), o.instant("since"), o.optJSONObject("evidence")?.let(HubEvidence::from),
+                o.optJSONObject("recovery")?.let(HubRecovery::from))
         }
+    }
+}
+
+/**
+ * A reset or force off on a hub (2.4+): someone proposes it, the owner confirms, the hub runs it and
+ * checks the machine comes back. [reason] is the proposer's words, shown as they are. [direct]: the
+ * owner's own button, never proposed.
+ */
+data class HubRecovery(
+    val id: String, val machine: String, val action: String, val state: String, val reason: String?,
+    val proposedBy: String, val agent: Boolean, val proposedAt: Instant?, val confirmedBy: String?, val confirmedAt: Instant?,
+    val endedAt: Instant?, val message: String?, val direct: Boolean,
+) {
+    val proposed get() = state == PROPOSED
+    val running get() = state == RUNNING
+    val open get() = proposed || running
+    val forceOff get() = action == FORCE_OFF
+
+    companion object {
+        const val PROPOSED = "proposed"
+        const val RUNNING = "running"
+        const val BACK = "back"
+        const val NOT_BACK = "not_back"
+        const val OFF = "off"
+        const val DONE = "done"
+        const val FAILED = "failed"
+        const val DECLINED = "declined"
+        const val EXPIRED = "expired"
+        const val WITHDRAWN = "withdrawn"
+        const val FORCE_OFF = "force-off"
+        fun from(o: JSONObject) = HubRecovery(o.optString("id"), o.optString("machine"), o.optString("action", "reset"), o.optString("state"),
+            o.optStringOrNull("reason"), o.optString("proposedBy"), o.optBoolean("agent"), o.instant("proposedAt"), o.optStringOrNull("confirmedBy"),
+            o.instant("confirmedAt"), o.instant("endedAt"), o.optStringOrNull("message"), o.optBoolean("direct"))
     }
 }
 
@@ -209,6 +245,8 @@ data class HelperStatus(
     val ownersLegacy: Boolean = false,
     /** The helpers this one holds a peer key for (owners only; null from helpers before 2.1). */
     val peerKeys: List<String>? = null,
+    /** A hub's settings (2.4+, owners only): automatic resets after this many minutes of a hang, 0 off. */
+    val autoResetMinutes: Int? = null,
 ) {
     companion object {
         fun pendingFrom(p: JSONObject?) = p?.let { Pending(it.optString("action"), Instant.parse(it.optString("at")), it.optString("by")) }
@@ -237,6 +275,7 @@ data class HelperStatus(
                 caps = o.optJSONArray("caps")?.strings() ?: emptyList(),
                 ownersLegacy = o.optJSONObject("owners")?.optBoolean("legacy") ?: false,
                 peerKeys = o.optJSONArray("peerKeys")?.strings(),
+                autoResetMinutes = o.optJSONObject("hub")?.let { if (it.has("autoResetMinutes")) it.optInt("autoResetMinutes") else null },
             )
         }
     }

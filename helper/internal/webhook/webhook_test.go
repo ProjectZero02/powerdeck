@@ -146,6 +146,21 @@ func TestDeliverySignedAndFiltered(t *testing.T) {
 	}
 }
 
+// New webhooks get recovery events too: "didn't come back" is the alert an assistant needs.
+func TestRecoveryEventsByDefault(t *testing.T) {
+	s, rc, _, _ := setup(t)
+	stop := run(t, s)
+	s.Bus.Publish(machines.Event{Event: machines.EventRecovery, Machine: "gaming-pc",
+		Recovery: &machines.Recovery{ID: "r1", Machine: "gaming-pc", Action: "reset", State: machines.RecoveryNotBack}})
+	waitFor(t, func() bool { return rc.count() == 1 })
+	stop()
+	var got machines.Event
+	if err := json.Unmarshal(rc.body[0], &got); err != nil || rc.got[0].Header.Get("X-PowerDeck-Event") != "recovery" ||
+		got.Recovery == nil || got.Recovery.State != "not_back" || strings.Contains(string(rc.body[0]), `"evidence"`) {
+		t.Errorf("%s %v", rc.body[0], err)
+	}
+}
+
 func TestRetriesThenGivesUp(t *testing.T) {
 	s, rc, _, _ := setup(t)
 	rc.fails = 2
