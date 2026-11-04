@@ -192,6 +192,16 @@ That's Tailscale key expiry. In the Tailscale admin console, **Disable key expir
 </details>
 
 <details>
+<summary><b>Windows says a module "is blocked from loading into the Local Security Authority"</b></summary>
+
+That's Windows' Local Security Authority protection refusing another program's file, most often Apple's Bonjour (`mdnsNSP.dll`), which comes with iTunes, other Apple apps and some printer and creative apps. PowerDeck doesn't install or load anything there. It can show up more often once PowerDeck is installed: PowerDeck turns Fast Startup off, so every power-on is a full start of Windows, and that's when Windows shows it.
+
+- If nothing you use needs Bonjour, uninstall it in Settings → Apps. Otherwise, update the app that installed it.
+- Keep Local Security Authority protection on, and don't follow guides that register the file with it.
+- **Don't show this message again** hides the message. The file stays blocked, which is harmless.
+</details>
+
+<details>
 <summary><b>Uninstalling</b></summary>
 
 - **Windows:** Settings → Apps → PowerDeck → Uninstall. This also deletes its keys and settings; if you reinstall, remove the PC in the app and add it again.
